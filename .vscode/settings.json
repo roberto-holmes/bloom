@@ -1,0 +1,16 @@
+{
+  "editor.formatOnSave": true,
+  "emeraldwalk.runonsave": {
+    "showElapsed": true,
+    "commands": [
+      {
+        "match": "\\.(frag|vert)$",
+        "cmd": "glslc ${fileDirname}/${fileBasename} -o ${workspaceFolder}/shaders/spv/${fileBasename}.spv"
+      },
+      {
+        "match": "\\.wgsl$",
+        "cmd": "naga ${fileDirname}/${fileBasename} ${workspaceFolder}/shaders/spv/${fileBasename}.spv"
+      }
+    ]
+  }
+}
