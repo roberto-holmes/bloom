@@ -1,3 +1,4 @@
+mod camera;
 mod debug;
 mod structures;
 mod tools;
@@ -11,9 +12,11 @@ use std::{
 
 use anyhow::Result;
 use ash::{ext::debug_utils, vk, Entry, Instance};
+use camera::Camera;
 use cgmath::{Deg, Matrix4, Point3, SquareMatrix, Vector3};
 use debug::{setup_debug_utils, ValidationInfo};
 use structures::{DeviceExtension, QueueFamilyIndices, SurfaceStuff, SwapChainStuff};
+use vec::Vec3;
 use vulkan::*;
 use winit::{
     application::ApplicationHandler,
@@ -27,6 +30,10 @@ use winit::{
 const WINDOW_WIDTH: u32 = 800;
 const WINDOW_HEIGHT: u32 = 600;
 const MAX_FRAMES_IN_FLIGHT: usize = 2;
+
+const FOCAL_DISTANCE: f32 = 4.5;
+const VFOV_DEG: f32 = 40.;
+const DOF_SCALE: f32 = 0.05;
 
 const VALIDATION: ValidationInfo = ValidationInfo {
     is_enable: true,
@@ -150,7 +157,7 @@ struct VulkanApp {
     set_layout: vk::DescriptorSetLayout,
     descriptor_pool: vk::DescriptorPool,
     descriptor_sets: Vec<vk::DescriptorSet>,
-    uniform_transform: vulkan::UniformBufferObject,
+    uniform: vulkan::UniformBufferObject,
     uniform_buffers: Vec<vk::Buffer>,
     uniform_buffers_memory: Vec<vk::DeviceMemory>,
     uniform_buffers_mapped: Vec<*mut vulkan::UniformBufferObject>,
@@ -169,6 +176,8 @@ struct VulkanApp {
     in_flight_fences: Vec<vk::Fence>,
     minimized: bool,
     resized: bool,
+
+    camera: Camera,
 
     current_frame: usize,
     frame_count: u128,
@@ -274,22 +283,17 @@ impl VulkanApp {
         let (image_available_semaphores, render_finished_semaphores, in_flight_fences) =
             create_sync_object(&device)?;
 
+        let camera = Camera::look_at(
+            Vec3::new(3., 2., 3.),
+            Vec3::new(0., 1., 0.),
+            Vec3::new(0., 1., 0.),
+            FOCAL_DISTANCE,
+            VFOV_DEG,
+            DOF_SCALE,
+        );
+
         Ok(Self {
-            uniform_transform: vulkan::UniformBufferObject {
-                model: Matrix4::<f32>::identity(),
-                view: Matrix4::look_at_rh(
-                    Point3::new(2.0, 2.0, 2.0),
-                    Point3::new(0.0, 0.0, 0.0),
-                    Vector3::new(0.0, 0.0, 1.0),
-                ),
-                proj: cgmath::perspective(
-                    Deg(45.0),
-                    swap_chain_stuff.swapchain_extent.width as f32
-                        / swap_chain_stuff.swapchain_extent.height as f32,
-                    0.1,
-                    10.0,
-                ),
-            },
+            uniform: vulkan::UniformBufferObject::new().update(swap_chain_stuff.swapchain_extent),
 
             _entry: entry,
             instance,
@@ -333,6 +337,8 @@ impl VulkanApp {
             image_available_semaphores,
             render_finished_semaphores,
             in_flight_fences,
+
+            camera,
 
             minimized: false,
             resized: false,
@@ -497,14 +503,13 @@ impl VulkanApp {
         }
     }
 
-    fn update_uniform_buffer(&mut self, current_image: u32, delta_time: Duration) {
-        self.uniform_transform.model = Matrix4::from_axis_angle(
-            Vector3::new(0.0, 0.0, 1.0),
-            // Deg(90.0) * delta_time.as_millis() as f32,
-            Deg(90.0) * delta_time.as_secs_f32(),
-        ) * self.uniform_transform.model;
+    fn update_uniform_buffer(&mut self, current_image: u32, _delta_time: Duration) {
+        self.uniform.tick();
+        self.uniform.update(self.swap_chain_stuff.swapchain_extent);
 
-        let ubos = [self.uniform_transform.clone()];
+        self.uniform.update_camera(&self.camera);
+
+        let ubos = [self.uniform.clone()];
 
         unsafe {
             self.uniform_buffers_mapped[current_image as usize]
