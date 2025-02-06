@@ -1,8 +1,8 @@
 mod debug;
 mod structures;
 mod tools;
-mod utils;
 mod vec;
+mod vulkan;
 
 use std::{
     time::{Duration, SystemTime},
@@ -14,7 +14,7 @@ use ash::{ext::debug_utils, vk, Entry, Instance};
 use cgmath::{Deg, Matrix4, Point3, SquareMatrix, Vector3};
 use debug::{setup_debug_utils, ValidationInfo};
 use structures::{DeviceExtension, QueueFamilyIndices, SurfaceStuff, SwapChainStuff};
-use utils::*;
+use vulkan::*;
 use winit::{
     application::ApplicationHandler,
     dpi::PhysicalSize,
@@ -150,10 +150,10 @@ struct VulkanApp {
     set_layout: vk::DescriptorSetLayout,
     descriptor_pool: vk::DescriptorPool,
     descriptor_sets: Vec<vk::DescriptorSet>,
-    uniform_transform: utils::UniformBufferObject,
+    uniform_transform: vulkan::UniformBufferObject,
     uniform_buffers: Vec<vk::Buffer>,
     uniform_buffers_memory: Vec<vk::DeviceMemory>,
-    uniform_buffers_mapped: Vec<*mut utils::UniformBufferObject>,
+    uniform_buffers_mapped: Vec<*mut vulkan::UniformBufferObject>,
 
     image_texture: vk::Image,
     image_texture_memory: vk::DeviceMemory,
@@ -179,7 +179,7 @@ impl VulkanApp {
         log::debug!("Initialising vulkan application");
         let entry = unsafe { Entry::load()? };
         // Set up Vulkan API
-        let instance = utils::create_instance(&entry, window)?;
+        let instance = vulkan::create_instance(&entry, window)?;
         debug::print_available_instance_extensions(&entry)?;
         // Set up callback for Vulkan debug messages
         let debug_messenger = setup_debug_utils(&entry, &instance)?;
@@ -275,7 +275,7 @@ impl VulkanApp {
             create_sync_object(&device)?;
 
         Ok(Self {
-            uniform_transform: utils::UniformBufferObject {
+            uniform_transform: vulkan::UniformBufferObject {
                 model: Matrix4::<f32>::identity(),
                 view: Matrix4::look_at_rh(
                     Point3::new(2.0, 2.0, 2.0),
