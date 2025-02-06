@@ -1,3 +1,4 @@
+use crate::camera::{Camera, CameraUniforms};
 use crate::structures::{
     QueueFamilyIndices, SurfaceStuff, SwapChainStuff, SwapChainSupportDetails,
 };
@@ -10,7 +11,6 @@ use crate::{DEVICE_EXTENSIONS, MAX_FRAMES_IN_FLIGHT};
 use anyhow::{anyhow, Context, Result};
 use ash::{ext::debug_utils, vk};
 use bytemuck::{Pod, Zeroable};
-use cgmath::{self, Matrix4};
 use image;
 use memoffset::offset_of;
 use std::collections::HashSet;
@@ -22,61 +22,58 @@ use winit::{raw_window_handle::HasDisplayHandle, window::Window};
 #[repr(C)]
 struct Vertex {
     pos: [f32; 3],
-    colour: [f32; 3],
-    tex_coord: [f32; 2],
 }
 
-const VERTICES: [Vertex; 8] = [
+// Vertices required to cover the viewport
+const VERTICES: [Vertex; 4] = [
     Vertex {
-        pos: [-0.5, -0.5, 0.0],
-        colour: [1.0, 0.0, 0.0],
-        tex_coord: [1.0, 0.0],
+        pos: [-1.0, -1.0, 0.0],
     },
     Vertex {
-        pos: [0.5, -0.5, 0.0],
-        colour: [0.0, 1.0, 0.0],
-        tex_coord: [0.0, 0.0],
+        pos: [1.0, -1.0, 0.0],
     },
     Vertex {
-        pos: [0.5, 0.5, 0.0],
-        colour: [0.0, 0.0, 1.0],
-        tex_coord: [0.0, 1.0],
+        pos: [1.0, 1.0, 0.0],
     },
     Vertex {
-        pos: [-0.5, 0.5, 0.0],
-        colour: [1.0, 1.0, 1.0],
-        tex_coord: [1.0, 1.0],
-    },
-    Vertex {
-        pos: [-0.5, -0.5, -0.5],
-        colour: [1.0, 0.0, 0.0],
-        tex_coord: [1.0, 0.0],
-    },
-    Vertex {
-        pos: [0.5, -0.5, -0.5],
-        colour: [0.0, 1.0, 0.0],
-        tex_coord: [0.0, 0.0],
-    },
-    Vertex {
-        pos: [0.5, 0.5, -0.5],
-        colour: [0.0, 0.0, 1.0],
-        tex_coord: [0.0, 1.0],
-    },
-    Vertex {
-        pos: [-0.5, 0.5, -0.5],
-        colour: [1.0, 1.0, 1.0],
-        tex_coord: [1.0, 1.0],
+        pos: [-1.0, 1.0, 0.0],
     },
 ];
 
-const INDICES: [u16; 12] = [0, 1, 2, 2, 3, 0, 4, 5, 6, 6, 7, 4];
+const INDICES: [u16; 6] = [0, 1, 2, 2, 3, 0];
 
 #[derive(Debug, Copy, Clone)]
 #[repr(C)]
 pub struct UniformBufferObject {
-    pub model: Matrix4<f32>,
-    pub view: Matrix4<f32>,
-    pub proj: Matrix4<f32>,
+    camera: CameraUniforms,
+    frame_num: u32,
+    width: u32,
+    height: u32,
+}
+
+impl UniformBufferObject {
+    pub fn new() -> Self {
+        Self {
+            camera: CameraUniforms::zeroed(),
+            frame_num: 0,
+            width: 0,
+            height: 0,
+        }
+    }
+    pub fn update(&mut self, extent: vk::Extent2D) -> Self {
+        self.width = extent.width;
+        self.height = extent.height;
+        *self
+    }
+    pub fn tick(&mut self) {
+        self.frame_num += 1;
+    }
+    pub fn reset_samples(&mut self) {
+        self.frame_num = 0;
+    }
+    pub fn update_camera(&mut self, camera: &Camera) {
+        self.camera = *camera.uniforms();
+    }
 }
 
 impl Vertex {
@@ -86,24 +83,12 @@ impl Vertex {
             .stride(std::mem::size_of::<Self>() as u32)
             .input_rate(vk::VertexInputRate::VERTEX)
     }
-    pub fn get_attribute_descriptions() -> [vk::VertexInputAttributeDescription; 3] {
-        [
-            vk::VertexInputAttributeDescription::default()
-                .binding(0)
-                .location(0)
-                .format(vk::Format::R32G32B32_SFLOAT)
-                .offset(offset_of!(Self, pos) as u32),
-            vk::VertexInputAttributeDescription::default()
-                .binding(0)
-                .location(1)
-                .format(vk::Format::R32G32B32_SFLOAT)
-                .offset(offset_of!(Self, colour) as u32),
-            vk::VertexInputAttributeDescription::default()
-                .binding(0)
-                .location(2)
-                .format(vk::Format::R32G32_SFLOAT)
-                .offset(offset_of!(Self, tex_coord) as u32),
-        ]
+    pub fn get_attribute_descriptions() -> [vk::VertexInputAttributeDescription; 1] {
+        [vk::VertexInputAttributeDescription::default()
+            .binding(0)
+            .location(0)
+            .format(vk::Format::R32G32B32_SFLOAT)
+            .offset(offset_of!(Self, pos) as u32)]
     }
 }
 
@@ -115,7 +100,7 @@ pub fn create_instance(entry: &ash::Entry, window: &Window) -> Result<ash::Insta
         _ => {}
     };
     let app_info = vk::ApplicationInfo::default()
-        .application_name(c"Vulkan App")
+        .application_name(c"Bloom")
         .application_version(vk::make_api_version(0, 0, 1, 0))
         .engine_name(c"No engine")
         .engine_version(0)
@@ -524,7 +509,7 @@ pub fn create_descriptor_set_layout(device: &ash::Device) -> Result<vk::Descript
         .binding(0)
         .descriptor_count(1)
         .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-        .stage_flags(vk::ShaderStageFlags::VERTEX);
+        .stage_flags(vk::ShaderStageFlags::FRAGMENT);
 
     let sampler_layout_binding = vk::DescriptorSetLayoutBinding::default()
         .binding(1)
