@@ -4,7 +4,7 @@ use bytemuck::Zeroable;
 use rand::rngs::ThreadRng;
 
 use crate::{
-    algebra::Vec3, Material, MAX_MATERIAL_COUNT, MAX_QUAD_COUNT, MAX_SPHERE_COUNT,
+    material::Material, vec::Vec3, MAX_MATERIAL_COUNT, MAX_QUAD_COUNT, MAX_SPHERE_COUNT,
     MAX_TRIANGLE_COUNT,
 };
 

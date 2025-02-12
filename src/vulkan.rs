@@ -4,10 +4,13 @@ use crate::structures::{
 };
 use crate::tools::read_shader_code;
 use crate::{
+    bvh, material, primitives, DEVICE_EXTENSIONS, MAX_FRAMES_IN_FLIGHT, MAX_MATERIAL_COUNT,
+    MAX_OBJECT_COUNT, MAX_QUAD_COUNT, MAX_SPHERE_COUNT, MAX_TRIANGLE_COUNT,
+};
+use crate::{
     debug::{check_validation_layer_support, populate_debug_messenger_create_info},
     tools, VALIDATION,
 };
-use crate::{DEVICE_EXTENSIONS, MAX_FRAMES_IN_FLIGHT};
 use anyhow::{anyhow, Context, Result};
 use ash::{ext::debug_utils, vk};
 use bytemuck::{Pod, Zeroable};
@@ -526,10 +529,45 @@ pub fn create_descriptor_set_layout(device: &ash::Device) -> Result<vk::Descript
         .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
         .stage_flags(vk::ShaderStageFlags::FRAGMENT);
 
+    let material_layout_bindings = vk::DescriptorSetLayoutBinding::default()
+        .binding(3)
+        .descriptor_count(1)
+        .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+        .stage_flags(vk::ShaderStageFlags::FRAGMENT);
+
+    let bvh_layout_bindings = vk::DescriptorSetLayoutBinding::default()
+        .binding(4)
+        .descriptor_count(1)
+        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+        .stage_flags(vk::ShaderStageFlags::FRAGMENT);
+
+    let sphere_layout_bindings = vk::DescriptorSetLayoutBinding::default()
+        .binding(5)
+        .descriptor_count(1)
+        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+        .stage_flags(vk::ShaderStageFlags::FRAGMENT);
+
+    let quad_layout_bindings = vk::DescriptorSetLayoutBinding::default()
+        .binding(6)
+        .descriptor_count(1)
+        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+        .stage_flags(vk::ShaderStageFlags::FRAGMENT);
+
+    let triangle_layout_bindings = vk::DescriptorSetLayoutBinding::default()
+        .binding(7)
+        .descriptor_count(1)
+        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+        .stage_flags(vk::ShaderStageFlags::FRAGMENT);
+
     let bindings = [
         image_layout_binding,
         storage_image_layout_binding,
         ubo_layout_bindings,
+        material_layout_bindings,
+        bvh_layout_bindings,
+        sphere_layout_bindings,
+        quad_layout_bindings,
+        triangle_layout_bindings,
     ];
 
     let layout_info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings);
@@ -542,6 +580,11 @@ pub fn create_descriptor_sets(
     pool: &vk::DescriptorPool,
     set_layout: &vk::DescriptorSetLayout,
     uniforms_buffers: &Vec<vk::Buffer>,
+    material_buffers: &Vec<vk::Buffer>,
+    bvh_buffer: vk::Buffer,
+    spheres_buffer: vk::Buffer,
+    quads_buffer: vk::Buffer,
+    triangles_buffer: vk::Buffer,
     radiance_image_views: &[vk::ImageView; 2],
 ) -> Result<Vec<vk::DescriptorSet>> {
     let mut layouts: Vec<vk::DescriptorSetLayout> = vec![];
@@ -560,6 +603,31 @@ pub fn create_descriptor_sets(
             .buffer(uniforms_buffers[i])
             .offset(0)
             .range(std::mem::size_of::<UniformBufferObject>() as u64)];
+
+        let material_buffer_info = [vk::DescriptorBufferInfo::default()
+            .buffer(material_buffers[i])
+            .offset(0)
+            .range((std::mem::size_of::<material::Material>() * MAX_MATERIAL_COUNT) as u64)];
+
+        let bvh_buffer_info = [vk::DescriptorBufferInfo::default()
+            .buffer(bvh_buffer)
+            .offset(0)
+            .range((std::mem::size_of::<bvh::AABB>() * MAX_OBJECT_COUNT) as u64)];
+
+        let sphere_buffer_info = [vk::DescriptorBufferInfo::default()
+            .buffer(spheres_buffer)
+            .offset(0)
+            .range((std::mem::size_of::<primitives::Sphere>() * MAX_SPHERE_COUNT) as u64)];
+
+        let quad_buffer_info = [vk::DescriptorBufferInfo::default()
+            .buffer(quads_buffer)
+            .offset(0)
+            .range((std::mem::size_of::<primitives::Quad>() * MAX_QUAD_COUNT) as u64)];
+
+        let triangle_buffer_info = [vk::DescriptorBufferInfo::default()
+            .buffer(triangles_buffer)
+            .offset(0)
+            .range((std::mem::size_of::<primitives::Triangle>() * MAX_TRIANGLE_COUNT) as u64)];
 
         // Swap radiance image views around each frame
         let image_info = [vk::DescriptorImageInfo::default()
@@ -592,6 +660,41 @@ pub fn create_descriptor_sets(
                 .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                 .descriptor_count(1)
                 .buffer_info(&buffer_info),
+            vk::WriteDescriptorSet::default()
+                .dst_set(descriptor_set)
+                .dst_binding(3)
+                .dst_array_element(0)
+                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                .descriptor_count(1)
+                .buffer_info(&material_buffer_info),
+            vk::WriteDescriptorSet::default()
+                .dst_set(descriptor_set)
+                .dst_binding(4)
+                .dst_array_element(0)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .buffer_info(&bvh_buffer_info),
+            vk::WriteDescriptorSet::default()
+                .dst_set(descriptor_set)
+                .dst_binding(5)
+                .dst_array_element(0)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .buffer_info(&sphere_buffer_info),
+            vk::WriteDescriptorSet::default()
+                .dst_set(descriptor_set)
+                .dst_binding(6)
+                .dst_array_element(0)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .buffer_info(&quad_buffer_info),
+            vk::WriteDescriptorSet::default()
+                .dst_set(descriptor_set)
+                .dst_binding(7)
+                .dst_array_element(0)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .buffer_info(&triangle_buffer_info),
         ];
 
         unsafe { device.update_descriptor_sets(&descriptor_writes, &[]) };
@@ -922,16 +1025,13 @@ pub fn create_index_buffer(
     Ok((index_buffer, index_memory))
 }
 
-pub fn create_uniform_buffer(
+pub fn create_uniform_buffer<T>(
     device: &ash::Device,
     instance: &ash::Instance,
     physical_device: &vk::PhysicalDevice,
-) -> Result<(
-    Vec<vk::Buffer>,
-    Vec<vk::DeviceMemory>,
-    Vec<*mut UniformBufferObject>,
-)> {
-    let buffer_size = std::mem::size_of::<UniformBufferObject>() as u64;
+    array_length: u64,
+) -> Result<(Vec<vk::Buffer>, Vec<vk::DeviceMemory>, Vec<*mut T>)> {
+    let buffer_size = (std::mem::size_of::<T>() as u64) * array_length;
 
     let mut uniform_buffers = vec![];
     let mut uniform_buffers_memory = vec![];
@@ -956,7 +1056,7 @@ pub fn create_uniform_buffer(
                 0,
                 buffer_size,
                 vk::MemoryMapFlags::empty(),
-            )? as *mut UniformBufferObject
+            )? as *mut T
         });
         uniform_buffers.push(uniform_buffer_temp);
         uniform_buffers_memory.push(uniform_buffers_memory_temp);
@@ -966,6 +1066,64 @@ pub fn create_uniform_buffer(
         uniform_buffers_memory,
         uniform_buffers_mapped,
     ))
+}
+
+pub fn create_storage_buffer<T>(
+    device: &ash::Device,
+    instance: &ash::Instance,
+    physical_device: &vk::PhysicalDevice,
+    command_pool: &vk::CommandPool,
+    submit_queue: &vk::Queue,
+    data_in: &Vec<T>,
+) -> Result<(vk::Buffer, vk::DeviceMemory)> {
+    let buffer_size = (std::mem::size_of::<T>() * data_in.len()) as u64;
+
+    let (staging_buffer, staging_buffer_memory) = create_buffer(
+        device,
+        instance,
+        physical_device,
+        buffer_size,
+        vk::BufferUsageFlags::TRANSFER_SRC,
+        vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+    )?;
+
+    unsafe {
+        let data_ptr = device
+            .map_memory(
+                staging_buffer_memory,
+                0,
+                buffer_size,
+                vk::MemoryMapFlags::empty(),
+            )
+            .context("Failed to map memory for the image texture buffer")?
+            as *mut T;
+
+        data_ptr.copy_from_nonoverlapping(data_in.as_ptr(), data_in.len());
+
+        device.unmap_memory(staging_buffer_memory);
+    }
+
+    let (buffer, buffer_memory) = create_buffer(
+        device,
+        instance,
+        physical_device,
+        buffer_size,
+        vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::STORAGE_BUFFER,
+        vk::MemoryPropertyFlags::DEVICE_LOCAL,
+    )?;
+
+    // Copy data from staging buffer to our actual one
+    let command_buffer = begin_single_time_commands(device, command_pool)?;
+    let regions = [vk::BufferCopy::default().size(buffer_size)];
+    unsafe { device.cmd_copy_buffer(command_buffer, staging_buffer, buffer, &regions) };
+    end_single_time_command(device, command_pool, submit_queue, &command_buffer)?;
+
+    unsafe {
+        device.destroy_buffer(staging_buffer, None);
+        device.free_memory(staging_buffer_memory, None);
+    }
+
+    Ok((buffer, buffer_memory))
 }
 
 pub fn create_descriptor_pool(device: &ash::Device) -> Result<vk::DescriptorPool> {
@@ -979,6 +1137,21 @@ pub fn create_descriptor_pool(device: &ash::Device) -> Result<vk::DescriptorPool
         vk::DescriptorPoolSize::default()
             .descriptor_count(MAX_FRAMES_IN_FLIGHT as u32)
             .ty(vk::DescriptorType::UNIFORM_BUFFER),
+        vk::DescriptorPoolSize::default()
+            .descriptor_count(MAX_FRAMES_IN_FLIGHT as u32)
+            .ty(vk::DescriptorType::UNIFORM_BUFFER),
+        vk::DescriptorPoolSize::default()
+            .descriptor_count(MAX_FRAMES_IN_FLIGHT as u32)
+            .ty(vk::DescriptorType::STORAGE_BUFFER),
+        vk::DescriptorPoolSize::default()
+            .descriptor_count(MAX_FRAMES_IN_FLIGHT as u32)
+            .ty(vk::DescriptorType::STORAGE_BUFFER),
+        vk::DescriptorPoolSize::default()
+            .descriptor_count(MAX_FRAMES_IN_FLIGHT as u32)
+            .ty(vk::DescriptorType::STORAGE_BUFFER),
+        vk::DescriptorPoolSize::default()
+            .descriptor_count(MAX_FRAMES_IN_FLIGHT as u32)
+            .ty(vk::DescriptorType::STORAGE_BUFFER),
     ];
 
     let pool_info = vk::DescriptorPoolCreateInfo::default()
