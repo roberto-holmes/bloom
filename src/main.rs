@@ -1,5 +1,8 @@
+mod bvh;
 mod camera;
 mod debug;
+mod material;
+mod primitives;
 mod structures;
 mod tools;
 mod vec;
@@ -11,10 +14,15 @@ use std::{
 };
 
 use anyhow::Result;
-use ash::{ext::debug_utils, vk, Entry, Instance};
+use ash::{
+    ext::debug_utils,
+    vk::{self, GraphicsShaderGroupCreateInfoNV},
+    Entry, Instance,
+};
 use camera::Camera;
 use cgmath::{Deg, Matrix4, Point3, SquareMatrix, Vector3};
 use debug::{setup_debug_utils, ValidationInfo};
+use primitives::Scene;
 use structures::{DeviceExtension, QueueFamilyIndices, SurfaceStuff, SwapChainStuff};
 use vec::Vec3;
 use vulkan::*;
@@ -30,6 +38,12 @@ use winit::{
 const WINDOW_WIDTH: u32 = 800;
 const WINDOW_HEIGHT: u32 = 600;
 const MAX_FRAMES_IN_FLIGHT: usize = 2;
+
+pub const MAX_MATERIAL_COUNT: usize = 10;
+pub const MAX_SPHERE_COUNT: usize = 20;
+pub const MAX_QUAD_COUNT: usize = 20;
+pub const MAX_TRIANGLE_COUNT: usize = 20;
+pub const MAX_OBJECT_COUNT: usize = MAX_SPHERE_COUNT + MAX_QUAD_COUNT + MAX_TRIANGLE_COUNT;
 
 const FOCAL_DISTANCE: f32 = 4.5;
 const VFOV_DEG: f32 = 40.;
@@ -162,6 +176,19 @@ struct VulkanApp {
     uniform_buffers_memory: Vec<vk::DeviceMemory>,
     uniform_buffers_mapped: Vec<*mut vulkan::UniformBufferObject>,
 
+    material_buffers: Vec<vk::Buffer>,
+    material_buffers_memory: Vec<vk::DeviceMemory>,
+    material_buffers_mapped: Vec<*mut material::Material>,
+
+    bvh_buffer: vk::Buffer,
+    bvh_buffer_memory: vk::DeviceMemory,
+    sphere_buffer: vk::Buffer,
+    sphere_buffer_memory: vk::DeviceMemory,
+    quad_buffer: vk::Buffer,
+    quad_buffer_memory: vk::DeviceMemory,
+    triangle_buffer: vk::Buffer,
+    triangle_buffer_memory: vk::DeviceMemory,
+
     radiance_images: [vk::Image; 2],
     radiance_image_memories: [vk::DeviceMemory; 2],
     radiance_image_views: [vk::ImageView; 2],
@@ -177,6 +204,7 @@ struct VulkanApp {
     resized: bool,
 
     camera: Camera,
+    scene: Scene,
 
     current_frame: usize,
     frame_count: u128,
@@ -184,6 +212,57 @@ struct VulkanApp {
 
 impl VulkanApp {
     pub fn new(window: &Window) -> Result<Self> {
+        let mut scene = Scene::new();
+        scene.add_material(material::Material::new_basic(Vec3::new(0.5, 0.5, 0.5), 0.));
+        scene.add_sphere(primitives::Sphere::new(
+            Vec3::new(0., -1000., -1.),
+            1000.,
+            1,
+        ));
+
+        {
+            scene.add_sphere(primitives::Sphere::new(Vec3::new(2., 1., -2.), 1.0, 0));
+            let mut current_material_index =
+                scene.add_material(material::Material::new_clear(Vec3::new(1., 1., 1.)));
+            scene.add_sphere(primitives::Sphere::new(
+                Vec3::new(-2., 1., 0.),
+                1.0,
+                current_material_index,
+            ));
+            current_material_index = scene.add_material(material::Material::new(
+                Vec3::new(0.9, 0.0, 0.3),
+                0.,
+                1.,
+                0.67,
+                1.,
+                0.1,
+                Vec3::new(0.9, 0.0, 0.3),
+            ));
+            scene.add_sphere(primitives::Sphere::new(
+                Vec3::new(0., 3., 0.),
+                0.5,
+                current_material_index,
+            ));
+            current_material_index = scene.add_material(material::Material::new(
+                Vec3::new(1.0, 1.0, 1.0),
+                0.,
+                1.,
+                0.67,
+                1.,
+                1.,
+                Vec3::new(1.0, 1.0, 1.0),
+            ));
+            scene.add_sphere(primitives::Sphere::new(
+                Vec3::new(0., 3., -1.5),
+                0.5,
+                current_material_index,
+            ));
+            scene.add_quad(primitives::Quad::default());
+            scene.add_triangle(primitives::Triangle::default());
+        }
+
+        let bvh = vec![bvh::create_bvh(&mut scene)];
+
         log::debug!("Initialising vulkan application");
         let entry = unsafe { Entry::load()? };
         // Set up Vulkan API
@@ -226,7 +305,15 @@ impl VulkanApp {
             create_graphics_pipeline(&device, &swap_chain_stuff, &render_pass, &set_layout)?;
 
         let (uniform_buffers, uniform_buffers_memory, uniform_buffers_mapped) =
-            create_uniform_buffer(&device, &instance, &physical_device)?;
+            create_uniform_buffer::<UniformBufferObject>(&device, &instance, &physical_device, 1)?;
+
+        let (material_buffers, material_buffers_memory, material_buffers_mapped) =
+            create_uniform_buffer::<material::Material>(
+                &device,
+                &instance,
+                &physical_device,
+                MAX_MATERIAL_COUNT as u64,
+            )?;
 
         let (depth_image, depth_image_memory, depth_image_view) =
             create_depth_resources(&device, &instance, &physical_device, &swap_chain_stuff)?;
@@ -267,11 +354,52 @@ impl VulkanApp {
                 &swap_chain_stuff,
             )?;
 
+        let (bvh_buffer, bvh_buffer_memory) = create_storage_buffer(
+            &device,
+            &instance,
+            &physical_device,
+            &command_pool,
+            &graphics_queue,
+            &bvh,
+        )?;
+
+        let (sphere_buffer, sphere_buffer_memory) = create_storage_buffer(
+            &device,
+            &instance,
+            &physical_device,
+            &command_pool,
+            &graphics_queue,
+            &scene.get_sphere_arr().to_vec(),
+        )?;
+
+        let (quad_buffer, quad_buffer_memory) = create_storage_buffer(
+            &device,
+            &instance,
+            &physical_device,
+            &command_pool,
+            &graphics_queue,
+            &scene.get_quad_arr().to_vec(),
+        )?;
+
+        let (triangle_buffer, triangle_buffer_memory) = create_storage_buffer(
+            &device,
+            &instance,
+            &physical_device,
+            &command_pool,
+            &graphics_queue,
+            &scene.get_triangle_arr().to_vec(),
+        )?;
+
         let descriptor_sets = create_descriptor_sets(
             &device,
             &descriptor_pool,
             &set_layout,
             &uniform_buffers,
+            &material_buffers,
+            bvh_buffer,
+            sphere_buffer,
+            quad_buffer,
+            triangle_buffer,
             &radiance_image_views,
         )?;
 
@@ -287,6 +415,9 @@ impl VulkanApp {
             VFOV_DEG,
             DOF_SCALE,
         );
+
+        // log::debug!("{:#?}", bvh[0][0]);
+        // log::debug!("{:#?}", scene.get_sphere_arr().to_vec());
 
         Ok(Self {
             uniform: vulkan::UniformBufferObject::new().update(swap_chain_stuff.swapchain_extent),
@@ -321,6 +452,19 @@ impl VulkanApp {
             uniform_buffers_memory,
             uniform_buffers_mapped,
 
+            material_buffers,
+            material_buffers_memory,
+            material_buffers_mapped,
+
+            bvh_buffer,
+            bvh_buffer_memory,
+            sphere_buffer,
+            sphere_buffer_memory,
+            quad_buffer,
+            quad_buffer_memory,
+            triangle_buffer,
+            triangle_buffer_memory,
+
             radiance_images,
             radiance_image_memories,
             radiance_image_views,
@@ -334,6 +478,7 @@ impl VulkanApp {
             in_flight_fences,
 
             camera,
+            scene,
 
             minimized: false,
             resized: false,
@@ -430,7 +575,7 @@ impl VulkanApp {
             _ => {}
         }
 
-        self.update_uniform_buffer(self.current_frame as u32, delta_time);
+        self.update_uniform_buffers(self.current_frame as u32, delta_time);
 
         let wait_semaphores = [self.image_available_semaphores[self.current_frame]];
         let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
@@ -498,17 +643,20 @@ impl VulkanApp {
         }
     }
 
-    fn update_uniform_buffer(&mut self, current_image: u32, _delta_time: Duration) {
+    fn update_uniform_buffers(&mut self, current_image: u32, _delta_time: Duration) {
         self.uniform.tick();
         self.uniform.update(self.swap_chain_stuff.swapchain_extent);
 
         self.uniform.update_camera(&self.camera);
 
         let ubos = [self.uniform.clone()];
+        let mats = self.scene.get_material_arr();
 
         unsafe {
             self.uniform_buffers_mapped[current_image as usize]
-                .copy_from_nonoverlapping(ubos.as_ptr(), ubos.len())
+                .copy_from_nonoverlapping(ubos.as_ptr(), ubos.len());
+            self.material_buffers_mapped[current_image as usize]
+                .copy_from_nonoverlapping(mats.as_ptr(), mats.len());
         };
     }
 
@@ -637,6 +785,23 @@ impl Drop for VulkanApp {
             }
             for image_memory in self.radiance_image_memories {
                 self.device.free_memory(image_memory, None);
+            }
+
+            self.device.destroy_buffer(self.bvh_buffer, None);
+            self.device.destroy_buffer(self.sphere_buffer, None);
+            self.device.destroy_buffer(self.quad_buffer, None);
+            self.device.destroy_buffer(self.triangle_buffer, None);
+
+            self.device.free_memory(self.sphere_buffer_memory, None);
+            self.device.free_memory(self.bvh_buffer_memory, None);
+            self.device.free_memory(self.quad_buffer_memory, None);
+            self.device.free_memory(self.triangle_buffer_memory, None);
+
+            for &buffer in self.material_buffers.iter() {
+                self.device.destroy_buffer(buffer, None);
+            }
+            for &memory in self.material_buffers_memory.iter() {
+                self.device.free_memory(memory, None);
             }
 
             for &buffer in self.uniform_buffers.iter() {

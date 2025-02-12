@@ -2,7 +2,7 @@ use std::u32;
 
 use bytemuck::Zeroable;
 
-use crate::{algebra::Vec3, primitives::Scene, MAX_OBJECT_COUNT};
+use crate::{primitives::Scene, vec::Vec3, MAX_OBJECT_COUNT};
 
 const AABB_PADDING_SIZE: f32 = 0.0001;
 
