@@ -162,10 +162,9 @@ struct VulkanApp {
     uniform_buffers_memory: Vec<vk::DeviceMemory>,
     uniform_buffers_mapped: Vec<*mut vulkan::UniformBufferObject>,
 
-    image_texture: vk::Image,
-    image_texture_memory: vk::DeviceMemory,
-    image_texture_view: vk::ImageView,
-    texture_sampler: vk::Sampler,
+    radiance_images: [vk::Image; 2],
+    radiance_image_memories: [vk::DeviceMemory; 2],
+    radiance_image_views: [vk::ImageView; 2],
 
     depth_image: vk::Image,
     depth_image_memory: vk::DeviceMemory,
@@ -258,25 +257,22 @@ impl VulkanApp {
             &graphics_queue,
         )?;
 
-        let (image_texture, image_texture_memory) = create_texture_image(
-            &device,
-            &instance,
-            &physical_device,
-            &command_pool,
-            &graphics_queue,
-        )?;
-
-        let image_texture_view = create_texture_image_view(&device, &image_texture)?;
-
-        let texture_sampler = create_texture_sampler(&device, &instance, &physical_device)?;
+        let (radiance_images, radiance_image_memories, radiance_image_views) =
+            create_storage_images(
+                &device,
+                &instance,
+                &physical_device,
+                &command_pool,
+                &graphics_queue,
+                &swap_chain_stuff,
+            )?;
 
         let descriptor_sets = create_descriptor_sets(
             &device,
             &descriptor_pool,
             &set_layout,
             &uniform_buffers,
-            &texture_sampler,
-            &image_texture_view,
+            &radiance_image_views,
         )?;
 
         let command_buffers = create_command_buffers(&device, &command_pool)?;
@@ -325,10 +321,9 @@ impl VulkanApp {
             uniform_buffers_memory,
             uniform_buffers_mapped,
 
-            image_texture,
-            image_texture_memory,
-            image_texture_view,
-            texture_sampler,
+            radiance_images,
+            radiance_image_memories,
+            radiance_image_views,
 
             depth_image,
             depth_image_memory,
@@ -634,11 +629,15 @@ impl Drop for VulkanApp {
 
             self.cleanup_swap_chain();
 
-            self.device.destroy_sampler(self.texture_sampler, None);
-            self.device
-                .destroy_image_view(self.image_texture_view, None);
-            self.device.destroy_image(self.image_texture, None);
-            self.device.free_memory(self.image_texture_memory, None);
+            for image_view in self.radiance_image_views {
+                self.device.destroy_image_view(image_view, None);
+            }
+            for image in self.radiance_images {
+                self.device.destroy_image(image, None);
+            }
+            for image_memory in self.radiance_image_memories {
+                self.device.free_memory(image_memory, None);
+            }
 
             for &buffer in self.uniform_buffers.iter() {
                 self.device.destroy_buffer(buffer, None);

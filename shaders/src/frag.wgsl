@@ -105,9 +105,9 @@ struct AABB {
     is_populated: u32,
 }
 
-// @group(0) @binding(0) var radiance_samples_old: texture_2d<f32>;
-// @group(0) @binding(1) var radiance_samples_new: texture_storage_2d<rgba32float, write>;
-@group(0) @binding(0) var<uniform> uniforms: Uniforms;
+@group(0) @binding(0) var radiance_samples_old: texture_storage_2d<rgba32float, read>;
+@group(0) @binding(1) var radiance_samples_new: texture_storage_2d<rgba32float, write>;
+@group(0) @binding(2) var<uniform> uniforms: Uniforms;
 // @group(0) @binding(3) var<uniform> materials: array<Material, 10>;
 // @group(0) @binding(4) var<storage, read> bvh: array<AABB>;
 // @group(0) @binding(5) var<storage, read> spheres: array<Sphere>;
@@ -466,19 +466,19 @@ fn main(@builtin(position) pos: vec4f) -> @location(0) vec4<f32> {
     }
 
     // Fetch the old sum of samples
-    // var old_sum: vec3f;
-    // if uniforms.frame_num > 1 {
-    //     old_sum = textureLoad(radiance_samples_old, vec2u(pos.xy), 0).xyz;
-    // } else {
-    //     old_sum = vec3(0.);
-    // }
+    var old_sum: vec3f;
+    if uniforms.frame_num > 1 {
+        old_sum = textureLoad(radiance_samples_old, vec2u(pos.xy)).xyz;
+    } else {
+        old_sum = vec3(0.);
+    }
 
     // Compute and store the new sum
-    // let new_sum = radiance_sample + old_sum;
-    // textureStore(radiance_samples_new, vec2u(pos.xy), vec4(new_sum, 0.));
+    let new_sum = radiance_sample + old_sum;
+    textureStore(radiance_samples_new, vec2u(pos.xy), vec4(new_sum, 0.));
 
     // Apply gamma correction to go from linear colour space to sRGB (gamma = 2.2)
-    // let colour = new_sum / f32(uniforms.frame_num);
-    // return vec4(pow(colour, vec3(1. / 2.2)), 1.);
-    return vec4(pow(radiance_sample, vec3(1. / 2.2)), 1.);
+    let colour = new_sum / f32(uniforms.frame_num);
+    return vec4(pow(colour, vec3(1. / 2.2)), 1.);
+    // return vec4(pow(radiance_sample, vec3(1. / 2.2)), 1.);
 }
