@@ -329,7 +329,8 @@ fn is_physical_device_suitable(
     Ok(indices.is_complete()
         && extensions_supported
         && is_swap_chain_adequate
-        && supported_features.sampler_anisotropy == 1)
+        && supported_features.sampler_anisotropy == 1
+        && supported_features.fragment_stores_and_atomics == 1)
 }
 
 pub fn pick_physical_device(
@@ -371,7 +372,9 @@ pub fn create_logical_device(
         queue_create_infos.push(queue_create_info);
     }
 
-    let device_features = vk::PhysicalDeviceFeatures::default().sampler_anisotropy(true);
+    let device_features = vk::PhysicalDeviceFeatures::default()
+        .sampler_anisotropy(true)
+        .fragment_stores_and_atomics(true);
 
     let extensions_raw: Vec<CString> = DEVICE_EXTENSIONS
         .names
@@ -505,28 +508,28 @@ pub fn create_render_pass(
 }
 
 pub fn create_descriptor_set_layout(device: &ash::Device) -> Result<vk::DescriptorSetLayout> {
-    let ubo_layout_bindings = vk::DescriptorSetLayoutBinding::default()
+    let image_layout_binding = vk::DescriptorSetLayoutBinding::default()
         .binding(0)
+        .descriptor_count(1)
+        .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+        .stage_flags(vk::ShaderStageFlags::FRAGMENT);
+
+    let storage_image_layout_binding = vk::DescriptorSetLayoutBinding::default()
+        .binding(1)
+        .descriptor_count(1)
+        .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+        .stage_flags(vk::ShaderStageFlags::FRAGMENT);
+
+    let ubo_layout_bindings = vk::DescriptorSetLayoutBinding::default()
+        .binding(2)
         .descriptor_count(1)
         .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
         .stage_flags(vk::ShaderStageFlags::FRAGMENT);
 
-    let sampler_layout_binding = vk::DescriptorSetLayoutBinding::default()
-        .binding(1)
-        .descriptor_count(1)
-        .descriptor_type(vk::DescriptorType::SAMPLER)
-        .stage_flags(vk::ShaderStageFlags::FRAGMENT);
-
-    let image_layout_binding = vk::DescriptorSetLayoutBinding::default()
-        .binding(2)
-        .descriptor_count(1)
-        .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
-        .stage_flags(vk::ShaderStageFlags::FRAGMENT);
-
     let bindings = [
-        ubo_layout_bindings,
-        sampler_layout_binding,
         image_layout_binding,
+        storage_image_layout_binding,
+        ubo_layout_bindings,
     ];
 
     let layout_info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings);
@@ -539,8 +542,7 @@ pub fn create_descriptor_sets(
     pool: &vk::DescriptorPool,
     set_layout: &vk::DescriptorSetLayout,
     uniforms_buffers: &Vec<vk::Buffer>,
-    texture_sampler: &vk::Sampler,
-    texture_image_view: &vk::ImageView,
+    radiance_image_views: &[vk::ImageView; 2],
 ) -> Result<Vec<vk::DescriptorSet>> {
     let mut layouts: Vec<vk::DescriptorSetLayout> = vec![];
     for _ in 0..MAX_FRAMES_IN_FLIGHT {
@@ -559,34 +561,37 @@ pub fn create_descriptor_sets(
             .offset(0)
             .range(std::mem::size_of::<UniformBufferObject>() as u64)];
 
-        let image_info = [vk::DescriptorImageInfo {
-            image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-            sampler: *texture_sampler,
-            image_view: *texture_image_view,
-        }];
+        // Swap radiance image views around each frame
+        let image_info = [vk::DescriptorImageInfo::default()
+            .image_layout(vk::ImageLayout::GENERAL)
+            .image_view(radiance_image_views[i])];
+
+        let storage_image_info = [vk::DescriptorImageInfo::default()
+            .image_layout(vk::ImageLayout::GENERAL)
+            .image_view(radiance_image_views[(i + 1) % 2])];
 
         let descriptor_writes = [
             vk::WriteDescriptorSet::default()
                 .dst_set(descriptor_set)
                 .dst_binding(0)
                 .dst_array_element(0)
-                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
                 .descriptor_count(1)
-                .buffer_info(&buffer_info),
+                .image_info(&image_info),
             vk::WriteDescriptorSet::default()
                 .dst_set(descriptor_set)
                 .dst_binding(1)
                 .dst_array_element(0)
-                .descriptor_type(vk::DescriptorType::SAMPLER)
+                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
                 .descriptor_count(1)
-                .image_info(&image_info),
+                .image_info(&storage_image_info),
             vk::WriteDescriptorSet::default()
                 .dst_set(descriptor_set)
                 .dst_binding(2)
                 .dst_array_element(0)
-                .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
+                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                 .descriptor_count(1)
-                .image_info(&image_info),
+                .buffer_info(&buffer_info),
         ];
 
         unsafe { device.update_descriptor_sets(&descriptor_writes, &[]) };
@@ -604,6 +609,7 @@ pub fn create_graphics_pipeline(
     // let vert_shader_code = read_shader_code(Path::new("shaders/spv/vertex.wgsl.spv"))?;
     let vert_shader_code = read_shader_code(Path::new("shaders/spv/triangle.vert.spv"))?;
     let frag_shader_code = read_shader_code(Path::new("shaders/spv/frag.wgsl.spv"))?;
+    // let frag_shader_code = read_shader_code(Path::new("shaders/spv/ray.frag.spv"))?;
 
     let vert_shader_module = create_shader_module(device, &vert_shader_code)?;
     let frag_shader_module = create_shader_module(device, &frag_shader_code)?;
@@ -966,13 +972,13 @@ pub fn create_descriptor_pool(device: &ash::Device) -> Result<vk::DescriptorPool
     let pool_sizes = [
         vk::DescriptorPoolSize::default()
             .descriptor_count(MAX_FRAMES_IN_FLIGHT as u32)
+            .ty(vk::DescriptorType::STORAGE_IMAGE),
+        vk::DescriptorPoolSize::default()
+            .descriptor_count(MAX_FRAMES_IN_FLIGHT as u32)
+            .ty(vk::DescriptorType::STORAGE_IMAGE),
+        vk::DescriptorPoolSize::default()
+            .descriptor_count(MAX_FRAMES_IN_FLIGHT as u32)
             .ty(vk::DescriptorType::UNIFORM_BUFFER),
-        vk::DescriptorPoolSize::default()
-            .descriptor_count(MAX_FRAMES_IN_FLIGHT as u32)
-            .ty(vk::DescriptorType::SAMPLER),
-        vk::DescriptorPoolSize::default()
-            .descriptor_count(MAX_FRAMES_IN_FLIGHT as u32)
-            .ty(vk::DescriptorType::SAMPLED_IMAGE),
     ];
 
     let pool_info = vk::DescriptorPoolCreateInfo::default()
@@ -1262,6 +1268,59 @@ pub fn create_texture_image(
     Ok((texture_image, texture_image_memory))
 }
 
+pub fn create_storage_images(
+    device: &ash::Device,
+    instance: &ash::Instance,
+    physical_device: &vk::PhysicalDevice,
+    command_pool: &vk::CommandPool,
+    submit_queue: &vk::Queue,
+    swap_chain_stuff: &SwapChainStuff,
+) -> Result<([vk::Image; 2], [vk::DeviceMemory; 2], [vk::ImageView; 2])> {
+    let (width, height) = (
+        swap_chain_stuff.swapchain_extent.width,
+        swap_chain_stuff.swapchain_extent.height,
+    );
+
+    let mem_properties =
+        unsafe { instance.get_physical_device_memory_properties(*physical_device) };
+
+    let mut images = [vk::Image::null(); 2];
+    let mut image_memories = [vk::DeviceMemory::null(); 2];
+    let mut image_views = [vk::ImageView::null(); 2];
+
+    for i in 0..2 {
+        (images[i], image_memories[i]) = create_image(
+            device,
+            width,
+            height,
+            vk::Format::R32G32B32A32_SFLOAT,
+            vk::ImageTiling::OPTIMAL,
+            vk::ImageUsageFlags::STORAGE,
+            vk::MemoryPropertyFlags::DEVICE_LOCAL,
+            &mem_properties,
+        )?;
+
+        transition_image_layout(
+            device,
+            command_pool,
+            submit_queue,
+            images[i],
+            vk::Format::R32G32B32A32_SFLOAT,
+            vk::ImageLayout::UNDEFINED,
+            vk::ImageLayout::GENERAL,
+        )?;
+
+        image_views[i] = create_image_view(
+            device,
+            &images[i],
+            vk::Format::R32G32B32A32_SFLOAT,
+            vk::ImageAspectFlags::COLOR,
+        )?;
+    }
+
+    Ok((images, image_memories, image_views))
+}
+
 fn begin_single_time_commands(
     device: &ash::Device,
     command_pool: &vk::CommandPool,
@@ -1326,6 +1385,11 @@ fn transition_image_layout(
         src_access_mask = vk::AccessFlags::TRANSFER_WRITE;
         dst_access_mask = vk::AccessFlags::SHADER_READ;
         source_stage = vk::PipelineStageFlags::TRANSFER;
+        destination_stage = vk::PipelineStageFlags::FRAGMENT_SHADER;
+    } else if old_layout == vk::ImageLayout::UNDEFINED && new_layout == vk::ImageLayout::GENERAL {
+        src_access_mask = vk::AccessFlags::empty();
+        dst_access_mask = vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE;
+        source_stage = vk::PipelineStageFlags::TOP_OF_PIPE;
         destination_stage = vk::PipelineStageFlags::FRAGMENT_SHADER;
     } else {
         return Err(anyhow!("Unsupported layout transition!"));
