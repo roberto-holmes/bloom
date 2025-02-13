@@ -38,6 +38,8 @@ use winit::{
 const WINDOW_WIDTH: u32 = 800;
 const WINDOW_HEIGHT: u32 = 600;
 const MAX_FRAMES_IN_FLIGHT: usize = 2;
+const IDEAL_RADIANCE_IMAGE_SIZE_WIDTH: u32 = 5120;
+const IDEAL_RADIANCE_IMAGE_SIZE_HEIGHT: u32 = 2160;
 
 pub const MAX_MATERIAL_COUNT: usize = 10;
 pub const MAX_SPHERE_COUNT: usize = 20;
@@ -351,7 +353,6 @@ impl VulkanApp {
                 &physical_device,
                 &command_pool,
                 &graphics_queue,
-                &swap_chain_stuff,
             )?;
 
         let (bvh_buffer, bvh_buffer_memory) = create_storage_buffer(
@@ -746,6 +747,7 @@ impl VulkanApp {
         };
         //? Rebuild command buffers?
 
+        self.uniform.reset_samples();
         self.resized = false;
     }
 

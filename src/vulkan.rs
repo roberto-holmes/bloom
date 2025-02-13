@@ -336,6 +336,11 @@ fn is_physical_device_suitable(
         && supported_features.fragment_stores_and_atomics == 1)
 }
 
+fn get_max_image_size(instance: &ash::Instance, physical_device: &vk::PhysicalDevice) -> u32 {
+    let device_properties = unsafe { instance.get_physical_device_properties(*physical_device) };
+    device_properties.limits.max_image_dimension2_d
+}
+
 pub fn pick_physical_device(
     instance: &ash::Instance,
     surface_stuff: &SurfaceStuff,
@@ -1447,11 +1452,14 @@ pub fn create_storage_images(
     physical_device: &vk::PhysicalDevice,
     command_pool: &vk::CommandPool,
     submit_queue: &vk::Queue,
-    swap_chain_stuff: &SwapChainStuff,
 ) -> Result<([vk::Image; 2], [vk::DeviceMemory; 2], [vk::ImageView; 2])> {
-    let (width, height) = (
-        swap_chain_stuff.swapchain_extent.width,
-        swap_chain_stuff.swapchain_extent.height,
+    let image_width = std::cmp::min(
+        IDEAL_RADIANCE_IMAGE_SIZE_WIDTH,
+        get_max_image_size(instance, physical_device),
+    );
+    let image_height = std::cmp::min(
+        IDEAL_RADIANCE_IMAGE_SIZE_HEIGHT,
+        get_max_image_size(instance, physical_device),
     );
 
     let mem_properties =
@@ -1464,8 +1472,8 @@ pub fn create_storage_images(
     for i in 0..2 {
         (images[i], image_memories[i]) = create_image(
             device,
-            width,
-            height,
+            image_width,
+            image_height,
             vk::Format::R32G32B32A32_SFLOAT,
             vk::ImageTiling::OPTIMAL,
             vk::ImageUsageFlags::STORAGE,
