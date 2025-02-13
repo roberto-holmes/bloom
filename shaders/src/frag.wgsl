@@ -146,12 +146,12 @@ const MAX_PATH_LENGTH: u32 = 8u;
 
 fn sky_colour(ray: Ray) -> vec3f {
     // Get a value that goes from 1 to 0 as you go down
-    let t = 0.5 * (normalize(ray.direction).y + 1.);
+    // let t = 0.5 * (normalize(ray.direction).y + 1.);
     // Make a vertical linear gradient from light blue to white
-    return (1. - t) * vec3(1.) + t * vec3(0.3, 0.5, 1.);
+    // return (1. - t) * vec3(1.) + t * vec3(0.3, 0.5, 1.);
     // or use a rough approximation of twilight (From light red to white)
     // return (1. - t) * vec3(1.) + t * vec3(1., 0.5, 0.3);
-    // return vec3(0.);
+    return vec3(0.);
 }
 
 // Get the position of point on a ray at a given time

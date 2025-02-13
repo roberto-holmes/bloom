@@ -1,7 +1,7 @@
 use cgmath::{dot, Matrix3, Vector3};
 use winit::dpi::PhysicalPosition;
 
-use crate::{Sphere, Uniforms, MAX_SPHERE_COUNT};
+use crate::{primitives::Sphere, vulkan::UniformBufferObject, MAX_SPHERE_COUNT};
 
 struct Ray {
     origin: Vector3<f32>,
@@ -77,7 +77,7 @@ fn intersect_scene(ray: &Ray, scene: &[Sphere; MAX_SPHERE_COUNT]) -> (usize, f32
 
 pub fn get_selected_object(
     pos: &PhysicalPosition<f64>,
-    uniforms: &Uniforms,
+    uniforms: &UniformBufferObject,
     scene: &[Sphere; MAX_SPHERE_COUNT],
 ) -> (usize, f32) {
     let mut u = (pos.x / (uniforms.width - 1) as f64) as f32;
