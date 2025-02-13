@@ -4,8 +4,9 @@ use crate::structures::{
 };
 use crate::tools::read_shader_code;
 use crate::{
-    bvh, material, primitives, DEVICE_EXTENSIONS, MAX_FRAMES_IN_FLIGHT, MAX_MATERIAL_COUNT,
-    MAX_OBJECT_COUNT, MAX_QUAD_COUNT, MAX_SPHERE_COUNT, MAX_TRIANGLE_COUNT,
+    bvh, material, primitives, DEVICE_EXTENSIONS, IDEAL_RADIANCE_IMAGE_SIZE_HEIGHT,
+    IDEAL_RADIANCE_IMAGE_SIZE_WIDTH, MAX_FRAMES_IN_FLIGHT, MAX_MATERIAL_COUNT, MAX_OBJECT_COUNT,
+    MAX_QUAD_COUNT, MAX_SPHERE_COUNT, MAX_TRIANGLE_COUNT,
 };
 use crate::{
     debug::{check_validation_layer_support, populate_debug_messenger_create_info},
@@ -48,10 +49,10 @@ const INDICES: [u16; 6] = [0, 1, 2, 2, 3, 0];
 #[derive(Debug, Copy, Clone)]
 #[repr(C)]
 pub struct UniformBufferObject {
-    camera: CameraUniforms,
-    frame_num: u32,
-    width: u32,
-    height: u32,
+    pub camera: CameraUniforms,
+    pub frame_num: u32,
+    pub width: u32,
+    pub height: u32,
 }
 
 impl UniformBufferObject {

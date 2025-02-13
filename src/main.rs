@@ -3,6 +3,7 @@ mod camera;
 mod debug;
 mod material;
 mod primitives;
+mod select;
 mod structures;
 mod tools;
 mod vec;
@@ -14,13 +15,8 @@ use std::{
 };
 
 use anyhow::Result;
-use ash::{
-    ext::debug_utils,
-    vk::{self, GraphicsShaderGroupCreateInfoNV},
-    Entry, Instance,
-};
+use ash::{ext::debug_utils, vk, Entry, Instance};
 use camera::Camera;
-use cgmath::{Deg, Matrix4, Point3, SquareMatrix, Vector3};
 use debug::{setup_debug_utils, ValidationInfo};
 use primitives::Scene;
 use structures::{DeviceExtension, QueueFamilyIndices, SurfaceStuff, SwapChainStuff};
@@ -28,8 +24,8 @@ use vec::Vec3;
 use vulkan::*;
 use winit::{
     application::ApplicationHandler,
-    dpi::PhysicalSize,
-    event::{ElementState, KeyEvent, WindowEvent},
+    dpi::{PhysicalPosition, PhysicalSize},
+    event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent},
     event_loop::{self, ActiveEventLoop, EventLoop},
     keyboard::{KeyCode, PhysicalKey},
     window::{Window, WindowId},
@@ -77,10 +73,61 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+#[derive(Debug, Default)]
+struct MouseState {
+    left_pressed: bool,
+    right_pressed: bool,
+    middle_pressed: bool,
+    forward_pressed: bool,
+    backward_pressed: bool,
+
+    click_position: PhysicalPosition<f64>,
+
+    last_position: PhysicalPosition<f64>,
+    current_position: PhysicalPosition<f64>,
+}
+
+impl MouseState {
+    pub fn update_button(&mut self, button: MouseButton, state: ElementState) {
+        match button {
+            MouseButton::Left => {
+                self.left_pressed = state.is_pressed();
+                if state.is_pressed() {
+                    self.click_position = self.current_position
+                }
+            }
+            MouseButton::Right => self.right_pressed = state.is_pressed(),
+            MouseButton::Middle => self.middle_pressed = state.is_pressed(),
+            MouseButton::Forward => self.forward_pressed = state.is_pressed(),
+            MouseButton::Back => self.backward_pressed = state.is_pressed(),
+            MouseButton::Other(v) => {
+                log::warn!("Ignoring mouse button {}", v)
+            }
+        }
+    }
+    pub fn update_position(&mut self, position: PhysicalPosition<f64>) {
+        self.last_position = self.current_position;
+        self.current_position = position;
+    }
+    pub fn get_pos_delta(&self) -> (f32, f32) {
+        (
+            (self.current_position.x - self.last_position.x) as f32,
+            (self.current_position.y - self.last_position.y) as f32,
+        )
+    }
+    pub fn get_click_delta(&self) -> f32 {
+        // We just need an approximation to decide if the mouse has moved too much to ignore the click
+        ((self.current_position.x - self.click_position.x).abs()
+            + (self.current_position.y - self.click_position.y).abs()) as f32
+    }
+}
+
 struct App {
     window: Option<Window>,
     vulkan: Option<VulkanApp>,
     last_frame_time: SystemTime,
+
+    mouse_state: MouseState,
 }
 
 impl App {
@@ -89,6 +136,8 @@ impl App {
             window: None,
             vulkan: None,
             last_frame_time: SystemTime::now(),
+
+            mouse_state: MouseState::default(),
         }
     }
 }
@@ -140,6 +189,53 @@ impl ApplicationHandler for App {
                 };
                 self.last_frame_time = SystemTime::now();
                 self.vulkan.as_mut().unwrap().draw_frame(delta_time);
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                self.mouse_state.update_position(position);
+                let (mut dx, mut dy) = self.mouse_state.get_pos_delta();
+                dx *= -0.01;
+                dy *= 0.01;
+
+                if self.mouse_state.left_pressed {
+                    self.vulkan.as_mut().unwrap().camera.orbit(dx, dy);
+                    self.vulkan.as_mut().unwrap().uniform.reset_samples();
+                } else if self.mouse_state.middle_pressed {
+                    self.vulkan.as_mut().unwrap().camera.pan(dx, dy);
+                    self.vulkan.as_mut().unwrap().uniform.reset_samples();
+                } else if self.mouse_state.right_pressed {
+                    self.vulkan.as_mut().unwrap().camera.zoom(-dy);
+                    self.vulkan.as_mut().unwrap().uniform.reset_samples();
+                }
+            }
+            WindowEvent::MouseInput { state, button, .. } => {
+                self.mouse_state.update_button(button, state);
+
+                if button == MouseButton::Left
+                    && !state.is_pressed()
+                    && self.mouse_state.get_click_delta() < 5.0
+                {
+                    let (hit_object, dist_to_object) = select::get_selected_object(
+                        &self.mouse_state.current_position,
+                        &self.vulkan.as_ref().unwrap().uniform,
+                        &self.vulkan.as_ref().unwrap().scene.get_sphere_arr(),
+                    );
+                    if hit_object == usize::MAX {
+                        self.vulkan.as_mut().unwrap().camera.uniforms.dof_scale = 0.;
+                    } else {
+                        self.vulkan.as_mut().unwrap().camera.uniforms.focal_distance =
+                            dist_to_object;
+                        self.vulkan.as_mut().unwrap().camera.uniforms.dof_scale = DOF_SCALE;
+                    }
+                    self.vulkan.as_mut().unwrap().uniform.reset_samples();
+                }
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let delta = match delta {
+                    MouseScrollDelta::PixelDelta(delta) => 0.001 * delta.y as f32,
+                    MouseScrollDelta::LineDelta(_, y) => y * 0.1,
+                };
+                self.vulkan.as_mut().unwrap().camera.zoom(delta);
+                self.vulkan.as_mut().unwrap().uniform.reset_samples();
             }
             _ => (),
         }
