@@ -44,7 +44,7 @@ const VERTICES: [Vertex; 4] = [
     },
 ];
 
-const INDICES: [u16; 6] = [0, 1, 2, 2, 3, 0];
+pub const INDICES: [u16; 6] = [0, 1, 2, 2, 3, 0];
 
 #[derive(Debug, Copy, Clone)]
 #[repr(C)]
@@ -271,7 +271,7 @@ fn is_physical_device_suitable(
     );
 
     log::debug!("\tSupports {} Queue Families", device_queue_families.len());
-    log::debug!("\t\tQueue Count | Graphics, Compute, Transfer, Sparse Binding");
+    log::debug!("\t\tQueue Count | Graphics, Compute, Transfer, Sparse Binding, Timestamp Bits");
     for queue_family in device_queue_families.iter() {
         let is_graphics_support = if queue_family.queue_flags.contains(vk::QueueFlags::GRAPHICS) {
             "✓"
@@ -298,12 +298,13 @@ fn is_physical_device_suitable(
         };
 
         log::debug!(
-            "\t\t    {}\t    |     {}   ,    {}   ,    {}    ,       {}",
+            "\t\t    {}\t    |     {}   ,    {}   ,    {}    ,       {}       ,       {}",
             queue_family.queue_count,
             is_graphics_support,
             is_compute_support,
             is_transfer_support,
-            is_sparse_support
+            is_sparse_support,
+            queue_family.timestamp_valid_bits
         );
     }
 
@@ -334,7 +335,9 @@ fn is_physical_device_suitable(
         && extensions_supported
         && is_swap_chain_adequate
         && supported_features.sampler_anisotropy == 1
-        && supported_features.fragment_stores_and_atomics == 1)
+        && supported_features.fragment_stores_and_atomics == 1
+        && device_properties.limits.timestamp_period > 0.0
+        && device_properties.limits.timestamp_compute_and_graphics != 0) // If this is false we could still use it but we need to check the queues we want to use for timestamp_valid_bits
 }
 
 fn get_max_image_size(instance: &ash::Instance, physical_device: &vk::PhysicalDevice) -> u32 {
@@ -1189,91 +1192,6 @@ pub fn create_command_buffers(
     Ok(command_buffers)
 }
 
-pub fn record_command_buffer(
-    device: &ash::Device,
-    render_pass: &vk::RenderPass,
-    swap_chain_stuff: &SwapChainStuff,
-    framebuffers: &Vec<vk::Framebuffer>,
-    graphics_pipeline: &vk::Pipeline,
-    pipeline_layout: &vk::PipelineLayout,
-    command_buffer: &vk::CommandBuffer,
-    vertex_buffer: &vk::Buffer,
-    index_buffer: &vk::Buffer,
-    descriptor_sets: &Vec<vk::DescriptorSet>,
-    image_index: u32,
-    current_frame: usize,
-) -> Result<()> {
-    let begin_info = vk::CommandBufferBeginInfo::default();
-
-    unsafe { device.begin_command_buffer(*command_buffer, &begin_info) }?;
-
-    let clear_values = [
-        vk::ClearValue {
-            color: vk::ClearColorValue {
-                float32: [0.05, 0.05, 0.05, 1.0],
-            },
-        },
-        vk::ClearValue {
-            depth_stencil: vk::ClearDepthStencilValue {
-                depth: 1.0,
-                stencil: 0,
-            },
-        },
-    ];
-
-    let render_pass_info = vk::RenderPassBeginInfo::default()
-        .render_pass(*render_pass)
-        .framebuffer(framebuffers[image_index as usize])
-        .render_area(vk::Rect2D::default().extent(swap_chain_stuff.swapchain_extent))
-        .clear_values(&clear_values);
-
-    unsafe {
-        device.cmd_begin_render_pass(
-            *command_buffer,
-            &render_pass_info,
-            vk::SubpassContents::INLINE,
-        );
-        device.cmd_bind_pipeline(
-            *command_buffer,
-            vk::PipelineBindPoint::GRAPHICS,
-            *graphics_pipeline,
-        );
-
-        let viewports = [vk::Viewport::default()
-            .width(swap_chain_stuff.swapchain_extent.width as f32)
-            .height(swap_chain_stuff.swapchain_extent.height as f32)
-            .max_depth(1.0)];
-        device.cmd_set_viewport(*command_buffer, 0, &viewports);
-
-        let scissors = [vk::Rect2D::default().extent(swap_chain_stuff.swapchain_extent)];
-        device.cmd_set_scissor(*command_buffer, 0, &scissors);
-
-        let vertex_buffers = [*vertex_buffer];
-        let offsets = [0];
-        device.cmd_bind_vertex_buffers(*command_buffer, 0, &vertex_buffers, &offsets);
-        device.cmd_bind_index_buffer(*command_buffer, *index_buffer, 0, vk::IndexType::UINT16);
-
-        let descriptor_sets_to_bind = [descriptor_sets[current_frame]];
-
-        device.cmd_bind_descriptor_sets(
-            *command_buffer,
-            vk::PipelineBindPoint::GRAPHICS,
-            *pipeline_layout,
-            0,
-            &descriptor_sets_to_bind,
-            &[],
-        );
-
-        // device.cmd_draw(*command_buffer, VERTICES.len() as u32, 1, 0, 0);
-        device.cmd_draw_indexed(*command_buffer, INDICES.len() as u32, 1, 0, 0, 0);
-
-        device.cmd_end_render_pass(*command_buffer);
-
-        device.end_command_buffer(*command_buffer)?;
-    };
-    Ok(())
-}
-
 pub fn create_sync_object(
     device: &ash::Device,
 ) -> Result<(Vec<vk::Semaphore>, Vec<vk::Semaphore>, Vec<vk::Fence>)> {
@@ -1756,4 +1674,15 @@ pub fn create_depth_resources(
     let image_view = create_image_view(device, &image, depth_format, vk::ImageAspectFlags::DEPTH)?;
 
     Ok((image, image_memory, image_view))
+}
+
+pub fn prepare_timestamp_queries(device: &ash::Device) -> Result<(vk::QueryPool, Vec<u64>)> {
+    let timestamps = vec![0; 2];
+    let query_pool_info = vk::QueryPoolCreateInfo::default()
+        .query_type(vk::QueryType::TIMESTAMP)
+        .query_count(timestamps.len() as u32);
+
+    let timestamps_query_pool = unsafe { device.create_query_pool(&query_pool_info, None)? };
+
+    Ok((timestamps_query_pool, timestamps))
 }
