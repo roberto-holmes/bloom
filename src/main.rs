@@ -57,12 +57,11 @@ const DEVICE_EXTENSIONS: DeviceExtension = DeviceExtension {
 
 fn main() -> Result<()> {
     env_logger::init();
-    println!("Hello, world!");
-    log::error!("Error");
-    log::warn!("Warn");
-    log::info!("Info");
-    log::debug!("Debug");
-    log::trace!("Trace");
+    // log::error!("Testing Error");
+    // log::warn!("Testing Warn");
+    // log::info!("Testing Info");
+    // log::debug!("Testing Debug");
+    // log::trace!("Testing Trace");
 
     let mut app = App::new();
     let event_loop = EventLoop::new()?;
@@ -255,6 +254,9 @@ struct VulkanApp {
     swap_chain_image_views: Vec<vk::ImageView>,
     queue_family_indices: QueueFamilyIndices,
 
+    query_pool_timestamps: vk::QueryPool,
+    timestamps: Vec<u64>,
+
     pipeline_layout: vk::PipelineLayout,
     render_pass: vk::RenderPass,
     pipelines: Vec<vk::Pipeline>,
@@ -378,6 +380,8 @@ impl VulkanApp {
             unsafe { device.get_device_queue(queue_family_indices.graphics_family.unwrap(), 0) };
         let presentation_queue =
             unsafe { device.get_device_queue(queue_family_indices.present_family.unwrap(), 0) };
+
+        let (query_pool_timestamps, timestamps) = prepare_timestamp_queries(&device)?;
 
         let swap_chain_stuff = SwapChainStuff::new(
             &instance,
@@ -531,6 +535,9 @@ impl VulkanApp {
             swap_chain_image_views,
             queue_family_indices,
 
+            query_pool_timestamps,
+            timestamps,
+
             pipeline_layout,
             render_pass,
             pipelines,
@@ -651,20 +658,7 @@ impl VulkanApp {
             }
             _ => {}
         }
-        match record_command_buffer(
-            &self.device,
-            &self.render_pass,
-            &self.swap_chain_stuff,
-            &self.framebuffers,
-            &self.pipelines[0],
-            &self.pipeline_layout,
-            &self.command_buffers[self.current_frame],
-            &self.vertex_buffer,
-            &self.index_buffer,
-            &self.descriptor_sets,
-            image_index,
-            self.current_frame,
-        ) {
+        match self.record_command_buffer(image_index) {
             Err(e) => {
                 log::error!("Failed to record command buffer: {:?}", e);
                 return;
@@ -724,6 +718,42 @@ impl VulkanApp {
             },
             _ => {}
         }
+
+        // Get timestamps
+        // TODO: Move to using vk::QueryResultFlags::WITH_AVAILABILITY copying values to a vk::Buffer or otherwise removing this wait to avoid stalls
+        // https://docs.vulkan.org/samples/latest/samples/api/timestamp_queries/README.html
+        match unsafe {
+            self.device.get_query_pool_results(
+                self.query_pool_timestamps,
+                0,
+                &mut self.timestamps,
+                vk::QueryResultFlags::TYPE_64 | vk::QueryResultFlags::WAIT,
+            )
+        } {
+            Err(e) => {
+                log::error!("Failed to get timestamps: {}", e)
+            }
+            Ok(_) => {
+                let timestamp_period = unsafe {
+                    self.instance
+                        .get_physical_device_properties(self.physical_device)
+                        .limits
+                        .timestamp_period
+                };
+                // Make sure that the values make some sense
+                if self.timestamps[1] > self.timestamps[0] {
+                    let delta_in_ms = (self.timestamps[1] - self.timestamps[0]) as f32
+                        * timestamp_period
+                        / 1_000_000.0;
+                    log::trace!(
+                        "Pipeline took {:.2} ms [{:.2} fps]",
+                        delta_in_ms,
+                        1000.0 / delta_in_ms
+                    );
+                }
+            }
+        };
+
         if self.minimized || self.resized {
             log::debug!("[{}]\tThe frame buffer has been resized", self.frame_count);
             self.recreate_swap_chain();
@@ -865,6 +895,109 @@ impl VulkanApp {
             .swapchain_loader
             .destroy_swapchain(self.swap_chain_stuff.swapchain, None);
     }
+
+    pub fn record_command_buffer(&mut self, image_index: u32) -> Result<()> {
+        let begin_info = vk::CommandBufferBeginInfo::default();
+
+        let command_buffer = self.command_buffers[self.current_frame];
+        let graphics_pipeline = self.pipelines[0];
+
+        unsafe {
+            self.device
+                .begin_command_buffer(command_buffer, &begin_info)?;
+            self.device.cmd_reset_query_pool(
+                command_buffer,
+                self.query_pool_timestamps,
+                0,
+                self.timestamps.len() as u32,
+            );
+        }
+
+        let clear_values = [
+            vk::ClearValue {
+                color: vk::ClearColorValue {
+                    float32: [0.05, 0.05, 0.05, 1.0],
+                },
+            },
+            vk::ClearValue {
+                depth_stencil: vk::ClearDepthStencilValue {
+                    depth: 1.0,
+                    stencil: 0,
+                },
+            },
+        ];
+
+        let render_pass_info = vk::RenderPassBeginInfo::default()
+            .render_pass(self.render_pass)
+            .framebuffer(self.framebuffers[image_index as usize])
+            .render_area(vk::Rect2D::default().extent(self.swap_chain_stuff.swapchain_extent))
+            .clear_values(&clear_values);
+
+        unsafe {
+            self.device.cmd_write_timestamp(
+                command_buffer,
+                vk::PipelineStageFlags::TOP_OF_PIPE,
+                self.query_pool_timestamps,
+                0,
+            );
+            self.device.cmd_begin_render_pass(
+                command_buffer,
+                &render_pass_info,
+                vk::SubpassContents::INLINE,
+            );
+            self.device.cmd_bind_pipeline(
+                command_buffer,
+                vk::PipelineBindPoint::GRAPHICS,
+                graphics_pipeline,
+            );
+
+            let viewports = [vk::Viewport::default()
+                .width(self.swap_chain_stuff.swapchain_extent.width as f32)
+                .height(self.swap_chain_stuff.swapchain_extent.height as f32)
+                .max_depth(1.0)];
+            self.device.cmd_set_viewport(command_buffer, 0, &viewports);
+
+            let scissors = [vk::Rect2D::default().extent(self.swap_chain_stuff.swapchain_extent)];
+            self.device.cmd_set_scissor(command_buffer, 0, &scissors);
+
+            let vertex_buffers = [self.vertex_buffer];
+            let offsets = [0];
+            self.device
+                .cmd_bind_vertex_buffers(command_buffer, 0, &vertex_buffers, &offsets);
+            self.device.cmd_bind_index_buffer(
+                command_buffer,
+                self.index_buffer,
+                0,
+                vk::IndexType::UINT16,
+            );
+
+            let descriptor_sets_to_bind = [self.descriptor_sets[self.current_frame]];
+
+            self.device.cmd_bind_descriptor_sets(
+                command_buffer,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.pipeline_layout,
+                0,
+                &descriptor_sets_to_bind,
+                &[],
+            );
+
+            self.device
+                .cmd_draw_indexed(command_buffer, INDICES.len() as u32, 1, 0, 0, 0);
+
+            self.device.cmd_write_timestamp(
+                command_buffer,
+                vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+                self.query_pool_timestamps,
+                1,
+            );
+
+            self.device.cmd_end_render_pass(command_buffer);
+
+            self.device.end_command_buffer(command_buffer)?;
+        };
+        Ok(())
+    }
 }
 
 impl Drop for VulkanApp {
@@ -936,6 +1069,9 @@ impl Drop for VulkanApp {
             for &fence in self.in_flight_fences.iter() {
                 self.device.destroy_fence(fence, None);
             }
+
+            self.device
+                .destroy_query_pool(self.query_pool_timestamps, None);
 
             self.device.destroy_command_pool(self.command_pool, None);
 
