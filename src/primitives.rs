@@ -370,6 +370,6 @@ impl Scene {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn get_random_material(&self, rng: &mut ThreadRng) -> u32 {
         use rand::Rng;
-        (rng.gen::<f32>() * (self.last_material_index + 1) as f32) as u32
+        (rng.random::<f32>() * (self.last_material_index + 1) as f32) as u32
     }
 }
