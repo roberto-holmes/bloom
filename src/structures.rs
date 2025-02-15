@@ -3,10 +3,6 @@ use ash::vk;
 
 use crate::{WINDOW_HEIGHT, WINDOW_WIDTH};
 
-pub struct DeviceExtension {
-    pub names: [&'static str; 1],
-}
-
 pub struct SurfaceStuff {
     pub surface_loader: ash::khr::surface::Instance,
     pub surface: vk::SurfaceKHR,

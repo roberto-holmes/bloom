@@ -103,16 +103,19 @@ pub fn get_selected_object(
     intersect_scene(&ray, scene)
 }
 
+#[allow(unused)]
 pub fn clear_all_selections(scene: &mut [Sphere; MAX_SPHERE_COUNT]) {
     for object in scene {
         object.is_selected = 0;
     }
 }
 
+#[allow(unused)]
 pub fn add_selection(object_num: usize, scene: &mut [Sphere; MAX_SPHERE_COUNT]) {
     scene[object_num].is_selected = 1;
 }
 
+#[allow(unused)]
 pub fn remove_selection(object_num: usize, scene: &mut [Sphere; MAX_SPHERE_COUNT]) {
     scene[object_num].is_selected = 0;
 }
