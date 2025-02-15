@@ -47,9 +47,16 @@ const FOCAL_DISTANCE: f32 = 4.5;
 const VFOV_DEG: f32 = 40.;
 const DOF_SCALE: f32 = 0.05;
 
+#[cfg(debug_assertions)]
 const VALIDATION: ValidationInfo = ValidationInfo {
     is_enable: true,
     required_validation_layers: ["VK_LAYER_KHRONOS_validation"],
+};
+
+#[cfg(not(debug_assertions))]
+const VALIDATION: ValidationInfo = ValidationInfo {
+    is_enable: false,
+    required_validation_layers: [""],
 };
 
 fn main() -> Result<()> {
