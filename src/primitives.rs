@@ -86,6 +86,7 @@ pub struct Quad {
 }
 
 impl Quad {
+    #[allow(unused)]
     pub fn new(q: Vec3, u: Vec3, v: Vec3, material: u32) -> Self {
         let n = u.cross(&v);
         let normal = n.normalized();
@@ -277,6 +278,7 @@ impl Scene {
     pub fn get_sphere_arr(&self) -> &[Sphere; MAX_SPHERE_COUNT] {
         &self.sphere_arr
     }
+    #[allow(unused)]
     pub fn get_sphere_arr_mut(&mut self) -> &mut [Sphere; MAX_SPHERE_COUNT] {
         &mut self.sphere_arr
     }
@@ -364,6 +366,7 @@ impl Scene {
         (random() as f32 * (self.last_material_index + 1) as f32) as u32
     }
 
+    #[allow(unused)]
     #[cfg(not(target_arch = "wasm32"))]
     pub fn get_random_material(&self, rng: &mut ThreadRng) -> u32 {
         use rand::Rng;

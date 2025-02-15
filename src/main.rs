@@ -19,7 +19,7 @@ use ash::{ext::debug_utils, vk, Entry, Instance};
 use camera::Camera;
 use debug::{setup_debug_utils, ValidationInfo};
 use primitives::Scene;
-use structures::{DeviceExtension, QueueFamilyIndices, SurfaceStuff, SwapChainStuff};
+use structures::{QueueFamilyIndices, SurfaceStuff, SwapChainStuff};
 use vec::Vec3;
 use vulkan::*;
 use winit::{
@@ -50,9 +50,6 @@ const DOF_SCALE: f32 = 0.05;
 const VALIDATION: ValidationInfo = ValidationInfo {
     is_enable: true,
     required_validation_layers: ["VK_LAYER_KHRONOS_validation"],
-};
-const DEVICE_EXTENSIONS: DeviceExtension = DeviceExtension {
-    names: ["VK_KHR_swapchain"],
 };
 
 fn main() -> Result<()> {
@@ -146,7 +143,7 @@ impl ApplicationHandler for App {
         let window = event_loop
             .create_window(
                 Window::default_attributes()
-                    .with_title("Vulkan Tutorial")
+                    .with_title("Bloom")
                     .with_inner_size(PhysicalSize::new(WINDOW_WIDTH, WINDOW_HEIGHT)),
             )
             .unwrap();
@@ -258,9 +255,7 @@ struct VulkanApp {
     timestamps: Vec<u64>,
 
     pipeline_layout: vk::PipelineLayout,
-    render_pass: vk::RenderPass,
     pipelines: Vec<vk::Pipeline>,
-    framebuffers: Vec<vk::Framebuffer>,
     command_pool: vk::CommandPool,
     command_buffers: Vec<vk::CommandBuffer>,
     vertex_buffer: vk::Buffer,
@@ -397,14 +392,11 @@ impl VulkanApp {
             &swap_chain_stuff.swapchain_images,
         )?;
 
-        let render_pass =
-            create_render_pass(&device, &instance, &physical_device, &swap_chain_stuff)?;
-
         let set_layout = create_descriptor_set_layout(&device)?;
         let descriptor_pool = create_descriptor_pool(&device)?;
 
         let (pipeline_layout, pipelines) =
-            create_graphics_pipeline(&device, &swap_chain_stuff, &render_pass, &set_layout)?;
+            create_graphics_pipeline(&device, &swap_chain_stuff, &set_layout)?;
 
         let (uniform_buffers, uniform_buffers_memory, uniform_buffers_mapped) =
             create_uniform_buffer::<UniformBufferObject>(&device, &instance, &physical_device, 1)?;
@@ -419,14 +411,6 @@ impl VulkanApp {
 
         let (depth_image, depth_image_memory, depth_image_view) =
             create_depth_resources(&device, &instance, &physical_device, &swap_chain_stuff)?;
-
-        let framebuffers = create_framebuffers(
-            &device,
-            &swap_chain_image_views,
-            &depth_image_view,
-            &render_pass,
-            &swap_chain_stuff,
-        )?;
 
         let command_pool = create_command_pool(&device, &queue_family_indices)?;
 
@@ -539,9 +523,7 @@ impl VulkanApp {
             timestamps,
 
             pipeline_layout,
-            render_pass,
             pipelines,
-            framebuffers,
             command_pool,
             command_buffers,
             vertex_buffer,
@@ -755,7 +737,7 @@ impl VulkanApp {
         };
 
         if self.minimized || self.resized {
-            log::debug!("[{}]\tThe frame buffer has been resized", self.frame_count);
+            log::debug!("[{}]\tThe window has been resized", self.frame_count);
             self.recreate_swap_chain();
         }
         self.frame_count += 1;
@@ -839,38 +821,6 @@ impl VulkanApp {
             }
         };
 
-        self.render_pass = match create_render_pass(
-            &self.device,
-            &self.instance,
-            &self.physical_device,
-            &self.swap_chain_stuff,
-        ) {
-            Err(e) => {
-                log::error!(
-                    "Failed to create render pass when recreating swap chain: {}",
-                    e
-                );
-                return;
-            }
-            Ok(v) => v,
-        };
-
-        self.framebuffers = match create_framebuffers(
-            &self.device,
-            &self.swap_chain_image_views,
-            &self.depth_image_view,
-            &self.render_pass,
-            &self.swap_chain_stuff,
-        ) {
-            Ok(v) => v,
-            Err(e) => {
-                log::error!(
-                    "Failed to create framebuffer when recreating swap chain: {}",
-                    e
-                );
-                return;
-            }
-        };
         //? Rebuild command buffers?
 
         self.uniform.reset_samples();
@@ -881,11 +831,6 @@ impl VulkanApp {
         self.device.destroy_image_view(self.depth_image_view, None);
         self.device.destroy_image(self.depth_image, None);
         self.device.free_memory(self.depth_image_memory, None);
-
-        for &framebuffer in self.framebuffers.iter() {
-            self.device.destroy_framebuffer(framebuffer, None);
-        }
-        self.device.destroy_render_pass(self.render_pass, None);
 
         for &image_view in self.swap_chain_image_views.iter() {
             self.device.destroy_image_view(image_view, None);
@@ -913,25 +858,50 @@ impl VulkanApp {
             );
         }
 
-        let clear_values = [
-            vk::ClearValue {
-                color: vk::ClearColorValue {
-                    float32: [0.05, 0.05, 0.05, 1.0],
-                },
+        let clear_value = vk::ClearValue {
+            color: vk::ClearColorValue {
+                float32: [0.05, 0.05, 0.05, 1.0],
             },
-            vk::ClearValue {
-                depth_stencil: vk::ClearDepthStencilValue {
-                    depth: 1.0,
-                    stencil: 0,
-                },
-            },
-        ];
+        };
 
-        let render_pass_info = vk::RenderPassBeginInfo::default()
-            .render_pass(self.render_pass)
-            .framebuffer(self.framebuffers[image_index as usize])
-            .render_area(vk::Rect2D::default().extent(self.swap_chain_stuff.swapchain_extent))
-            .clear_values(&clear_values);
+        // let depth_clear_value = vk::ClearValue {
+        //     depth_stencil: vk::ClearDepthStencilValue {
+        //         depth: 1.0,
+        //         stencil: 0,
+        //     },
+        // };
+
+        let colour_attachments = [vk::RenderingAttachmentInfo::default()
+            .clear_value(clear_value)
+            .image_layout(vk::ImageLayout::ATTACHMENT_OPTIMAL_KHR)
+            .image_view(self.swap_chain_image_views[image_index as usize]) // Can't remember if this is supposed to be image_index or current_frame
+            .load_op(vk::AttachmentLoadOp::CLEAR)
+            .store_op(vk::AttachmentStoreOp::STORE)];
+
+        // let depth_attachment = vk::RenderingAttachmentInfoKHR::default()
+        //     .clear_value(depth_clear_value)
+        //     .image_layout(vk::ImageLayout::ATTACHMENT_OPTIMAL_KHR)
+        //     .image_view(self.swap_chain_image_views[image_index as usize]) // Can't remember if this is supposed to be image_index or current_frame
+        //     .load_op(vk::AttachmentLoadOp::CLEAR)
+        //     .store_op(vk::AttachmentStoreOp::STORE);
+
+        let rendering_info = vk::RenderingInfo::default()
+            .color_attachments(&colour_attachments)
+            // .depth_attachment(&depth_attachment)
+            .layer_count(1)
+            .render_area(vk::Rect2D {
+                offset: vk::Offset2D { x: 0, y: 0 },
+                extent: self.swap_chain_stuff.swapchain_extent,
+            });
+
+        transition_image_layout(
+            &self.device,
+            &self.command_pool,
+            &self.graphics_queue,
+            self.swap_chain_stuff.swapchain_images[image_index as usize],
+            vk::ImageLayout::UNDEFINED,
+            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+        )?;
 
         unsafe {
             self.device.cmd_write_timestamp(
@@ -940,11 +910,9 @@ impl VulkanApp {
                 self.query_pool_timestamps,
                 0,
             );
-            self.device.cmd_begin_render_pass(
-                command_buffer,
-                &render_pass_info,
-                vk::SubpassContents::INLINE,
-            );
+
+            self.device
+                .cmd_begin_rendering(command_buffer, &rendering_info);
             self.device.cmd_bind_pipeline(
                 command_buffer,
                 vk::PipelineBindPoint::GRAPHICS,
@@ -992,7 +960,16 @@ impl VulkanApp {
                 1,
             );
 
-            self.device.cmd_end_render_pass(command_buffer);
+            self.device.cmd_end_rendering(command_buffer);
+
+            transition_image_layout(
+                &self.device,
+                &self.command_pool,
+                &self.graphics_queue,
+                self.swap_chain_stuff.swapchain_images[image_index as usize],
+                vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                vk::ImageLayout::PRESENT_SRC_KHR,
+            )?;
 
             self.device.end_command_buffer(command_buffer)?;
         };

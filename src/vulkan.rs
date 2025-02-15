@@ -4,9 +4,9 @@ use crate::structures::{
 };
 use crate::tools::read_shader_code;
 use crate::{
-    bvh, material, primitives, DEVICE_EXTENSIONS, IDEAL_RADIANCE_IMAGE_SIZE_HEIGHT,
-    IDEAL_RADIANCE_IMAGE_SIZE_WIDTH, MAX_FRAMES_IN_FLIGHT, MAX_MATERIAL_COUNT, MAX_OBJECT_COUNT,
-    MAX_QUAD_COUNT, MAX_SPHERE_COUNT, MAX_TRIANGLE_COUNT,
+    bvh, material, primitives, IDEAL_RADIANCE_IMAGE_SIZE_HEIGHT, IDEAL_RADIANCE_IMAGE_SIZE_WIDTH,
+    MAX_FRAMES_IN_FLIGHT, MAX_MATERIAL_COUNT, MAX_OBJECT_COUNT, MAX_QUAD_COUNT, MAX_SPHERE_COUNT,
+    MAX_TRIANGLE_COUNT,
 };
 use crate::{
     debug::{check_validation_layer_support, populate_debug_messenger_create_info},
@@ -18,7 +18,7 @@ use bytemuck::{Pod, Zeroable};
 use image;
 use memoffset::offset_of;
 use std::collections::HashSet;
-use std::ffi::{c_char, CString};
+use std::ffi::CString;
 use std::path::Path;
 use winit::{raw_window_handle::HasDisplayHandle, window::Window};
 
@@ -108,7 +108,7 @@ pub fn create_instance(entry: &ash::Entry, window: &Window) -> Result<ash::Insta
         .application_version(vk::make_api_version(0, 0, 1, 0))
         .engine_name(c"No engine")
         .engine_version(0)
-        .api_version(vk::make_api_version(0, 1, 0, 0));
+        .api_version(vk::make_api_version(0, 1, 3, 0)); // Specify that we want Vulkan version 1.3+
 
     let mut extension_names =
         ash_window::enumerate_required_extensions(window.display_handle()?.as_raw())?.to_vec();
@@ -215,10 +215,17 @@ fn is_device_extension_supported(
         available_extension_names.push(extension_name);
     }
 
+    let device_extensions = [
+        ash::khr::swapchain::NAME,
+        ash::khr::storage_buffer_storage_class::NAME,
+        #[cfg(any(target_os = "macos", target_os = "ios"))]
+        ash::khr::portability_subset::NAME,
+    ];
+
     // Put the extensions in a format that we can easily remove elements from without needing to check if they are there
     let mut required_extensions = HashSet::new();
-    for extension in DEVICE_EXTENSIONS.names {
-        required_extensions.insert(extension.to_string());
+    for extension in device_extensions {
+        required_extensions.insert(String::from_utf8_lossy(extension.to_bytes()).to_string());
     }
 
     // Look for the extensions we want in the available ones
@@ -242,7 +249,6 @@ fn is_physical_device_suitable(
     surface_stuff: &SurfaceStuff,
 ) -> Result<bool> {
     let device_properties = unsafe { instance.get_physical_device_properties(*physical_device) };
-    let device_features = unsafe { instance.get_physical_device_features(*physical_device) };
     let device_queue_families =
         unsafe { instance.get_physical_device_queue_family_properties(*physical_device) };
 
@@ -308,15 +314,10 @@ fn is_physical_device_suitable(
         );
     }
 
-    // An example of checking for a specific feature
-    log::debug!(
-        "\t64 bit floats {}",
-        if device_features.shader_float64 == 1 {
-            "supported"
-        } else {
-            "unsupported"
-        }
-    );
+    // Check 1.3 features
+    let mut features13 = vk::PhysicalDeviceVulkan13Features::default();
+    let mut features = vk::PhysicalDeviceFeatures2::default().push(&mut features13);
+    unsafe { instance.get_physical_device_features2(*physical_device, &mut features) };
 
     let indices = find_queue_families(instance, physical_device, surface_stuff);
     let extensions_supported = is_device_extension_supported(instance, physical_device)?;
@@ -334,10 +335,12 @@ fn is_physical_device_suitable(
     Ok(indices.is_complete()
         && extensions_supported
         && is_swap_chain_adequate
-        && supported_features.sampler_anisotropy == 1
-        && supported_features.fragment_stores_and_atomics == 1
+        && supported_features.sampler_anisotropy == vk::TRUE
+        && supported_features.fragment_stores_and_atomics == vk::TRUE
         && device_properties.limits.timestamp_period > 0.0
-        && device_properties.limits.timestamp_compute_and_graphics != 0) // If this is false we could still use it but we need to check the queues we want to use for timestamp_valid_bits
+        && device_properties.limits.timestamp_compute_and_graphics == vk::TRUE // If this is false we could still use it but we need to check the queues we want to use for timestamp_valid_bits
+        && features13.dynamic_rendering == vk::TRUE
+        && features13.synchronization2 == vk::TRUE)
 }
 
 fn get_max_image_size(instance: &ash::Instance, physical_device: &vk::PhysicalDevice) -> u32 {
@@ -388,17 +391,28 @@ pub fn create_logical_device(
         .sampler_anisotropy(true)
         .fragment_stores_and_atomics(true);
 
-    let extensions_raw: Vec<CString> = DEVICE_EXTENSIONS
-        .names
-        .iter()
-        .map(|x| CString::new(*x).unwrap())
-        .collect();
-    let extensions: Vec<*const c_char> = extensions_raw.iter().map(|x| x.as_ptr()).collect();
+    let device_extensions = [
+        ash::khr::swapchain::NAME.as_ptr(),
+        ash::khr::storage_buffer_storage_class::NAME.as_ptr(),
+        #[cfg(any(target_os = "macos", target_os = "ios"))]
+        ash::khr::portability_subset::NAME.as_ptr(),
+    ];
 
-    let create_info = vk::DeviceCreateInfo::default()
-        .queue_create_infos(&queue_create_infos)
-        .enabled_features(&device_features)
-        .enabled_extension_names(&extensions);
+    let mut features13 = vk::PhysicalDeviceVulkan13Features::default()
+        .dynamic_rendering(true)
+        .synchronization2(true);
+    let mut features = unsafe {
+        vk::PhysicalDeviceFeatures2::default()
+            .extend(&mut features13)
+            .features(device_features)
+    };
+
+    let create_info = unsafe {
+        vk::DeviceCreateInfo::default()
+            .queue_create_infos(&queue_create_infos)
+            .enabled_extension_names(&device_extensions)
+            .extend(&mut features)
+    };
 
     let device = unsafe { instance.create_device(*physical_device, &create_info, None)? };
     Ok((device, indices))
@@ -452,71 +466,6 @@ fn create_shader_module(device: &ash::Device, code: &Vec<u8>) -> Result<vk::Shad
         Ok(module) => Ok(module),
         Err(e) => Err(anyhow!("Failed to create shader module: {}", e)),
     }
-}
-
-pub fn create_render_pass(
-    device: &ash::Device,
-    instance: &ash::Instance,
-    physical_device: &vk::PhysicalDevice,
-    swap_chain_stuff: &SwapChainStuff,
-) -> Result<vk::RenderPass> {
-    let attachments = [
-        vk::AttachmentDescription::default()
-            .format(swap_chain_stuff.swapchain_format)
-            .samples(vk::SampleCountFlags::TYPE_1)
-            .load_op(vk::AttachmentLoadOp::CLEAR)
-            .store_op(vk::AttachmentStoreOp::STORE)
-            .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
-            .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
-            .initial_layout(vk::ImageLayout::UNDEFINED)
-            .final_layout(vk::ImageLayout::PRESENT_SRC_KHR),
-        vk::AttachmentDescription::default()
-            .format(find_depth_format(instance, physical_device)?)
-            .samples(vk::SampleCountFlags::TYPE_1)
-            .load_op(vk::AttachmentLoadOp::CLEAR)
-            .store_op(vk::AttachmentStoreOp::DONT_CARE)
-            .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
-            .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
-            .initial_layout(vk::ImageLayout::UNDEFINED)
-            .final_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL),
-    ];
-
-    let colour_attachment_refs = [vk::AttachmentReference::default()
-        .attachment(0)
-        .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)];
-
-    let depth_attachment_ref = vk::AttachmentReference::default()
-        .attachment(1)
-        .layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
-
-    let subpasses = [vk::SubpassDescription::default()
-        .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
-        .color_attachments(&colour_attachment_refs)
-        .depth_stencil_attachment(&depth_attachment_ref)];
-
-    let dependencies = [vk::SubpassDependency::default()
-        .src_subpass(vk::SUBPASS_EXTERNAL)
-        .dst_subpass(0)
-        .src_stage_mask(
-            vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT
-                | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
-        )
-        .src_access_mask(vk::AccessFlags::NONE)
-        .dst_stage_mask(
-            vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT
-                | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
-        )
-        .dst_access_mask(
-            vk::AccessFlags::COLOR_ATTACHMENT_WRITE
-                | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
-        )];
-
-    let render_pass_info = vk::RenderPassCreateInfo::default()
-        .attachments(&attachments)
-        .subpasses(&subpasses)
-        .dependencies(&dependencies);
-    let render_pass = unsafe { device.create_render_pass(&render_pass_info, None) }?;
-    Ok(render_pass)
 }
 
 pub fn create_descriptor_set_layout(device: &ash::Device) -> Result<vk::DescriptorSetLayout> {
@@ -715,7 +664,6 @@ pub fn create_descriptor_sets(
 pub fn create_graphics_pipeline(
     device: &ash::Device,
     swap_chain_stuff: &SwapChainStuff,
-    render_pass: &vk::RenderPass,
     set_layout: &vk::DescriptorSetLayout,
 ) -> Result<(vk::PipelineLayout, Vec<vk::Pipeline>)> {
     // let vert_shader_code = read_shader_code(Path::new("shaders/spv/vertex.wgsl.spv"))?;
@@ -787,13 +735,17 @@ pub fn create_graphics_pipeline(
     let colour_blending =
         vk::PipelineColorBlendStateCreateInfo::default().attachments(&colour_blend_attachments);
 
-    let depth_stencil = vk::PipelineDepthStencilStateCreateInfo::default()
-        .depth_test_enable(true)
-        .depth_write_enable(true)
-        .depth_compare_op(vk::CompareOp::LESS);
+    // let depth_stencil = vk::PipelineDepthStencilStateCreateInfo::default()
+    //     .depth_test_enable(true)
+    //     .depth_write_enable(true)
+    //     .depth_compare_op(vk::CompareOp::LESS);
 
     let set_layouts = [*set_layout];
     // Pipeline Layout (Uniforms are declared here)
+    let format = [swap_chain_stuff.swapchain_format];
+    let mut pipeline_rendering_create_info =
+        vk::PipelineRenderingCreateInfo::default().color_attachment_formats(&format);
+
     let pipeline_layout_info = vk::PipelineLayoutCreateInfo::default().set_layouts(&set_layouts);
 
     let pipeline_layout = unsafe { device.create_pipeline_layout(&pipeline_layout_info, None)? };
@@ -809,9 +761,9 @@ pub fn create_graphics_pipeline(
         .color_blend_state(&colour_blending)
         .dynamic_state(&dynamic_state)
         .layout(pipeline_layout)
-        .render_pass(*render_pass)
-        .subpass(0)
-        .depth_stencil_state(&depth_stencil)];
+        // .depth_stencil_state(&depth_stencil)
+        // .subpass(0)
+        .push(&mut pipeline_rendering_create_info)];
 
     let pipeline = unsafe {
         device.create_graphics_pipelines(vk::PipelineCache::null(), &pipeline_info, None)
@@ -826,28 +778,6 @@ pub fn create_graphics_pipeline(
         Ok(v) => Ok((pipeline_layout, v)),
         Err(e) => Err(anyhow!("Failed to create graphics pipeline: {:?}", e)),
     }
-}
-
-pub fn create_framebuffers(
-    device: &ash::Device,
-    image_views: &Vec<vk::ImageView>,
-    depth_image_view: &vk::ImageView,
-    render_pass: &vk::RenderPass,
-    swap_chain_stuff: &SwapChainStuff,
-) -> Result<Vec<vk::Framebuffer>> {
-    let mut framebuffers = vec![];
-    for image_view in image_views {
-        let attachments = [*image_view, *depth_image_view];
-        let framebuffer_info = vk::FramebufferCreateInfo::default()
-            .render_pass(*render_pass)
-            .attachments(&attachments)
-            .width(swap_chain_stuff.swapchain_extent.width)
-            .height(swap_chain_stuff.swapchain_extent.height)
-            .layers(1);
-
-        framebuffers.push(unsafe { device.create_framebuffer(&framebuffer_info, None) }?);
-    }
-    Ok(framebuffers)
 }
 
 fn find_memory_type(
@@ -1270,6 +1200,7 @@ fn create_image(
     Ok((texture_image, texture_image_memory))
 }
 
+#[allow(unused)]
 pub fn create_texture_image(
     device: &ash::Device,
     instance: &ash::Instance,
@@ -1332,7 +1263,6 @@ pub fn create_texture_image(
         command_pool,
         submit_queue,
         texture_image,
-        vk::Format::R8G8B8A8_SRGB,
         vk::ImageLayout::UNDEFINED,
         vk::ImageLayout::TRANSFER_DST_OPTIMAL,
     )?;
@@ -1352,7 +1282,6 @@ pub fn create_texture_image(
         command_pool,
         submit_queue,
         texture_image,
-        vk::Format::R8G8B8A8_SRGB,
         vk::ImageLayout::TRANSFER_DST_OPTIMAL,
         vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
     )?;
@@ -1405,7 +1334,6 @@ pub fn create_storage_images(
             command_pool,
             submit_queue,
             images[i],
-            vk::Format::R32G32B32A32_SFLOAT,
             vk::ImageLayout::UNDEFINED,
             vk::ImageLayout::GENERAL,
         )?;
@@ -1456,12 +1384,11 @@ fn end_single_time_command(
     Ok(())
 }
 
-fn transition_image_layout(
+pub fn transition_image_layout(
     device: &ash::Device,
     command_pool: &vk::CommandPool,
     submit_queue: &vk::Queue,
     image: vk::Image,
-    _format: vk::Format,
     old_layout: vk::ImageLayout,
     new_layout: vk::ImageLayout,
 ) -> Result<()> {
@@ -1491,6 +1418,20 @@ fn transition_image_layout(
         dst_access_mask = vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE;
         source_stage = vk::PipelineStageFlags::TOP_OF_PIPE;
         destination_stage = vk::PipelineStageFlags::FRAGMENT_SHADER;
+    } else if old_layout == vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL
+        && new_layout == vk::ImageLayout::PRESENT_SRC_KHR
+    {
+        src_access_mask = vk::AccessFlags::COLOR_ATTACHMENT_WRITE;
+        dst_access_mask = vk::AccessFlags::empty();
+        source_stage = vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT;
+        destination_stage = vk::PipelineStageFlags::BOTTOM_OF_PIPE;
+    } else if old_layout == vk::ImageLayout::UNDEFINED
+        && new_layout == vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL
+    {
+        src_access_mask = vk::AccessFlags::empty();
+        dst_access_mask = vk::AccessFlags::COLOR_ATTACHMENT_WRITE;
+        source_stage = vk::PipelineStageFlags::TOP_OF_PIPE;
+        destination_stage = vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT;
     } else {
         return Err(anyhow!("Unsupported layout transition!"));
     }
@@ -1569,6 +1510,7 @@ fn copy_buffer_to_image(
     Ok(())
 }
 
+#[allow(unused)]
 pub fn create_texture_image_view(
     device: &ash::Device,
     texture_image: &vk::Image,
@@ -1581,6 +1523,7 @@ pub fn create_texture_image_view(
     )?)
 }
 
+#[allow(unused)]
 pub fn create_texture_sampler(
     device: &ash::Device,
     instance: &ash::Instance,
