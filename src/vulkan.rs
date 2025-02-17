@@ -161,12 +161,11 @@ fn find_queue_families(
     let queue_family_properties =
         unsafe { instance.get_physical_device_queue_family_properties(*device) };
 
-    let mut family_index = 0;
-    for queue_family in queue_family_properties {
+    for (family_index, queue_family) in queue_family_properties.iter().enumerate() {
         if queue_family.queue_count > 0
             && queue_family.queue_flags.contains(vk::QueueFlags::GRAPHICS)
         {
-            queue_family_indices.graphics_family = Some(family_index);
+            queue_family_indices.graphics_family = Some(family_index as u32);
         }
 
         // Check if the current queue supports presenting images
@@ -181,15 +180,37 @@ fn find_queue_families(
                 .expect("Failed to check device for presentation support")
         };
         if queue_family.queue_count > 0 && is_present_supported {
-            queue_family_indices.present_family = Some(family_index);
+            queue_family_indices.present_family = Some(family_index as u32);
         }
+
+        // TODO: Select a separate queue for compute if possible, if not just use the same queue and keep track of how many distinct queues we have
+        // Make sure our compute queue is separate from the graphics and presentation queues
+        // if queue_family_indices
+        //     .graphics_family
+        //     .is_some_and(|x| x == family_index as u32) // Select the same family as the graphics queue
+        //     && queue_family.queue_count > 1
+        //     && queue_family.queue_flags.contains(vk::QueueFlags::COMPUTE)
+        if queue_family.queue_count > 0
+            && queue_family.queue_flags.contains(vk::QueueFlags::COMPUTE)
+        {
+            // The compute queue will use the same queue family as graphics but there are multiple queues to use
+            queue_family_indices.compute_family = Some(family_index as u32);
+        }
+        // TODO: Add the  possiblity to pick a queue that does not support graphics work
+        // else if queue_family_indices
+        //     .graphics_family
+        //     .is_some_and(|x| x != family_index as u32)
+        //     && queue_family.queue_count > 0
+        //     && queue_family.queue_flags.contains(vk::QueueFlags::COMPUTE)
+        // {
+        //     // The compute queue will use a different queue family as graphics so there only needs to be 1
+        //     queue_family_indices.compute_family = Some(family_index as u32);
+        // }
 
         // We only need to find one queue family that meets our requirements
         if queue_family_indices.is_complete() {
             break;
         }
-
-        family_index += 1;
     }
 
     queue_family_indices
@@ -207,10 +228,10 @@ fn is_device_extension_supported(
 
     let mut available_extension_names = vec![];
 
-    log::debug!("Available Device Extensions: ");
+    // log::debug!("Available Device Extensions: ");
     for extension in available_extensions.iter() {
         let extension_name = tools::vk_to_string(&extension.extension_name)?;
-        log::debug!("\t{}, Version: {}", extension_name, extension.spec_version);
+        // log::debug!("\t{}, Version: {}", extension_name, extension.spec_version);
 
         available_extension_names.push(extension_name);
     }
@@ -377,8 +398,11 @@ pub fn create_logical_device(
     let mut unique_queue_families = HashSet::new();
     unique_queue_families.insert(indices.graphics_family.unwrap());
     unique_queue_families.insert(indices.present_family.unwrap());
+    unique_queue_families.insert(indices.compute_family.unwrap());
 
-    let queue_priorities = [1.0_f32];
+    // TODO: Use 2 queue priorities if we are on a system that has multiple queues
+    // let queue_priorities = [1.0, 0.5];
+    let queue_priorities = [1.0];
     let mut queue_create_infos = vec![];
     for queue_family in unique_queue_families {
         let queue_create_info = vk::DeviceQueueCreateInfo::default()
@@ -469,57 +493,50 @@ fn create_shader_module(device: &ash::Device, code: &Vec<u8>) -> Result<vk::Shad
 }
 
 pub fn create_descriptor_set_layout(device: &ash::Device) -> Result<vk::DescriptorSetLayout> {
-    let image_layout_binding = vk::DescriptorSetLayoutBinding::default()
+    let fragment_image_layout_binding = vk::DescriptorSetLayoutBinding::default()
         .binding(0)
         .descriptor_count(1)
         .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
         .stage_flags(vk::ShaderStageFlags::FRAGMENT);
 
-    let storage_image_layout_binding = vk::DescriptorSetLayoutBinding::default()
-        .binding(1)
-        .descriptor_count(1)
-        .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-        .stage_flags(vk::ShaderStageFlags::FRAGMENT);
-
     let ubo_layout_bindings = vk::DescriptorSetLayoutBinding::default()
-        .binding(2)
+        .binding(1)
         .descriptor_count(1)
         .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
         .stage_flags(vk::ShaderStageFlags::FRAGMENT);
 
     let material_layout_bindings = vk::DescriptorSetLayoutBinding::default()
-        .binding(3)
+        .binding(2)
         .descriptor_count(1)
         .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
         .stage_flags(vk::ShaderStageFlags::FRAGMENT);
 
     let bvh_layout_bindings = vk::DescriptorSetLayoutBinding::default()
-        .binding(4)
+        .binding(3)
         .descriptor_count(1)
         .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
         .stage_flags(vk::ShaderStageFlags::FRAGMENT);
 
     let sphere_layout_bindings = vk::DescriptorSetLayoutBinding::default()
-        .binding(5)
+        .binding(4)
         .descriptor_count(1)
         .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
         .stage_flags(vk::ShaderStageFlags::FRAGMENT);
 
     let quad_layout_bindings = vk::DescriptorSetLayoutBinding::default()
-        .binding(6)
+        .binding(5)
         .descriptor_count(1)
         .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
         .stage_flags(vk::ShaderStageFlags::FRAGMENT);
 
     let triangle_layout_bindings = vk::DescriptorSetLayoutBinding::default()
-        .binding(7)
+        .binding(6)
         .descriptor_count(1)
         .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
         .stage_flags(vk::ShaderStageFlags::FRAGMENT);
 
     let bindings = [
-        image_layout_binding,
-        storage_image_layout_binding,
+        fragment_image_layout_binding,
         ubo_layout_bindings,
         material_layout_bindings,
         bvh_layout_bindings,
@@ -543,7 +560,7 @@ pub fn create_descriptor_sets(
     spheres_buffer: vk::Buffer,
     quads_buffer: vk::Buffer,
     triangles_buffer: vk::Buffer,
-    radiance_image_views: &[vk::ImageView; 2],
+    radiance_image_views: &[vk::ImageView],
 ) -> Result<Vec<vk::DescriptorSet>> {
     let mut layouts: Vec<vk::DescriptorSetLayout> = vec![];
     for _ in 0..MAX_FRAMES_IN_FLIGHT {
@@ -592,10 +609,6 @@ pub fn create_descriptor_sets(
             .image_layout(vk::ImageLayout::GENERAL)
             .image_view(radiance_image_views[i])];
 
-        let storage_image_info = [vk::DescriptorImageInfo::default()
-            .image_layout(vk::ImageLayout::GENERAL)
-            .image_view(radiance_image_views[(i + 1) % 2])];
-
         let descriptor_writes = [
             vk::WriteDescriptorSet::default()
                 .dst_set(descriptor_set)
@@ -608,47 +621,40 @@ pub fn create_descriptor_sets(
                 .dst_set(descriptor_set)
                 .dst_binding(1)
                 .dst_array_element(0)
-                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                 .descriptor_count(1)
-                .image_info(&storage_image_info),
+                .buffer_info(&buffer_info),
             vk::WriteDescriptorSet::default()
                 .dst_set(descriptor_set)
                 .dst_binding(2)
                 .dst_array_element(0)
                 .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                 .descriptor_count(1)
-                .buffer_info(&buffer_info),
-            vk::WriteDescriptorSet::default()
-                .dst_set(descriptor_set)
-                .dst_binding(3)
-                .dst_array_element(0)
-                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                .descriptor_count(1)
                 .buffer_info(&material_buffer_info),
             vk::WriteDescriptorSet::default()
                 .dst_set(descriptor_set)
-                .dst_binding(4)
+                .dst_binding(3)
                 .dst_array_element(0)
                 .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                 .descriptor_count(1)
                 .buffer_info(&bvh_buffer_info),
             vk::WriteDescriptorSet::default()
                 .dst_set(descriptor_set)
-                .dst_binding(5)
+                .dst_binding(4)
                 .dst_array_element(0)
                 .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                 .descriptor_count(1)
                 .buffer_info(&sphere_buffer_info),
             vk::WriteDescriptorSet::default()
                 .dst_set(descriptor_set)
-                .dst_binding(6)
+                .dst_binding(5)
                 .dst_array_element(0)
                 .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                 .descriptor_count(1)
                 .buffer_info(&quad_buffer_info),
             vk::WriteDescriptorSet::default()
                 .dst_set(descriptor_set)
-                .dst_binding(7)
+                .dst_binding(6)
                 .dst_array_element(0)
                 .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                 .descriptor_count(1)
@@ -1072,9 +1078,6 @@ pub fn create_descriptor_pool(device: &ash::Device) -> Result<vk::DescriptorPool
             .ty(vk::DescriptorType::STORAGE_IMAGE),
         vk::DescriptorPoolSize::default()
             .descriptor_count(MAX_FRAMES_IN_FLIGHT as u32)
-            .ty(vk::DescriptorType::STORAGE_IMAGE),
-        vk::DescriptorPoolSize::default()
-            .descriptor_count(MAX_FRAMES_IN_FLIGHT as u32)
             .ty(vk::DescriptorType::UNIFORM_BUFFER),
         vk::DescriptorPoolSize::default()
             .descriptor_count(MAX_FRAMES_IN_FLIGHT as u32)
@@ -1102,22 +1105,23 @@ pub fn create_descriptor_pool(device: &ash::Device) -> Result<vk::DescriptorPool
 
 pub fn create_command_pool(
     device: &ash::Device,
-    queue_family_indices: &QueueFamilyIndices,
+    queue_family_index: u32,
 ) -> Result<vk::CommandPool> {
     let pool_info = vk::CommandPoolCreateInfo::default()
         .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
-        .queue_family_index(queue_family_indices.graphics_family.unwrap());
+        .queue_family_index(queue_family_index);
     Ok(unsafe { device.create_command_pool(&pool_info, None) }?)
 }
 
 pub fn create_command_buffers(
     device: &ash::Device,
     command_pool: &vk::CommandPool,
+    count: u32,
 ) -> Result<Vec<vk::CommandBuffer>> {
     let alloc_info = vk::CommandBufferAllocateInfo::default()
         .command_pool(*command_pool)
         .level(vk::CommandBufferLevel::PRIMARY)
-        .command_buffer_count(MAX_FRAMES_IN_FLIGHT as u32);
+        .command_buffer_count(count);
     let command_buffers = unsafe { device.allocate_command_buffers(&alloc_info) }?;
     Ok(command_buffers)
 }
@@ -1300,7 +1304,7 @@ pub fn create_storage_images(
     physical_device: &vk::PhysicalDevice,
     command_pool: &vk::CommandPool,
     submit_queue: &vk::Queue,
-) -> Result<([vk::Image; 2], [vk::DeviceMemory; 2], [vk::ImageView; 2])> {
+) -> Result<([vk::Image; 4], [vk::DeviceMemory; 4], [vk::ImageView; 4])> {
     let image_width = std::cmp::min(
         IDEAL_RADIANCE_IMAGE_SIZE_WIDTH,
         get_max_image_size(instance, physical_device),
@@ -1313,18 +1317,22 @@ pub fn create_storage_images(
     let mem_properties =
         unsafe { instance.get_physical_device_memory_properties(*physical_device) };
 
-    let mut images = [vk::Image::null(); 2];
-    let mut image_memories = [vk::DeviceMemory::null(); 2];
-    let mut image_views = [vk::ImageView::null(); 2];
+    let mut images = [vk::Image::null(); 4];
+    let mut image_memories = [vk::DeviceMemory::null(); 4];
+    let mut image_views = [vk::ImageView::null(); 4];
 
-    for i in 0..2 {
+    for i in 0..4 {
         (images[i], image_memories[i]) = create_image(
             device,
             image_width,
             image_height,
             vk::Format::R32G32B32A32_SFLOAT,
             vk::ImageTiling::OPTIMAL,
-            vk::ImageUsageFlags::STORAGE,
+            if i < 2 {
+                vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::TRANSFER_SRC
+            } else {
+                vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::TRANSFER_DST
+            },
             vk::MemoryPropertyFlags::DEVICE_LOCAL,
             &mem_properties,
         )?;
@@ -1628,4 +1636,298 @@ pub fn prepare_timestamp_queries(device: &ash::Device) -> Result<(vk::QueryPool,
     let timestamps_query_pool = unsafe { device.create_query_pool(&query_pool_info, None)? };
 
     Ok((timestamps_query_pool, timestamps))
+}
+
+pub fn create_compute_pipeline(
+    device: &ash::Device,
+    radiance_image_views: &[vk::ImageView],
+) -> Result<(
+    vk::DescriptorPool,
+    vk::DescriptorSetLayout,
+    Vec<vk::DescriptorSet>,
+    vk::PipelineLayout,
+    vk::Pipeline,
+)> {
+    let set_layout_bindings = [
+        vk::DescriptorSetLayoutBinding::default()
+            .binding(0)
+            .descriptor_count(1)
+            .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+            .stage_flags(vk::ShaderStageFlags::COMPUTE),
+        vk::DescriptorSetLayoutBinding::default()
+            .binding(1)
+            .descriptor_count(1)
+            .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+            .stage_flags(vk::ShaderStageFlags::COMPUTE),
+    ];
+    // let set_layout_bindings = [vk::DescriptorSetLayoutBinding::default()];
+    let descriptor_layout =
+        vk::DescriptorSetLayoutCreateInfo::default().bindings(&set_layout_bindings);
+    let set_layout = unsafe { device.create_descriptor_set_layout(&descriptor_layout, None) }?;
+    let mut set_layouts: Vec<vk::DescriptorSetLayout> = vec![];
+    for _ in 0..MAX_FRAMES_IN_FLIGHT {
+        set_layouts.push(set_layout);
+    }
+
+    let pipeline_layout_info = vk::PipelineLayoutCreateInfo::default().set_layouts(&set_layouts);
+    let pipeline_layout = unsafe { device.create_pipeline_layout(&pipeline_layout_info, None)? };
+
+    let pool_sizes = [
+        vk::DescriptorPoolSize::default()
+            .descriptor_count(MAX_FRAMES_IN_FLIGHT as u32)
+            .ty(vk::DescriptorType::STORAGE_IMAGE),
+        vk::DescriptorPoolSize::default()
+            .descriptor_count(MAX_FRAMES_IN_FLIGHT as u32)
+            .ty(vk::DescriptorType::STORAGE_IMAGE),
+    ];
+
+    let pool_info = vk::DescriptorPoolCreateInfo::default()
+        .pool_sizes(&pool_sizes)
+        .max_sets(MAX_FRAMES_IN_FLIGHT as u32);
+
+    let pool = unsafe { device.create_descriptor_pool(&pool_info, None)? };
+
+    let alloc_info = vk::DescriptorSetAllocateInfo::default()
+        .descriptor_pool(pool)
+        .set_layouts(set_layouts.as_slice());
+    let descriptor_sets = unsafe { device.allocate_descriptor_sets(&alloc_info)? };
+
+    for (i, &descriptor_set) in descriptor_sets.iter().enumerate() {
+        // Swap radiance image views around each frame
+        let image_info = [vk::DescriptorImageInfo::default()
+            .image_layout(vk::ImageLayout::GENERAL)
+            .image_view(radiance_image_views[i])];
+
+        let storage_image_info = [vk::DescriptorImageInfo::default()
+            .image_layout(vk::ImageLayout::GENERAL)
+            .image_view(radiance_image_views[(i + 1) % 2])];
+
+        let descriptor_writes = [
+            vk::WriteDescriptorSet::default()
+                .dst_set(descriptor_set)
+                .dst_binding(0)
+                .dst_array_element(0)
+                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                .descriptor_count(1)
+                .image_info(&image_info),
+            vk::WriteDescriptorSet::default()
+                .dst_set(descriptor_set)
+                .dst_binding(1)
+                .dst_array_element(0)
+                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                .descriptor_count(1)
+                .image_info(&storage_image_info),
+        ];
+        unsafe { device.update_descriptor_sets(&descriptor_writes, &[]) };
+    }
+
+    let shader_code = read_shader_code(Path::new("shaders/spv/ray.comp.spv"))?;
+    let shader_module = create_shader_module(device, &shader_code)?;
+    let main_function_name = CString::new("main").unwrap(); // the beginning function name in shader code.
+    let stage = vk::PipelineShaderStageCreateInfo::default()
+        .stage(vk::ShaderStageFlags::COMPUTE)
+        .module(shader_module)
+        .name(&main_function_name);
+
+    let pipeline_create_infos = [vk::ComputePipelineCreateInfo::default()
+        .layout(pipeline_layout)
+        .stage(stage)];
+
+    let pipeline = unsafe {
+        device.create_compute_pipelines(vk::PipelineCache::null(), &pipeline_create_infos, None)
+    };
+
+    unsafe { device.destroy_shader_module(shader_module, None) };
+
+    match pipeline {
+        Ok(v) => Ok((pool, set_layout, descriptor_sets, pipeline_layout, v[0])),
+        Err(e) => Err(anyhow!("Failed to create graphics pipeline: {:?}", e)),
+    }
+}
+
+fn compute_commands(
+    device: &ash::Device,
+    command_buffers: &Vec<vk::CommandBuffer>,
+    compute_pipeline: &vk::Pipeline,
+    compute_pipeline_layout: &vk::PipelineLayout,
+    descriptor_set: &vk::DescriptorSet,
+    compute_frame: usize,
+) -> Result<vk::CommandBuffer> {
+    assert_eq!(command_buffers.len(), 2);
+    let begin_info = vk::CommandBufferBeginInfo::default();
+    let command_buffer = command_buffers[compute_frame];
+
+    let descriptor_sets_to_bind = [*descriptor_set];
+
+    unsafe {
+        device.begin_command_buffer(command_buffer, &begin_info)?;
+        device.cmd_bind_pipeline(
+            command_buffer,
+            vk::PipelineBindPoint::COMPUTE,
+            *compute_pipeline,
+        );
+        device.cmd_bind_descriptor_sets(
+            command_buffer,
+            vk::PipelineBindPoint::COMPUTE,
+            *compute_pipeline_layout,
+            0,
+            &descriptor_sets_to_bind,
+            &[],
+        );
+        device.cmd_dispatch(command_buffer, 16, 16, 1);
+        device.end_command_buffer(command_buffer)?;
+    }
+    Ok(command_buffer)
+}
+
+pub fn record_compute_commands(
+    device: &ash::Device,
+    command_buffers: &Vec<vk::CommandBuffer>,
+    compute_pipeline: &vk::Pipeline,
+    compute_pipeline_layout: &vk::PipelineLayout,
+    descriptor_sets: &Vec<vk::DescriptorSet>,
+) -> Result<[vk::CommandBuffer; 2]> {
+    assert_eq!(command_buffers.len(), 2);
+    assert_eq!(descriptor_sets.len(), 2);
+    let commands = [
+        compute_commands(
+            device,
+            command_buffers,
+            compute_pipeline,
+            compute_pipeline_layout,
+            &descriptor_sets[0],
+            0,
+        )?,
+        compute_commands(
+            device,
+            command_buffers,
+            compute_pipeline,
+            compute_pipeline_layout,
+            &descriptor_sets[1],
+            1,
+        )?,
+    ];
+    Ok(commands)
+}
+
+fn compute_copy_commands(
+    device: &ash::Device,
+    command_buffers: &Vec<vk::CommandBuffer>,
+    compute_frame: usize,
+    draw_frame: usize,
+    radiance_images: &[vk::Image; 4],
+) -> Result<vk::CommandBuffer> {
+    assert_eq!(command_buffers.len(), 4);
+    let dst_index = draw_frame + 2;
+    let command_buffer = command_buffers[1 << draw_frame | compute_frame];
+
+    let subresource_range = vk::ImageSubresourceRange {
+        aspect_mask: vk::ImageAspectFlags::COLOR,
+        base_mip_level: 0,
+        level_count: 1,
+        base_array_layer: 0,
+        layer_count: 1,
+    };
+
+    let mut compute_barrier = vk::ImageMemoryBarrier::default()
+        .old_layout(vk::ImageLayout::GENERAL)
+        .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .image(radiance_images[compute_frame])
+        .subresource_range(subresource_range)
+        .src_access_mask(vk::AccessFlags::SHADER_READ)
+        .dst_access_mask(vk::AccessFlags::TRANSFER_READ);
+    let mut draw_barrier = vk::ImageMemoryBarrier::default()
+        .old_layout(vk::ImageLayout::UNDEFINED)
+        .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .image(radiance_images[dst_index])
+        .subresource_range(subresource_range)
+        .src_access_mask(vk::AccessFlags::SHADER_READ)
+        .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE);
+
+    let mut image_memory_barriers = [compute_barrier, draw_barrier];
+
+    let subresource = vk::ImageSubresourceLayers {
+        aspect_mask: vk::ImageAspectFlags::COLOR,
+        mip_level: 0,
+        base_array_layer: 0,
+        layer_count: 1,
+    };
+
+    let regions = [vk::ImageCopy {
+        src_subresource: subresource,
+        dst_subresource: subresource,
+        src_offset: vk::Offset3D { x: 0, y: 0, z: 0 },
+        dst_offset: vk::Offset3D { x: 0, y: 0, z: 0 },
+        extent: vk::Extent3D {
+            width: IDEAL_RADIANCE_IMAGE_SIZE_WIDTH,
+            height: IDEAL_RADIANCE_IMAGE_SIZE_HEIGHT,
+            depth: 1,
+        },
+    }];
+
+    let begin_info = vk::CommandBufferBeginInfo::default();
+    unsafe {
+        device.begin_command_buffer(command_buffer, &begin_info)?;
+        device.cmd_pipeline_barrier(
+            command_buffer,
+            vk::PipelineStageFlags::COMPUTE_SHADER,
+            vk::PipelineStageFlags::TRANSFER,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            &image_memory_barriers,
+        );
+        device.cmd_copy_image(
+            command_buffer,
+            radiance_images[compute_frame],
+            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+            radiance_images[dst_index],
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            &regions,
+        );
+    }
+
+    compute_barrier.src_access_mask = vk::AccessFlags::TRANSFER_READ;
+    compute_barrier.dst_access_mask = vk::AccessFlags::SHADER_READ;
+    draw_barrier.src_access_mask = vk::AccessFlags::TRANSFER_WRITE;
+    draw_barrier.dst_access_mask = vk::AccessFlags::SHADER_READ;
+    compute_barrier.old_layout = vk::ImageLayout::TRANSFER_SRC_OPTIMAL;
+    compute_barrier.new_layout = vk::ImageLayout::GENERAL;
+    draw_barrier.old_layout = vk::ImageLayout::TRANSFER_DST_OPTIMAL;
+    draw_barrier.new_layout = vk::ImageLayout::GENERAL;
+
+    image_memory_barriers = [compute_barrier, draw_barrier]; // TODO: Is this necessary or will the changes already be here?
+
+    unsafe {
+        device.cmd_pipeline_barrier(
+            command_buffer,
+            vk::PipelineStageFlags::TRANSFER,
+            vk::PipelineStageFlags::FRAGMENT_SHADER,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            &image_memory_barriers,
+        );
+        device.end_command_buffer(command_buffer)?;
+    }
+
+    Ok(command_buffer)
+}
+
+pub fn record_compute_copy_commands(
+    device: &ash::Device,
+    command_buffers: &Vec<vk::CommandBuffer>,
+    radiance_images: &[vk::Image; 4],
+) -> Result<[vk::CommandBuffer; 4]> {
+    // We need a set of commands for each permutation of the frames lining up
+    Ok([
+        compute_copy_commands(device, command_buffers, 0, 0, radiance_images)?,
+        compute_copy_commands(device, command_buffers, 1, 0, radiance_images)?,
+        compute_copy_commands(device, command_buffers, 0, 1, radiance_images)?,
+        compute_copy_commands(device, command_buffers, 1, 1, radiance_images)?,
+    ])
 }

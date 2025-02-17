@@ -258,6 +258,17 @@ struct VulkanApp {
     swap_chain_image_views: Vec<vk::ImageView>,
     queue_family_indices: QueueFamilyIndices,
 
+    compute_queue: vk::Queue,
+    compute_descriptor_set_layout: vk::DescriptorSetLayout,
+    compute_pipeline_layout: vk::PipelineLayout,
+    compute_pipeline: vk::Pipeline,
+    compute_command_pool: vk::CommandPool,
+    compute_commands: [vk::CommandBuffer; 2],
+    compute_copy_commands: [vk::CommandBuffer; 4],
+    compute_fence: vk::Fence,
+    compute_copy_semaphores: [vk::Semaphore; 1],
+    compute_descriptor_pool: vk::DescriptorPool,
+
     query_pool_timestamps: vk::QueryPool,
     timestamps: Vec<u64>,
 
@@ -291,9 +302,9 @@ struct VulkanApp {
     triangle_buffer: vk::Buffer,
     triangle_buffer_memory: vk::DeviceMemory,
 
-    radiance_images: [vk::Image; 2],
-    radiance_image_memories: [vk::DeviceMemory; 2],
-    radiance_image_views: [vk::ImageView; 2],
+    radiance_images: [vk::Image; 4],
+    radiance_image_memories: [vk::DeviceMemory; 4],
+    radiance_image_views: [vk::ImageView; 4],
 
     depth_image: vk::Image,
     depth_image_memory: vk::DeviceMemory,
@@ -308,6 +319,7 @@ struct VulkanApp {
     camera: Camera,
     scene: Scene,
 
+    compute_frame: usize,
     current_frame: usize,
     frame_count: u128,
 }
@@ -369,7 +381,7 @@ impl VulkanApp {
         let entry = unsafe { Entry::load()? };
         // Set up Vulkan API
         let instance = vulkan::create_instance(&entry, window)?;
-        debug::print_available_instance_extensions(&entry)?;
+        // debug::print_available_instance_extensions(&entry)?;
         // Set up callback for Vulkan debug messages
         let debug_messenger = setup_debug_utils(&entry, &instance)?;
 
@@ -382,6 +394,8 @@ impl VulkanApp {
             unsafe { device.get_device_queue(queue_family_indices.graphics_family.unwrap(), 0) };
         let presentation_queue =
             unsafe { device.get_device_queue(queue_family_indices.present_family.unwrap(), 0) };
+        let compute_queue =
+            unsafe { device.get_device_queue(queue_family_indices.compute_family.unwrap(), 0) }; // TODO:  Get a different queue to the other ones (for async)
 
         let (query_pool_timestamps, timestamps) = prepare_timestamp_queries(&device)?;
 
@@ -419,7 +433,8 @@ impl VulkanApp {
         let (depth_image, depth_image_memory, depth_image_view) =
             create_depth_resources(&device, &instance, &physical_device, &swap_chain_stuff)?;
 
-        let command_pool = create_command_pool(&device, &queue_family_indices)?;
+        let command_pool =
+            create_command_pool(&device, queue_family_indices.graphics_family.unwrap())?;
 
         let (vertex_buffer, vertex_buffer_memory) = create_vertex_buffer(
             &device,
@@ -492,10 +507,46 @@ impl VulkanApp {
             sphere_buffer,
             quad_buffer,
             triangle_buffer,
-            &radiance_image_views,
+            &radiance_image_views[2..4],
         )?;
 
-        let command_buffers = create_command_buffers(&device, &command_pool)?;
+        let command_buffers =
+            create_command_buffers(&device, &command_pool, MAX_FRAMES_IN_FLIGHT as u32)?;
+
+        let (
+            compute_descriptor_pool,
+            compute_descriptor_set_layout,
+            compute_descriptor_sets,
+            compute_pipeline_layout,
+            compute_pipeline,
+        ) = create_compute_pipeline(&device, &radiance_image_views[0..2])?;
+
+        let compute_command_pool =
+            create_command_pool(&device, queue_family_indices.compute_family.unwrap())?;
+
+        let compute_command_buffers = create_command_buffers(&device, &compute_command_pool, 2)?;
+
+        let compute_copy_command_buffers =
+            create_command_buffers(&device, &compute_command_pool, 4)?;
+
+        let compute_commands = record_compute_commands(
+            &device,
+            &compute_command_buffers,
+            &compute_pipeline,
+            &compute_pipeline_layout,
+            &compute_descriptor_sets,
+        )?;
+        let compute_copy_commands =
+            record_compute_copy_commands(&device, &compute_copy_command_buffers, &radiance_images)?;
+
+        let fence_info = vk::FenceCreateInfo::default(); // Start the fence signalled so we can immediately wait on it
+        let compute_fence = unsafe { device.create_fence(&fence_info, None)? };
+        // let mut semaphore_type_info =
+        //     vk::SemaphoreTypeCreateInfo::default().semaphore_type(vk::SemaphoreType::TIMELINE);
+        // let semaphore_info = vk::SemaphoreCreateInfo::default().push(&mut semaphore_type_info);
+        let semaphore_info = vk::SemaphoreCreateInfo::default();
+        let compute_copy_semaphores = unsafe { [device.create_semaphore(&semaphore_info, None)?] };
+
         let (image_available_semaphores, render_finished_semaphores, in_flight_fences) =
             create_sync_object(&device)?;
 
@@ -525,6 +576,18 @@ impl VulkanApp {
             swap_chain_stuff,
             swap_chain_image_views,
             queue_family_indices,
+
+            compute_queue,
+            compute_descriptor_set_layout,
+            compute_pipeline_layout,
+            compute_pipeline,
+            compute_command_pool,
+            compute_frame: 0,
+            compute_commands,
+            compute_copy_commands,
+            compute_fence,
+            compute_copy_semaphores,
+            compute_descriptor_pool,
 
             query_pool_timestamps,
             timestamps,
@@ -635,6 +698,8 @@ impl VulkanApp {
             }
         }
 
+        self.update_compute();
+
         match unsafe {
             self.device.reset_command_buffer(
                 self.command_buffers[self.current_frame],
@@ -657,8 +722,14 @@ impl VulkanApp {
 
         self.update_uniform_buffers(self.current_frame as u32, delta_time);
 
-        let wait_semaphores = [self.image_available_semaphores[self.current_frame]];
-        let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
+        let wait_semaphores = [
+            self.image_available_semaphores[self.current_frame],
+            self.compute_copy_semaphores[0],
+        ];
+        let wait_stages = [
+            vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+            vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+        ];
         let signal_semaphores = [self.render_finished_semaphores[self.current_frame]];
         let command_buffers = [self.command_buffers[self.current_frame]];
 
@@ -753,6 +824,12 @@ impl VulkanApp {
     }
 
     fn wait_idle(&self) {
+        // unsafe {
+        //     match self.device.queue_wait_idle(self.graphics_queue) {
+        //         Err(e) => log::error!("Failed to wait for graphics queue to finish: {:?}", e),
+        //         _ => {}
+        //     }
+        // };
         match unsafe { self.device.device_wait_idle() } {
             Err(e) => log::error!("Failed to wait for the device to return to idle: {}", e),
             _ => {}
@@ -780,8 +857,16 @@ impl VulkanApp {
         if self.minimized == true {
             return;
         }
-        // log::debug!("Recreating swap chain");
-        self.wait_idle();
+        log::debug!("Recreating swap chain");
+        // self.wait_idle();
+        // self.update_compute();
+        unsafe {
+            match self.device.queue_wait_idle(self.graphics_queue) {
+                Err(e) => log::error!("Failed to wait for graphics queue to finish: {:?}", e),
+                _ => {}
+            }
+        };
+        log::debug!("Queue is ready for changes");
 
         unsafe { self.cleanup_swap_chain() };
 
@@ -832,6 +917,7 @@ impl VulkanApp {
 
         self.uniform.reset_samples();
         self.resized = false;
+        log::debug!("Swapchain recreated");
     }
 
     unsafe fn cleanup_swap_chain(&self) {
@@ -982,13 +1068,102 @@ impl VulkanApp {
         };
         Ok(())
     }
+
+    fn update_compute(&mut self) {
+        // Perform a render
+        self.perform_compute();
+
+        // Wait for the render to complete
+        self.wait_for_compute_operation();
+
+        self.compute_frame += 1;
+        self.compute_frame %= MAX_FRAMES_IN_FLIGHT;
+
+        // Perform a copy
+        self.perform_compute_copy();
+
+        // Wait for the copy to complete
+        self.wait_for_compute_operation();
+    }
+    fn wait_for_compute_operation(&mut self) {
+        unsafe {
+            match self
+                .device
+                .wait_for_fences(&[self.compute_fence], true, u64::MAX)
+            {
+                Err(e) => log::error!("Failed to wait on compute fence: {:?}", e),
+                _ => {}
+            }
+        }
+        unsafe {
+            match self.device.reset_fences(&[self.compute_fence]) {
+                Err(e) => log::error!("Failed to reset compute_fence: {:?}", e),
+                _ => {}
+            }
+        }
+        unsafe {
+            match self.device.queue_wait_idle(self.compute_queue) {
+                Err(e) => log::error!("Failed to wait for compute queue to finish: {:?}", e),
+                _ => {}
+            }
+        };
+    }
+    fn perform_compute(&mut self) {
+        let command_buffer = [self.compute_commands[self.compute_frame]];
+        let submit_info = [vk::SubmitInfo::default().command_buffers(&command_buffer)];
+
+        match unsafe {
+            self.device
+                .queue_submit(self.compute_queue, &submit_info, self.compute_fence)
+        } {
+            Err(e) => {
+                log::error!("Failed to submit compute commands: {}", e)
+            }
+            _ => {}
+        }
+    }
+
+    fn perform_compute_copy(&mut self) {
+        let command_index = 1 << self.current_frame | self.compute_frame;
+        let command_buffer = [self.compute_copy_commands[command_index]];
+
+        let submit_info = [vk::SubmitInfo::default()
+            .command_buffers(&command_buffer)
+            .signal_semaphores(&self.compute_copy_semaphores)];
+
+        match unsafe {
+            self.device
+                .queue_submit(self.compute_queue, &submit_info, self.compute_fence)
+        } {
+            Err(e) => {
+                log::error!("Failed to submit compute commands: {}", e)
+            }
+            _ => {}
+        }
+    }
+
+    fn signal_compute(&self) {
+        let signal_info = vk::SemaphoreSignalInfo::default()
+            .semaphore(self.compute_copy_semaphores[0])
+            .value(1);
+        match unsafe { self.device.signal_semaphore(&signal_info) } {
+            Err(e) => {
+                log::error!("Failed to signal compute copy semaphore: {}", e)
+            }
+            _ => {}
+        };
+    }
 }
 
 impl Drop for VulkanApp {
     fn drop(&mut self) {
         log::debug!("Cleaning up");
         unsafe {
+            self.update_compute();
+            // self.signal_compute();
+            log::debug!("Performed one last compute operation");
             self.wait_idle();
+            log::debug!("Device now idle");
 
             self.cleanup_swap_chain();
 
@@ -1026,8 +1201,17 @@ impl Drop for VulkanApp {
                 self.device.free_memory(memory, None);
             }
 
+            self.device.destroy_pipeline(self.compute_pipeline, None);
+            self.device
+                .destroy_pipeline_layout(self.compute_pipeline_layout, None);
+            self.device
+                .destroy_descriptor_set_layout(self.compute_descriptor_set_layout, None);
+
             self.device
                 .destroy_descriptor_pool(self.descriptor_pool, None);
+
+            self.device
+                .destroy_descriptor_pool(self.compute_descriptor_pool, None);
 
             self.device
                 .destroy_descriptor_set_layout(self.set_layout, None);
@@ -1054,9 +1238,17 @@ impl Drop for VulkanApp {
                 self.device.destroy_fence(fence, None);
             }
 
+            self.device.destroy_fence(self.compute_fence, None);
+
+            for &semaphore in self.compute_copy_semaphores.iter() {
+                self.device.destroy_semaphore(semaphore, None);
+            }
+
             self.device
                 .destroy_query_pool(self.query_pool_timestamps, None);
 
+            self.device
+                .destroy_command_pool(self.compute_command_pool, None);
             self.device.destroy_command_pool(self.command_pool, None);
 
             self.device.destroy_device(None);
