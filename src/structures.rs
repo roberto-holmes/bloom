@@ -114,6 +114,7 @@ pub struct QueueFamilyIndices {
     pub graphics_family: Option<u32>,
     pub present_family: Option<u32>,
     pub compute_family: Option<u32>,
+    pub queue_count: usize,
 }
 
 impl QueueFamilyIndices {
@@ -122,6 +123,7 @@ impl QueueFamilyIndices {
             graphics_family: None,
             present_family: None,
             compute_family: None,
+            queue_count: 0,
         }
     }
 
