@@ -258,6 +258,8 @@ struct VulkanApp {
     swap_chain_image_views: Vec<vk::ImageView>,
     queue_family_indices: QueueFamilyIndices,
 
+    current_timestamp: u64,
+
     compute_queue: vk::Queue,
     compute_descriptor_set_layout: vk::DescriptorSetLayout,
     compute_pipeline_layout: vk::PipelineLayout,
@@ -265,8 +267,8 @@ struct VulkanApp {
     compute_command_pool: vk::CommandPool,
     compute_commands: [vk::CommandBuffer; 2],
     compute_copy_commands: [vk::CommandBuffer; 4],
-    compute_fence: vk::Fence,
-    compute_copy_semaphores: [vk::Semaphore; 1],
+    compute_current_timestamp: u64,
+    compute_semaphore: vk::Semaphore,
     compute_descriptor_pool: vk::DescriptorPool,
 
     query_pool_timestamps: vk::QueryPool,
@@ -539,13 +541,11 @@ impl VulkanApp {
         let compute_copy_commands =
             record_compute_copy_commands(&device, &compute_copy_command_buffers, &radiance_images)?;
 
-        let fence_info = vk::FenceCreateInfo::default(); // Start the fence signalled so we can immediately wait on it
-        let compute_fence = unsafe { device.create_fence(&fence_info, None)? };
-        // let mut semaphore_type_info =
-        //     vk::SemaphoreTypeCreateInfo::default().semaphore_type(vk::SemaphoreType::TIMELINE);
-        // let semaphore_info = vk::SemaphoreCreateInfo::default().push(&mut semaphore_type_info);
-        let semaphore_info = vk::SemaphoreCreateInfo::default();
-        let compute_copy_semaphores = unsafe { [device.create_semaphore(&semaphore_info, None)?] };
+        let mut semaphore_type_info = vk::SemaphoreTypeCreateInfo::default()
+            .semaphore_type(vk::SemaphoreType::TIMELINE)
+            .initial_value(0);
+        let semaphore_info = vk::SemaphoreCreateInfo::default().push(&mut semaphore_type_info);
+        let compute_semaphore = unsafe { device.create_semaphore(&semaphore_info, None)? };
 
         let (image_available_semaphores, render_finished_semaphores, in_flight_fences) =
             create_sync_object(&device)?;
@@ -577,6 +577,8 @@ impl VulkanApp {
             swap_chain_image_views,
             queue_family_indices,
 
+            current_timestamp: 0,
+
             compute_queue,
             compute_descriptor_set_layout,
             compute_pipeline_layout,
@@ -585,8 +587,8 @@ impl VulkanApp {
             compute_frame: 0,
             compute_commands,
             compute_copy_commands,
-            compute_fence,
-            compute_copy_semaphores,
+            compute_current_timestamp: 0,
+            compute_semaphore,
             compute_descriptor_pool,
 
             query_pool_timestamps,
@@ -654,6 +656,7 @@ impl VulkanApp {
     }
 
     pub fn draw_frame(&mut self, delta_time: Duration) {
+        self.current_timestamp += 2;
         unsafe {
             match self.device.wait_for_fences(
                 &[self.in_flight_fences[self.current_frame]],
@@ -724,20 +727,28 @@ impl VulkanApp {
 
         let wait_semaphores = [
             self.image_available_semaphores[self.current_frame],
-            self.compute_copy_semaphores[0],
+            self.compute_semaphore,
         ];
         let wait_stages = [
             vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
             vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
         ];
+        let wait_values = [
+            0, // Binary so will be ignored
+            self.current_timestamp,
+        ];
         let signal_semaphores = [self.render_finished_semaphores[self.current_frame]];
         let command_buffers = [self.command_buffers[self.current_frame]];
+
+        let mut timeline_info =
+            vk::TimelineSemaphoreSubmitInfo::default().wait_semaphore_values(&wait_values);
 
         let submit_info = vk::SubmitInfo::default()
             .wait_semaphores(&wait_semaphores)
             .wait_dst_stage_mask(&wait_stages)
             .command_buffers(&command_buffers)
-            .signal_semaphores(&signal_semaphores);
+            .signal_semaphores(&signal_semaphores)
+            .push(&mut timeline_info);
 
         match unsafe {
             self.device.queue_submit(
@@ -1070,51 +1081,69 @@ impl VulkanApp {
     }
 
     fn update_compute(&mut self) {
+        // let current_timestamp = match unsafe {
+        //     self.device
+        //         .get_semaphore_counter_value(self.compute_semaphore)
+        // } {
+        //     Ok(v) => v,
+        //     Err(e) => {
+        //         log::error!(
+        //             "Failed to get the current semaphore value for the compute semaphore: {}",
+        //             e
+        //         );
+        //         0
+        //     }
+        // };
         // Perform a render
-        self.perform_compute();
-
-        // Wait for the render to complete
-        self.wait_for_compute_operation();
+        self.perform_compute(
+            self.compute_current_timestamp,
+            self.compute_current_timestamp + 1,
+        );
 
         self.compute_frame += 1;
         self.compute_frame %= MAX_FRAMES_IN_FLIGHT;
 
         // Perform a copy
-        self.perform_compute_copy();
+        self.perform_compute_copy(
+            self.compute_current_timestamp + 1,
+            self.compute_current_timestamp + 2,
+        );
 
         // Wait for the copy to complete
-        self.wait_for_compute_operation();
+        self.wait_for_compute_operation(self.compute_current_timestamp + 2);
+        self.compute_current_timestamp += 2;
     }
-    fn wait_for_compute_operation(&mut self) {
-        unsafe {
-            match self
-                .device
-                .wait_for_fences(&[self.compute_fence], true, u64::MAX)
-            {
-                Err(e) => log::error!("Failed to wait on compute fence: {:?}", e),
-                _ => {}
+    fn wait_for_compute_operation(&mut self, timestamp_to_wait: u64) {
+        let semaphores = [self.compute_semaphore];
+        let wait_values = [timestamp_to_wait];
+        let wait_info = vk::SemaphoreWaitInfo::default()
+            .semaphores(&semaphores)
+            .values(&wait_values);
+        match unsafe { self.device.wait_semaphores(&wait_info, u64::MAX) } {
+            Err(e) => {
+                log::error!("Failed to wait on compute semaphore: {e}")
             }
+            _ => {}
         }
-        unsafe {
-            match self.device.reset_fences(&[self.compute_fence]) {
-                Err(e) => log::error!("Failed to reset compute_fence: {:?}", e),
-                _ => {}
-            }
-        }
-        unsafe {
-            match self.device.queue_wait_idle(self.compute_queue) {
-                Err(e) => log::error!("Failed to wait for compute queue to finish: {:?}", e),
-                _ => {}
-            }
-        };
     }
-    fn perform_compute(&mut self) {
+    fn perform_compute(&mut self, timestamp_to_wait: u64, timestamp_to_signal: u64) {
+        let wait_timestamps = [timestamp_to_wait];
+        let signal_timestamps = [timestamp_to_signal];
+        let semaphores = [self.compute_semaphore];
+
         let command_buffer = [self.compute_commands[self.compute_frame]];
-        let submit_info = [vk::SubmitInfo::default().command_buffers(&command_buffer)];
+
+        let mut timeline_info = vk::TimelineSemaphoreSubmitInfo::default()
+            .signal_semaphore_values(&signal_timestamps)
+            .wait_semaphore_values(&wait_timestamps);
+        let submit_info = [vk::SubmitInfo::default()
+            .command_buffers(&command_buffer)
+            .signal_semaphores(&semaphores)
+            .push(&mut timeline_info)];
 
         match unsafe {
             self.device
-                .queue_submit(self.compute_queue, &submit_info, self.compute_fence)
+                .queue_submit(self.compute_queue, &submit_info, vk::Fence::null())
         } {
             Err(e) => {
                 log::error!("Failed to submit compute commands: {}", e)
@@ -1123,17 +1152,25 @@ impl VulkanApp {
         }
     }
 
-    fn perform_compute_copy(&mut self) {
+    fn perform_compute_copy(&mut self, timestamp_to_wait: u64, timestamp_to_signal: u64) {
+        let wait_timestamps = [timestamp_to_wait];
+        let signal_timestamps = [timestamp_to_signal];
+        let semaphores = [self.compute_semaphore];
+
         let command_index = 1 << self.current_frame | self.compute_frame;
         let command_buffer = [self.compute_copy_commands[command_index]];
 
+        let mut timeline_info = vk::TimelineSemaphoreSubmitInfo::default()
+            .signal_semaphore_values(&signal_timestamps)
+            .wait_semaphore_values(&wait_timestamps);
         let submit_info = [vk::SubmitInfo::default()
             .command_buffers(&command_buffer)
-            .signal_semaphores(&self.compute_copy_semaphores)];
+            .signal_semaphores(&semaphores)
+            .push(&mut timeline_info)];
 
         match unsafe {
             self.device
-                .queue_submit(self.compute_queue, &submit_info, self.compute_fence)
+                .queue_submit(self.compute_queue, &submit_info, vk::Fence::null())
         } {
             Err(e) => {
                 log::error!("Failed to submit compute commands: {}", e)
@@ -1142,10 +1179,10 @@ impl VulkanApp {
         }
     }
 
-    fn signal_compute(&self) {
+    fn signal_end_compute(&self) {
         let signal_info = vk::SemaphoreSignalInfo::default()
-            .semaphore(self.compute_copy_semaphores[0])
-            .value(1);
+            .semaphore(self.compute_semaphore)
+            .value(u64::MAX);
         match unsafe { self.device.signal_semaphore(&signal_info) } {
             Err(e) => {
                 log::error!("Failed to signal compute copy semaphore: {}", e)
@@ -1159,8 +1196,7 @@ impl Drop for VulkanApp {
     fn drop(&mut self) {
         log::debug!("Cleaning up");
         unsafe {
-            self.update_compute();
-            // self.signal_compute();
+            self.signal_end_compute();
             log::debug!("Performed one last compute operation");
             self.wait_idle();
             log::debug!("Device now idle");
@@ -1238,11 +1274,7 @@ impl Drop for VulkanApp {
                 self.device.destroy_fence(fence, None);
             }
 
-            self.device.destroy_fence(self.compute_fence, None);
-
-            for &semaphore in self.compute_copy_semaphores.iter() {
-                self.device.destroy_semaphore(semaphore, None);
-            }
+            self.device.destroy_semaphore(self.compute_semaphore, None);
 
             self.device
                 .destroy_query_pool(self.query_pool_timestamps, None);
