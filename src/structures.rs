@@ -113,6 +113,7 @@ impl SwapChainStuff {
 pub struct QueueFamilyIndices {
     pub graphics_family: Option<u32>,
     pub present_family: Option<u32>,
+    pub compute_family: Option<u32>,
 }
 
 impl QueueFamilyIndices {
@@ -120,11 +121,14 @@ impl QueueFamilyIndices {
         QueueFamilyIndices {
             graphics_family: None,
             present_family: None,
+            compute_family: None,
         }
     }
 
     pub fn is_complete(&self) -> bool {
-        self.graphics_family.is_some() && self.present_family.is_some()
+        self.graphics_family.is_some()
+            && self.present_family.is_some()
+            && self.compute_family.is_some()
     }
 }
 

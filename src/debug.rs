@@ -60,11 +60,11 @@ pub fn check_validation_layer_support(entry: &ash::Entry) -> Result<()> {
             log::error!("No available layers.");
             return Err(anyhow!("No available validation layers"));
         } else {
-            log::debug!("Instance Available Layers: ");
-            for layer in layer_properties.iter() {
-                let layer_name = tools::vk_to_string(&layer.layer_name)?;
-                log::debug!("\t{}", layer_name);
-            }
+            // log::debug!("Instance Available Layers: ");
+            // for layer in layer_properties.iter() {
+            //     let layer_name = tools::vk_to_string(&layer.layer_name)?;
+            //     log::debug!("\t{}", layer_name);
+            // }
         }
 
         for required_layer_name in VALIDATION.required_validation_layers.iter() {
