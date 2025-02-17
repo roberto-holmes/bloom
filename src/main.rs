@@ -396,8 +396,16 @@ impl VulkanApp {
             unsafe { device.get_device_queue(queue_family_indices.graphics_family.unwrap(), 0) };
         let presentation_queue =
             unsafe { device.get_device_queue(queue_family_indices.present_family.unwrap(), 0) };
-        let compute_queue =
-            unsafe { device.get_device_queue(queue_family_indices.compute_family.unwrap(), 0) }; // TODO:  Get a different queue to the other ones (for async)
+        let compute_queue = unsafe {
+            device.get_device_queue(
+                queue_family_indices.compute_family.unwrap(),
+                if queue_family_indices.queue_count > 1 {
+                    1
+                } else {
+                    0
+                },
+            )
+        };
 
         let (query_pool_timestamps, timestamps) = prepare_timestamp_queries(&device)?;
 

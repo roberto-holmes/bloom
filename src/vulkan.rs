@@ -166,6 +166,7 @@ fn find_queue_families(
             && queue_family.queue_flags.contains(vk::QueueFlags::GRAPHICS)
         {
             queue_family_indices.graphics_family = Some(family_index as u32);
+            queue_family_indices.queue_count += 1;
         }
 
         // Check if the current queue supports presenting images
@@ -185,16 +186,17 @@ fn find_queue_families(
 
         // TODO: Select a separate queue for compute if possible, if not just use the same queue and keep track of how many distinct queues we have
         // Make sure our compute queue is separate from the graphics and presentation queues
-        // if queue_family_indices
-        //     .graphics_family
-        //     .is_some_and(|x| x == family_index as u32) // Select the same family as the graphics queue
-        //     && queue_family.queue_count > 1
-        //     && queue_family.queue_flags.contains(vk::QueueFlags::COMPUTE)
-        if queue_family.queue_count > 0
+        if queue_family_indices
+            .graphics_family
+            .is_some_and(|x| x == family_index as u32) // Select the same family as the graphics queue
+            && queue_family.queue_count > 0
             && queue_family.queue_flags.contains(vk::QueueFlags::COMPUTE)
+        // if queue_family.queue_count > 0
+        // && queue_family.queue_flags.contains(vk::QueueFlags::COMPUTE)
         {
             // The compute queue will use the same queue family as graphics but there are multiple queues to use
             queue_family_indices.compute_family = Some(family_index as u32);
+            // queue_family_indices.queue_count += 1;
         }
         // TODO: Add the  possiblity to pick a queue that does not support graphics work
         // else if queue_family_indices
@@ -404,9 +406,12 @@ pub fn create_logical_device(
     unique_queue_families.insert(indices.present_family.unwrap());
     unique_queue_families.insert(indices.compute_family.unwrap());
 
-    // TODO: Use 2 queue priorities if we are on a system that has multiple queues
-    // let queue_priorities = [1.0, 0.5];
-    let queue_priorities = [1.0];
+    // Set up priorities for as many queeus as there are
+    let mut queue_priorities = vec![1.0];
+    for i in 1..indices.queue_count {
+        queue_priorities.push(queue_priorities[i] / 2.0);
+    }
+    // let queue_priorities = [1.0];
     let mut queue_create_infos = vec![];
     for queue_family in unique_queue_families {
         let queue_create_info = vk::DeviceQueueCreateInfo::default()
