@@ -336,8 +336,11 @@ fn is_physical_device_suitable(
     }
 
     // Check 1.3 features
+    let mut features12 = vk::PhysicalDeviceVulkan12Features::default();
     let mut features13 = vk::PhysicalDeviceVulkan13Features::default();
-    let mut features = vk::PhysicalDeviceFeatures2::default().push(&mut features13);
+    let mut features = vk::PhysicalDeviceFeatures2::default()
+        .push(&mut features13)
+        .push(&mut features12);
     unsafe { instance.get_physical_device_features2(*physical_device, &mut features) };
 
     let indices = find_queue_families(instance, physical_device, surface_stuff);
@@ -360,6 +363,7 @@ fn is_physical_device_suitable(
         && supported_features.fragment_stores_and_atomics == vk::TRUE
         && device_properties.limits.timestamp_period > 0.0
         && device_properties.limits.timestamp_compute_and_graphics == vk::TRUE // If this is false we could still use it but we need to check the queues we want to use for timestamp_valid_bits
+        && features12.timeline_semaphore == vk::TRUE
         && features13.dynamic_rendering == vk::TRUE
         && features13.synchronization2 == vk::TRUE)
 }
@@ -422,11 +426,13 @@ pub fn create_logical_device(
         ash::khr::portability_subset::NAME.as_ptr(),
     ];
 
+    let mut features12 = vk::PhysicalDeviceVulkan12Features::default().timeline_semaphore(true);
     let mut features13 = vk::PhysicalDeviceVulkan13Features::default()
         .dynamic_rendering(true)
         .synchronization2(true);
     let mut features = unsafe {
         vk::PhysicalDeviceFeatures2::default()
+            .extend(&mut features12)
             .extend(&mut features13)
             .features(device_features)
     };
