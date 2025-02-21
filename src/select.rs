@@ -1,7 +1,7 @@
 use cgmath::{dot, Matrix3, Vector3};
 use winit::dpi::PhysicalPosition;
 
-use crate::{primitives::Sphere, vulkan::UniformBufferObject, MAX_SPHERE_COUNT};
+use crate::{core::UniformBufferObject, primitives::Sphere, MAX_SPHERE_COUNT};
 
 struct Ray {
     origin: Vector3<f32>,

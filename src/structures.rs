@@ -1,7 +1,7 @@
 use anyhow::Result;
 use ash::vk;
 
-use crate::{WINDOW_HEIGHT, WINDOW_WIDTH};
+use crate::{vulkan, WINDOW_HEIGHT, WINDOW_WIDTH};
 
 pub struct SurfaceStuff {
     pub surface_loader: ash::khr::surface::Instance,
@@ -43,7 +43,7 @@ pub struct SwapChainStuff {
 impl SwapChainStuff {
     pub fn new(
         instance: &ash::Instance,
-        device: &ash::Device,
+        device: &vulkan::Device,
         physical_device: &vk::PhysicalDevice,
         surface_stuff: &SurfaceStuff,
         queue_family: &QueueFamilyIndices,
@@ -87,7 +87,7 @@ impl SwapChainStuff {
                 .queue_family_indices(&queue_family_total[..]);
         }
 
-        let swapchain_loader = ash::khr::swapchain::Device::new(instance, device);
+        let swapchain_loader = ash::khr::swapchain::Device::new(instance, device.get());
         let swapchain = unsafe {
             swapchain_loader
                 .create_swapchain(&swapchain_create_info, None)
@@ -110,6 +110,7 @@ impl SwapChainStuff {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
 pub struct QueueFamilyIndices {
     pub graphics_family: Option<u32>,
     pub present_family: Option<u32>,
