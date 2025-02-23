@@ -13,9 +13,9 @@ use crate::{core, structures, tools::read_shader_code, vulkan::Destructor, MAX_F
 pub fn compute_thread(
     device: ash::Device,
     queue_family_indices: structures::QueueFamilyIndices,
-    radiance_images: [vk::Image; 2],
-    radiance_image_views: [vk::ImageView; 2],
-    radiance_image_memories: [vk::DeviceMemory; 2],
+    radiance_images: [Destructor<vk::Image>; 2],
+    radiance_image_views: [Destructor<vk::ImageView>; 2],
+    radiance_image_memories: [Destructor<vk::DeviceMemory>; 2],
 
     should_threads_die: Arc<RwLock<bool>>,
     notify_transfer_wait: mpsc::Receiver<u64>,
@@ -118,13 +118,14 @@ pub fn compute_thread(
     log::warn!("Ending thread");
 }
 
+#[allow(dead_code)]
 struct Compute {
     pub device: ash::Device,
     semaphore: Destructor<vk::Semaphore>,
 
-    radiance_images: [vk::Image; 2],
-    radiance_image_views: [vk::ImageView; 2],
-    radiance_image_memories: [vk::DeviceMemory; 2],
+    radiance_image_views: [Destructor<vk::ImageView>; 2],
+    radiance_images: [Destructor<vk::Image>; 2],
+    radiance_image_memories: [Destructor<vk::DeviceMemory>; 2],
 
     queue: vk::Queue,
     descriptor_set_layout: Destructor<vk::DescriptorSetLayout>,
@@ -140,13 +141,13 @@ impl Compute {
     pub fn new(
         device: ash::Device,
         queue_family_indices: structures::QueueFamilyIndices,
-        radiance_images: [vk::Image; 2],
-        radiance_image_views: [vk::ImageView; 2],
-        radiance_image_memories: [vk::DeviceMemory; 2],
+        radiance_images: [Destructor<vk::Image>; 2],
+        radiance_image_views: [Destructor<vk::ImageView>; 2],
+        radiance_image_memories: [Destructor<vk::DeviceMemory>; 2],
     ) -> Result<Self> {
         // Populates queue
         let queue = core::create_queue(&device, queue_family_indices.compute_family.unwrap());
-        // Populates descriptor_set_layout, pipeline_layout, descriptor_pool, descriptor_sets, and pipeline
+
         let (descriptor_pool, descriptor_set_layout, descriptor_sets, pipeline_layout, pipeline) =
             create_pipeline(&device, &radiance_image_views)?;
         // Populates command_pool, commands, and copy_commands
@@ -220,25 +221,9 @@ impl Compute {
     }
 }
 
-impl Drop for Compute {
-    fn drop(&mut self) {
-        unsafe {
-            for image_view in self.radiance_image_views {
-                self.device.destroy_image_view(image_view, None);
-            }
-            for image in self.radiance_images {
-                self.device.destroy_image(image, None);
-            }
-            for image_memory in self.radiance_image_memories {
-                self.device.free_memory(image_memory, None); // TODO: Make RAII wrapper
-            }
-        }
-    }
-}
-
 fn create_pipeline(
     device: &ash::Device,
-    radiance_image_views: &[vk::ImageView; 2],
+    radiance_image_views: &[Destructor<vk::ImageView>; 2],
 ) -> Result<(
     Destructor<vk::DescriptorPool>,
     Destructor<vk::DescriptorSetLayout>,
@@ -305,11 +290,11 @@ fn create_pipeline(
         // Swap radiance image views around each frame
         let image_info = [vk::DescriptorImageInfo::default()
             .image_layout(vk::ImageLayout::GENERAL)
-            .image_view(radiance_image_views[i])];
+            .image_view(radiance_image_views[i].get())];
 
         let storage_image_info = [vk::DescriptorImageInfo::default()
             .image_layout(vk::ImageLayout::GENERAL)
-            .image_view(radiance_image_views[(i + 1) % 2])];
+            .image_view(radiance_image_views[(i + 1) % 2].get())];
 
         let descriptor_writes = [
             vk::WriteDescriptorSet::default()
@@ -335,7 +320,7 @@ fn create_pipeline(
     let main_function_name = CString::new("main").unwrap(); // the beginning function name in shader code.
     let stage = vk::PipelineShaderStageCreateInfo::default()
         .stage(vk::ShaderStageFlags::COMPUTE)
-        .module(shader_module)
+        .module(shader_module.get())
         .name(&main_function_name);
 
     let pipeline_create_infos = [vk::ComputePipelineCreateInfo::default()
@@ -352,7 +337,6 @@ fn create_pipeline(
         device.fp_v1_0().destroy_pipeline,
     );
 
-    unsafe { device.destroy_shader_module(shader_module, None) }; // TODO: RAII
     Ok((
         descriptor_pool,
         descriptor_set_layout,
