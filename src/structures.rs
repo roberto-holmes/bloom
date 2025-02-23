@@ -1,7 +1,11 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use ash::vk;
 
-use crate::{vulkan, WINDOW_HEIGHT, WINDOW_WIDTH};
+use crate::{
+    core,
+    vulkan::{self, Destructor},
+    WINDOW_HEIGHT, WINDOW_WIDTH,
+};
 
 pub struct SurfaceStuff {
     pub surface_loader: ash::khr::surface::Instance,
@@ -32,29 +36,38 @@ impl SurfaceStuff {
     }
 }
 
+impl Drop for SurfaceStuff {
+    fn drop(&mut self) {
+        log::trace!("Dropping Surface");
+        unsafe {
+            self.surface_loader.destroy_surface(self.surface, None);
+        }
+    }
+}
+
 pub struct SwapChainStuff {
-    pub swapchain_loader: ash::khr::swapchain::Device,
-    pub swapchain: vk::SwapchainKHR,
-    pub swapchain_images: Vec<vk::Image>,
-    pub swapchain_format: vk::Format,
-    pub swapchain_extent: vk::Extent2D,
+    pub image_views: Vec<Destructor<vk::ImageView>>,
+    pub images: Vec<vk::Image>,
+    pub format: vk::Format,
+    pub extent: vk::Extent2D,
+    pub swapchain: vulkan::Swapchain,
 }
 
 impl SwapChainStuff {
     pub fn new(
         instance: &ash::Instance,
-        device: &vulkan::Device,
+        device: &ash::Device,
         physical_device: &vk::PhysicalDevice,
         surface_stuff: &SurfaceStuff,
         queue_family: &QueueFamilyIndices,
-    ) -> Self {
+    ) -> Result<Self> {
         let swapchain_support = SwapChainSupportDetails::query(physical_device, surface_stuff);
 
         let surface_format = swapchain_support.choose_swap_surface_format();
         let present_mode = swapchain_support.choose_swap_present_mode();
         let extent = swapchain_support.choose_swap_extent();
 
-        // Decide how many images we want in out swap chain
+        // Decide how many images we want in our swap chain
         // (Recommended to request at least one more than the minimum to avoid having to wait for the driver)
         let image_count = swapchain_support.capabilities.min_image_count + 1;
         let image_count = if swapchain_support.capabilities.max_image_count > 0 {
@@ -87,26 +100,55 @@ impl SwapChainStuff {
                 .queue_family_indices(&queue_family_total[..]);
         }
 
-        let swapchain_loader = ash::khr::swapchain::Device::new(instance, device.get());
-        let swapchain = unsafe {
-            swapchain_loader
-                .create_swapchain(&swapchain_create_info, None)
-                .expect("Failed to create Swapchain!")
+        let swapchain_loader = ash::khr::swapchain::Device::new(instance, device);
+        let swapchain = vulkan::Swapchain::new(swapchain_loader, swapchain_create_info)
+            .context("Unable to create swapchain")?;
+
+        let swapchain_raw_images = unsafe {
+            swapchain
+                .loader
+                .get_swapchain_images(swapchain.get())
+                .context("Failed to get Swapchain Images")?
         };
 
-        let swapchain_images = unsafe {
-            swapchain_loader
-                .get_swapchain_images(swapchain)
-                .expect("Failed to get Swapchain Images.")
-        };
+        let image_views =
+            core::create_image_views(device, surface_format.format, &swapchain_raw_images)?;
 
-        SwapChainStuff {
-            swapchain_loader,
+        Ok(SwapChainStuff {
             swapchain,
-            swapchain_format: surface_format.format,
-            swapchain_extent: extent,
-            swapchain_images,
+            format: surface_format.format,
+            extent,
+            images: swapchain_raw_images,
+            image_views,
+        })
+    }
+    pub fn reset(
+        &mut self,
+        instance: &ash::Instance,
+        device: &ash::Device,
+        physical_device: &vk::PhysicalDevice,
+        surface_stuff: &SurfaceStuff,
+        queue_family: &QueueFamilyIndices,
+    ) -> Result<()> {
+        // Drop old swapchain
+        for i in &mut self.image_views {
+            i.empty();
         }
+        self.swapchain.empty();
+        *self = SwapChainStuff::new(
+            instance,
+            device,
+            physical_device,
+            surface_stuff,
+            queue_family,
+        )?;
+        Ok(())
+    }
+    pub fn get_swapchain(&self) -> vk::SwapchainKHR {
+        self.swapchain.get()
+    }
+    pub fn get_loader(&self) -> &ash::khr::swapchain::Device {
+        &self.swapchain.loader
     }
 }
 

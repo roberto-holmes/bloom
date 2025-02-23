@@ -20,10 +20,10 @@ use std::{
 };
 
 use anyhow::Result;
-use ash::{ext::debug_utils, vk, Entry};
+use ash::{vk, Entry};
 use camera::Camera;
 use core::*;
-use debug::{setup_debug_utils, ValidationInfo};
+use debug::ValidationInfo;
 use primitives::Scene;
 use structures::{QueueFamilyIndices, SurfaceStuff, SwapChainStuff};
 use vec::Vec3;
@@ -251,6 +251,7 @@ impl ApplicationHandler for App {
     }
 }
 
+#[allow(dead_code)]
 struct VulkanApp {
     should_compute_die: Arc<RwLock<bool>>,
     should_transfer_die: Arc<RwLock<bool>>,
@@ -258,58 +259,57 @@ struct VulkanApp {
     transfer_thread: Option<JoinHandle<()>>,
     transfer_sender: mpsc::Sender<u8>,
     graphic_receiver: mpsc::Receiver<u64>,
-    graphic_transfer_semaphore: Destructor<vk::Semaphore>, // TODO: Should this object own the destructor
+    graphic_transfer_semaphore: Destructor<vk::Semaphore>, // TODO: Should this object own the destructor?
 
     graphics_queue: vk::Queue,
     _presentation_queue: vk::Queue,
-    swap_chain_stuff: SwapChainStuff,
-    swap_chain_image_views: Vec<vk::ImageView>,
+    swapchain_stuff: SwapChainStuff,
     queue_family_indices: QueueFamilyIndices,
 
-    query_pool_timestamps: vk::QueryPool,
+    query_pool_timestamps: Destructor<vk::QueryPool>,
     timestamps: Vec<u64>,
 
-    pipeline_layout: vk::PipelineLayout,
-    pipelines: Vec<vk::Pipeline>,
-    command_pool: vk::CommandPool,
+    pipeline_layout: Destructor<vk::PipelineLayout>,
+    graphics_pipeline: Destructor<vk::Pipeline>,
+    command_pool: Destructor<vk::CommandPool>,
     command_buffers: Vec<vk::CommandBuffer>,
-    vertex_buffer: vk::Buffer,
-    vertex_buffer_memory: vk::DeviceMemory,
-    index_buffer: vk::Buffer,
-    index_buffer_memory: vk::DeviceMemory,
+    vertex_buffer: Destructor<vk::Buffer>,
+    vertex_buffer_memory: Destructor<vk::DeviceMemory>,
+    index_buffer: Destructor<vk::Buffer>,
+    index_buffer_memory: Destructor<vk::DeviceMemory>,
 
-    set_layout: vk::DescriptorSetLayout,
-    descriptor_pool: vk::DescriptorPool,
+    set_layout: Destructor<vk::DescriptorSetLayout>,
+    descriptor_pool: Destructor<vk::DescriptorPool>,
     descriptor_sets: Vec<vk::DescriptorSet>,
     uniform: core::UniformBufferObject,
-    uniform_buffers: Vec<vk::Buffer>,
-    uniform_buffers_memory: Vec<vk::DeviceMemory>,
+    uniform_buffers: Vec<Destructor<vk::Buffer>>,
+    uniform_buffers_memory: Vec<Destructor<vk::DeviceMemory>>,
     uniform_buffers_mapped: Vec<*mut core::UniformBufferObject>,
 
-    material_buffers: Vec<vk::Buffer>,
-    material_buffers_memory: Vec<vk::DeviceMemory>,
+    material_buffers: Vec<Destructor<vk::Buffer>>,
+    material_buffers_memory: Vec<Destructor<vk::DeviceMemory>>,
     material_buffers_mapped: Vec<*mut material::Material>,
 
-    bvh_buffer: vk::Buffer,
-    bvh_buffer_memory: vk::DeviceMemory,
-    sphere_buffer: vk::Buffer,
-    sphere_buffer_memory: vk::DeviceMemory,
-    quad_buffer: vk::Buffer,
-    quad_buffer_memory: vk::DeviceMemory,
-    triangle_buffer: vk::Buffer,
-    triangle_buffer_memory: vk::DeviceMemory,
+    bvh_buffer: Destructor<vk::Buffer>,
+    bvh_buffer_memory: Destructor<vk::DeviceMemory>,
+    sphere_buffer: Destructor<vk::Buffer>,
+    sphere_buffer_memory: Destructor<vk::DeviceMemory>,
+    quad_buffer: Destructor<vk::Buffer>,
+    quad_buffer_memory: Destructor<vk::DeviceMemory>,
+    triangle_buffer: Destructor<vk::Buffer>,
+    triangle_buffer_memory: Destructor<vk::DeviceMemory>,
 
-    graphic_images: [vk::Image; 2],
-    graphic_image_memories: [vk::DeviceMemory; 2],
-    graphic_image_views: [vk::ImageView; 2],
+    graphic_image_views: [Destructor<vk::ImageView>; 2],
+    graphic_images: [Destructor<vk::Image>; 2],
+    graphic_image_memories: [Destructor<vk::DeviceMemory>; 2],
 
-    depth_image: vk::Image,
-    depth_image_memory: vk::DeviceMemory,
-    depth_image_view: vk::ImageView,
+    depth_image_view: Destructor<vk::ImageView>,
+    depth_image: Destructor<vk::Image>,
+    depth_image_memory: Destructor<vk::DeviceMemory>,
 
-    image_available_semaphores: Vec<vk::Semaphore>,
-    render_finished_semaphores: Vec<vk::Semaphore>,
-    in_flight_fences: Vec<vk::Fence>,
+    image_available_semaphores: Vec<Destructor<vk::Semaphore>>,
+    render_finished_semaphores: Vec<Destructor<vk::Semaphore>>,
+    in_flight_fences: Vec<Destructor<vk::Fence>>,
     minimized: bool,
     resized: bool,
 
@@ -321,7 +321,7 @@ struct VulkanApp {
 
     device: vulkan::Device, // Logical Device
     physical_device: vk::PhysicalDevice,
-    debug_messenger: Option<(debug_utils::Instance, vk::DebugUtilsMessengerEXT)>,
+    debug_messenger: Option<debug::DebugUtils>,
     surface_stuff: SurfaceStuff,
     instance: vulkan::Instance,
     _entry: Entry,
@@ -386,7 +386,7 @@ impl VulkanApp {
         let instance = core::create_instance(&entry, window)?;
         // debug::print_available_instance_extensions(&entry)?;
         // Set up callback for Vulkan debug messages
-        let debug_messenger = setup_debug_utils(&entry, instance.get())?;
+        let debug_messenger = debug::DebugUtils::new(&entry, instance.get())?;
 
         let surface_stuff = SurfaceStuff::new(&entry, instance.get(), window)?;
         // Pick a graphics card
@@ -401,25 +401,18 @@ impl VulkanApp {
 
         let (query_pool_timestamps, timestamps) = prepare_timestamp_queries(device.get())?;
 
-        let swap_chain_stuff = SwapChainStuff::new(
+        let swapchain_stuff = SwapChainStuff::new(
             instance.get(),
-            &device,
+            device.get(),
             &physical_device,
             &surface_stuff,
             &queue_family_indices,
-        );
-
-        let swap_chain_image_views = create_image_views(
-            device.get(),
-            swap_chain_stuff.swapchain_format,
-            &swap_chain_stuff.swapchain_images,
         )?;
-
         let set_layout = create_descriptor_set_layout(device.get())?;
         let descriptor_pool = create_descriptor_pool(device.get())?;
 
         let (pipeline_layout, pipelines) =
-            create_graphics_pipeline(device.get(), &swap_chain_stuff, &set_layout)?;
+            create_graphics_pipeline(device.get(), &swapchain_stuff, &set_layout.get())?;
 
         let (uniform_buffers, uniform_buffers_memory, uniform_buffers_mapped) =
             create_uniform_buffer::<UniformBufferObject>(
@@ -441,7 +434,7 @@ impl VulkanApp {
             device.get(),
             instance.get(),
             &physical_device,
-            &swap_chain_stuff,
+            &swapchain_stuff,
         )?;
 
         let command_pool = create_command_pool(
@@ -453,7 +446,7 @@ impl VulkanApp {
             device.get(),
             instance.get(),
             &physical_device,
-            &command_pool,
+            &command_pool.get(),
             &graphics_queue,
         )?;
 
@@ -461,7 +454,7 @@ impl VulkanApp {
             device.get(),
             instance.get(),
             &physical_device,
-            &command_pool,
+            &command_pool.get(),
             &graphics_queue,
         )?;
 
@@ -470,26 +463,37 @@ impl VulkanApp {
                 device.get(),
                 instance.get(),
                 &physical_device,
-                &command_pool,
+                &command_pool.get(),
                 &graphics_queue,
                 vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::TRANSFER_DST,
             )?;
+        let mut raw_graphic_images = [vk::Image::null(); 2];
+        for i in 0..graphic_images.len() {
+            raw_graphic_images[i] = graphic_images[i].get();
+        }
+        let mut raw_graphic_image_views = [vk::ImageView::null(); 2];
+        for i in 0..graphic_image_views.len() {
+            raw_graphic_image_views[i] = graphic_image_views[i].get();
+        }
 
         let (compute_images, compute_image_memories, compute_image_views) =
             create_storage_image_pair(
                 device.get(),
                 instance.get(),
                 &physical_device,
-                &command_pool,
+                &command_pool.get(),
                 &graphics_queue,
                 vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::TRANSFER_SRC,
             )?;
-
+        let mut raw_compute_images = [vk::Image::null(); 2];
+        for i in 0..compute_images.len() {
+            raw_compute_images[i] = compute_images[i].get();
+        }
         let (bvh_buffer, bvh_buffer_memory) = create_storage_buffer(
             device.get(),
             instance.get(),
             &physical_device,
-            &command_pool,
+            &command_pool.get(),
             &graphics_queue,
             &bvh,
         )?;
@@ -498,7 +502,7 @@ impl VulkanApp {
             device.get(),
             instance.get(),
             &physical_device,
-            &command_pool,
+            &command_pool.get(),
             &graphics_queue,
             &scene.get_sphere_arr().to_vec(),
         )?;
@@ -507,7 +511,7 @@ impl VulkanApp {
             device.get(),
             instance.get(),
             &physical_device,
-            &command_pool,
+            &command_pool.get(),
             &graphics_queue,
             &scene.get_quad_arr().to_vec(),
         )?;
@@ -516,26 +520,28 @@ impl VulkanApp {
             device.get(),
             instance.get(),
             &physical_device,
-            &command_pool,
+            &command_pool.get(),
             &graphics_queue,
             &scene.get_triangle_arr().to_vec(),
         )?;
-
         let descriptor_sets = create_descriptor_sets(
             device.get(),
-            &descriptor_pool,
-            &set_layout,
+            &descriptor_pool.get(),
+            &set_layout.get(),
             &uniform_buffers,
             &material_buffers,
-            bvh_buffer,
-            sphere_buffer,
-            quad_buffer,
-            triangle_buffer,
-            &graphic_image_views,
+            bvh_buffer.get(),
+            sphere_buffer.get(),
+            quad_buffer.get(),
+            triangle_buffer.get(),
+            &raw_graphic_image_views,
         )?;
 
-        let command_buffers =
-            create_command_buffers(device.get(), command_pool, MAX_FRAMES_IN_FLIGHT as u32)?;
+        let command_buffers = create_command_buffers(
+            device.get(),
+            command_pool.get(),
+            MAX_FRAMES_IN_FLIGHT as u32,
+        )?;
 
         let should_transfer_die = Arc::new(RwLock::new(false));
         let should_compute_die = Arc::new(RwLock::new(false));
@@ -591,8 +597,8 @@ impl VulkanApp {
                         transfer_device,
                         queue_family_indices,
                         transfer_transfer_semaphore,
-                        &compute_images,
-                        &graphic_images,
+                        &raw_compute_images,
+                        &raw_graphic_images,
                         transfer_mutex,
                         transfer_receiver,
                         compute_sender,
@@ -622,7 +628,7 @@ impl VulkanApp {
         // log::debug!("{:#?}", scene.get_sphere_arr().to_vec());
 
         Ok(Self {
-            uniform: core::UniformBufferObject::new().update(swap_chain_stuff.swapchain_extent),
+            uniform: core::UniformBufferObject::new().update(swapchain_stuff.extent),
 
             _entry: entry,
             instance,
@@ -632,8 +638,7 @@ impl VulkanApp {
             graphics_queue,
             _presentation_queue: presentation_queue,
             surface_stuff,
-            swap_chain_stuff,
-            swap_chain_image_views,
+            swapchain_stuff: swapchain_stuff,
             queue_family_indices,
 
             transfer_sender,
@@ -648,7 +653,7 @@ impl VulkanApp {
             timestamps,
 
             pipeline_layout,
-            pipelines,
+            graphics_pipeline: pipelines,
             command_pool,
             command_buffers,
             vertex_buffer,
@@ -712,7 +717,7 @@ impl VulkanApp {
         // Wait for the previous frame to finish
         unsafe {
             match self.device.get().wait_for_fences(
-                &[self.in_flight_fences[self.current_frame_index]],
+                &[self.in_flight_fences[self.current_frame_index].get()],
                 true,
                 u64::MAX,
             ) {
@@ -721,10 +726,10 @@ impl VulkanApp {
             }
         }
         let image_index = unsafe {
-            match self.swap_chain_stuff.swapchain_loader.acquire_next_image(
-                self.swap_chain_stuff.swapchain,
+            match self.swapchain_stuff.get_loader().acquire_next_image(
+                self.swapchain_stuff.get_swapchain(),
                 1_000_000_000, // 1 second in nanoseconds
-                self.image_available_semaphores[self.current_frame_index],
+                self.image_available_semaphores[self.current_frame_index].get(),
                 vk::Fence::null(),
             ) {
                 Err(e) => {
@@ -748,7 +753,7 @@ impl VulkanApp {
             match self
                 .device
                 .get()
-                .reset_fences(&[self.in_flight_fences[self.current_frame_index]])
+                .reset_fences(&[self.in_flight_fences[self.current_frame_index].get()])
             {
                 Err(e) => log::error!("Failed to reset in_flight_fence: {:?}", e),
                 _ => {}
@@ -793,7 +798,7 @@ impl VulkanApp {
         self.update_uniform_buffers(self.current_frame_index as u32, delta_time);
 
         let wait_semaphores = [
-            self.image_available_semaphores[self.current_frame_index],
+            self.image_available_semaphores[self.current_frame_index].get(),
             self.graphic_transfer_semaphore.get(),
         ];
         let wait_stages = [
@@ -804,7 +809,7 @@ impl VulkanApp {
             0, // Binary so will be ignored
             timestamp,
         ];
-        let signal_semaphores = [self.render_finished_semaphores[self.current_frame_index]];
+        let signal_semaphores = [self.render_finished_semaphores[self.current_frame_index].get()];
         let command_buffers = [self.command_buffers[self.current_frame_index]];
 
         let mut timeline_info =
@@ -821,7 +826,7 @@ impl VulkanApp {
             self.device.get().queue_submit(
                 self.graphics_queue,
                 &[submit_info],
-                self.in_flight_fences[self.current_frame_index],
+                self.in_flight_fences[self.current_frame_index].get(),
             )
         } {
             Err(e) => {
@@ -830,7 +835,7 @@ impl VulkanApp {
             }
             _ => {}
         }
-        let swapchains = [self.swap_chain_stuff.swapchain];
+        let swapchains = [self.swapchain_stuff.get_swapchain()];
         let image_indices = [image_index];
         let present_info = vk::PresentInfoKHR::default()
             .wait_semaphores(&signal_semaphores)
@@ -838,8 +843,8 @@ impl VulkanApp {
             .image_indices(&image_indices);
 
         match unsafe {
-            self.swap_chain_stuff
-                .swapchain_loader
+            self.swapchain_stuff
+                .get_loader()
                 .queue_present(self.graphics_queue, &present_info)
         } {
             Err(e) => match e {
@@ -862,7 +867,7 @@ impl VulkanApp {
         // https://docs.vulkan.org/samples/latest/samples/api/timestamp_queries/README.html
         match unsafe {
             self.device.get().get_query_pool_results(
-                self.query_pool_timestamps,
+                self.query_pool_timestamps.get(),
                 0,
                 &mut self.timestamps,
                 vk::QueryResultFlags::TYPE_64 | vk::QueryResultFlags::WAIT,
@@ -917,7 +922,7 @@ impl VulkanApp {
 
     fn update_uniform_buffers(&mut self, current_image: u32, _delta_time: Duration) {
         self.uniform.tick();
-        self.uniform.update(self.swap_chain_stuff.swapchain_extent);
+        self.uniform.update(self.swapchain_stuff.extent);
 
         self.uniform.update_camera(&self.camera);
 
@@ -936,41 +941,22 @@ impl VulkanApp {
         if self.minimized == true {
             return;
         }
-        log::debug!("Recreating swap chain");
-        // self.wait_idle();
-        // self.update_compute();
         unsafe {
             match self.device.get().queue_wait_idle(self.graphics_queue) {
                 Err(e) => log::error!("Failed to wait for graphics queue to finish: {:?}", e),
                 _ => {}
             }
         };
-        log::debug!("Queue is ready for changes");
 
-        unsafe { self.cleanup_swap_chain() };
-
-        self.swap_chain_stuff = SwapChainStuff::new(
-            self.instance.get(),
-            &self.device,
-            &self.physical_device,
-            &self.surface_stuff,
-            &self.queue_family_indices,
-        );
-
-        self.swap_chain_image_views = match create_image_views(
-            self.device.get(),
-            self.swap_chain_stuff.swapchain_format,
-            &self.swap_chain_stuff.swapchain_images,
-        ) {
-            Err(e) => {
-                log::error!(
-                    "Failed to create image view when recreating swap chain: {}",
-                    e
-                );
-                return;
-            }
-            Ok(v) => v,
-        };
+        self.swapchain_stuff
+            .reset(
+                self.instance.get(),
+                &self.device.get(),
+                &self.physical_device,
+                &self.surface_stuff,
+                &self.queue_family_indices,
+            )
+            .unwrap();
 
         (
             self.depth_image,
@@ -980,7 +966,7 @@ impl VulkanApp {
             self.device.get(),
             self.instance.get(),
             &self.physical_device,
-            &self.swap_chain_stuff,
+            &self.swapchain_stuff,
         ) {
             Ok(v) => v,
             Err(e) => {
@@ -991,35 +977,14 @@ impl VulkanApp {
                 return;
             }
         };
-
-        //? Rebuild command buffers?
-
         self.uniform.reset_samples();
         self.resized = false;
-        log::debug!("Swapchain recreated");
-    }
-
-    unsafe fn cleanup_swap_chain(&self) {
-        self.device
-            .get()
-            .destroy_image_view(self.depth_image_view, None);
-        self.device.get().destroy_image(self.depth_image, None);
-        self.device.get().free_memory(self.depth_image_memory, None);
-
-        for &image_view in self.swap_chain_image_views.iter() {
-            self.device.get().destroy_image_view(image_view, None);
-        }
-
-        self.swap_chain_stuff
-            .swapchain_loader
-            .destroy_swapchain(self.swap_chain_stuff.swapchain, None);
     }
 
     pub fn record_command_buffer(&mut self, image_index: u32) -> Result<()> {
         let begin_info = vk::CommandBufferBeginInfo::default();
 
         let command_buffer = self.command_buffers[self.current_frame_index];
-        let graphics_pipeline = self.pipelines[0];
 
         unsafe {
             self.device
@@ -1027,7 +992,7 @@ impl VulkanApp {
                 .begin_command_buffer(command_buffer, &begin_info)?;
             self.device.get().cmd_reset_query_pool(
                 command_buffer,
-                self.query_pool_timestamps,
+                self.query_pool_timestamps.get(),
                 0,
                 self.timestamps.len() as u32,
             );
@@ -1049,14 +1014,14 @@ impl VulkanApp {
         let colour_attachments = [vk::RenderingAttachmentInfo::default()
             .clear_value(clear_value)
             .image_layout(vk::ImageLayout::ATTACHMENT_OPTIMAL_KHR)
-            .image_view(self.swap_chain_image_views[image_index as usize]) // Can't remember if this is supposed to be image_index or current_frame_index
+            .image_view(self.swapchain_stuff.image_views[image_index as usize].get()) // Can't remember if this is supposed to be image_index or current_frame_index
             .load_op(vk::AttachmentLoadOp::CLEAR)
             .store_op(vk::AttachmentStoreOp::STORE)];
 
         // let depth_attachment = vk::RenderingAttachmentInfoKHR::default()
         //     .clear_value(depth_clear_value)
         //     .image_layout(vk::ImageLayout::ATTACHMENT_OPTIMAL_KHR)
-        //     .image_view(self.swap_chain_image_views[image_index as usize]) // Can't remember if this is supposed to be image_index or current_frame_index
+        //     .image_view(self.swapchain_stuff.image_views[image_index as usize]) // Can't remember if this is supposed to be image_index or current_frame_index
         //     .load_op(vk::AttachmentLoadOp::CLEAR)
         //     .store_op(vk::AttachmentStoreOp::STORE);
 
@@ -1066,14 +1031,14 @@ impl VulkanApp {
             .layer_count(1)
             .render_area(vk::Rect2D {
                 offset: vk::Offset2D { x: 0, y: 0 },
-                extent: self.swap_chain_stuff.swapchain_extent,
+                extent: self.swapchain_stuff.extent,
             });
 
         transition_image_layout(
             self.device.get(),
-            &self.command_pool,
+            &self.command_pool.get(),
             &self.graphics_queue,
-            self.swap_chain_stuff.swapchain_images[image_index as usize],
+            self.swapchain_stuff.images[image_index as usize],
             vk::ImageLayout::UNDEFINED,
             vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
         )?;
@@ -1082,7 +1047,7 @@ impl VulkanApp {
             self.device.get().cmd_write_timestamp(
                 command_buffer,
                 vk::PipelineStageFlags::TOP_OF_PIPE,
-                self.query_pool_timestamps,
+                self.query_pool_timestamps.get(),
                 0,
             );
 
@@ -1092,30 +1057,30 @@ impl VulkanApp {
             self.device.get().cmd_bind_pipeline(
                 command_buffer,
                 vk::PipelineBindPoint::GRAPHICS,
-                graphics_pipeline,
+                self.graphics_pipeline.get(),
             );
 
             let viewports = [vk::Viewport::default()
-                .width(self.swap_chain_stuff.swapchain_extent.width as f32)
-                .height(self.swap_chain_stuff.swapchain_extent.height as f32)
+                .width(self.swapchain_stuff.extent.width as f32)
+                .height(self.swapchain_stuff.extent.height as f32)
                 .max_depth(1.0)];
             self.device
                 .get()
                 .cmd_set_viewport(command_buffer, 0, &viewports);
 
-            let scissors = [vk::Rect2D::default().extent(self.swap_chain_stuff.swapchain_extent)];
+            let scissors = [vk::Rect2D::default().extent(self.swapchain_stuff.extent)];
             self.device
                 .get()
                 .cmd_set_scissor(command_buffer, 0, &scissors);
 
-            let vertex_buffers = [self.vertex_buffer];
+            let vertex_buffers = [self.vertex_buffer.get()];
             let offsets = [0];
             self.device
                 .get()
                 .cmd_bind_vertex_buffers(command_buffer, 0, &vertex_buffers, &offsets);
             self.device.get().cmd_bind_index_buffer(
                 command_buffer,
-                self.index_buffer,
+                self.index_buffer.get(),
                 0,
                 vk::IndexType::UINT16,
             );
@@ -1125,7 +1090,7 @@ impl VulkanApp {
             self.device.get().cmd_bind_descriptor_sets(
                 command_buffer,
                 vk::PipelineBindPoint::GRAPHICS,
-                self.pipeline_layout,
+                self.pipeline_layout.get(),
                 0,
                 &descriptor_sets_to_bind,
                 &[],
@@ -1138,7 +1103,7 @@ impl VulkanApp {
             self.device.get().cmd_write_timestamp(
                 command_buffer,
                 vk::PipelineStageFlags::BOTTOM_OF_PIPE,
-                self.query_pool_timestamps,
+                self.query_pool_timestamps.get(),
                 1,
             );
 
@@ -1146,9 +1111,9 @@ impl VulkanApp {
 
             transition_image_layout(
                 self.device.get(),
-                &self.command_pool,
+                &self.command_pool.get(),
                 &self.graphics_queue,
-                self.swap_chain_stuff.swapchain_images[image_index as usize],
+                self.swapchain_stuff.images[image_index as usize],
                 vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
                 vk::ImageLayout::PRESENT_SRC_KHR,
             )?;
@@ -1162,139 +1127,25 @@ impl VulkanApp {
 impl Drop for VulkanApp {
     fn drop(&mut self) {
         log::debug!("Cleaning up");
-        // TODO: Replace with a deletion queue
-        unsafe {
-            // Kill threads
-            match self.should_transfer_die.write() {
-                Ok(mut m) => *m = true,
-                Err(e) => log::error!("Failed to write to transfer death mutex: {e}"),
-            }
-            if let Some(t) = self.transfer_thread.take() {
-                log::debug!("Wating for transfer to finish");
-                t.join().unwrap();
-            }
-            match self.should_compute_die.write() {
-                Ok(mut m) => *m = true,
-                Err(e) => log::error!("Failed to write to transfer death mutex: {e}"),
-            }
-            if let Some(t) = self.compute_thread.take() {
-                log::debug!("Wating for compute to finish");
-                t.join().unwrap();
-            }
-
-            self.wait_idle();
-            log::debug!("Device now idle");
-
-            self.cleanup_swap_chain();
-
-            for image_view in self.graphic_image_views {
-                self.device.get().destroy_image_view(image_view, None);
-            }
-            for image in self.graphic_images {
-                self.device.get().destroy_image(image, None);
-            }
-            for image_memory in self.graphic_image_memories {
-                self.device.get().free_memory(image_memory, None);
-            }
-
-            self.device.get().destroy_buffer(self.bvh_buffer, None);
-            self.device.get().destroy_buffer(self.sphere_buffer, None);
-            self.device.get().destroy_buffer(self.quad_buffer, None);
-            self.device.get().destroy_buffer(self.triangle_buffer, None);
-
-            self.device
-                .get()
-                .free_memory(self.sphere_buffer_memory, None);
-            self.device.get().free_memory(self.bvh_buffer_memory, None);
-            self.device.get().free_memory(self.quad_buffer_memory, None);
-            self.device
-                .get()
-                .free_memory(self.triangle_buffer_memory, None);
-
-            for &buffer in self.material_buffers.iter() {
-                self.device.get().destroy_buffer(buffer, None);
-            }
-            for &memory in self.material_buffers_memory.iter() {
-                self.device.get().free_memory(memory, None);
-            }
-
-            for &buffer in self.uniform_buffers.iter() {
-                self.device.get().destroy_buffer(buffer, None);
-            }
-            for &memory in self.uniform_buffers_memory.iter() {
-                self.device.get().free_memory(memory, None);
-            }
-
-            // self.device.get().destroy_pipeline(self.compute_pipeline, None);
-            // self.device
-            //     .destroy_pipeline_layout(self.compute_pipeline_layout, None);
-            // self.device
-            //     .destroy_descriptor_set_layout(self.compute_descriptor_set_layout, None);
-
-            self.device
-                .get()
-                .destroy_descriptor_pool(self.descriptor_pool, None);
-
-            // self.device
-            //     .destroy_descriptor_pool(self.compute_descriptor_pool, None);
-
-            self.device
-                .get()
-                .destroy_descriptor_set_layout(self.set_layout, None);
-
-            self.device.get().destroy_buffer(self.index_buffer, None);
-            self.device
-                .get()
-                .free_memory(self.index_buffer_memory, None);
-
-            self.device.get().destroy_buffer(self.vertex_buffer, None);
-            self.device
-                .get()
-                .free_memory(self.vertex_buffer_memory, None);
-
-            for &pipeline in self.pipelines.iter() {
-                self.device.get().destroy_pipeline(pipeline, None);
-            }
-            self.device
-                .get()
-                .destroy_pipeline_layout(self.pipeline_layout, None);
-
-            for &semaphore in self.image_available_semaphores.iter() {
-                self.device.get().destroy_semaphore(semaphore, None);
-            }
-            for &semaphore in self.render_finished_semaphores.iter() {
-                self.device.get().destroy_semaphore(semaphore, None);
-            }
-            for &fence in self.in_flight_fences.iter() {
-                self.device.get().destroy_fence(fence, None);
-            }
-
-            // self.device.get().destroy_semaphore(self.compute_semaphore, None);
-
-            self.device
-                .get()
-                .destroy_query_pool(self.query_pool_timestamps, None);
-
-            // self.device
-            //     .destroy_command_pool(self.compute_command_pool, None);
-            self.device
-                .get()
-                .destroy_command_pool(self.command_pool, None);
-
-            // self.device.get().destroy_device(None);
-
-            if VALIDATION.is_enable {
-                if let Some((report, messenger)) = self.debug_messenger.take() {
-                    report.destroy_debug_utils_messenger(messenger, None);
-                }
-            }
-            self.surface_stuff
-                .surface_loader
-                .destroy_surface(self.surface_stuff.surface, None);
-
-            // self.instance.destroy_instance(None);
-
-            log::info!("VulkanApp has been dropped");
+        // Kill threads
+        match self.should_transfer_die.write() {
+            Ok(mut m) => *m = true,
+            Err(e) => log::error!("Failed to write to transfer death mutex: {e}"),
         }
+        if let Some(t) = self.transfer_thread.take() {
+            log::debug!("Wating for transfer to finish");
+            t.join().unwrap();
+        }
+        match self.should_compute_die.write() {
+            Ok(mut m) => *m = true,
+            Err(e) => log::error!("Failed to write to transfer death mutex: {e}"),
+        }
+        if let Some(t) = self.compute_thread.take() {
+            log::debug!("Wating for compute to finish");
+            t.join().unwrap();
+        }
+
+        self.wait_idle();
+        log::debug!("Device now idle");
     }
 }

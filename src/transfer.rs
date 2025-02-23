@@ -92,9 +92,9 @@ pub fn transfer_thread(
             Ok(()) => {}
         }
 
-        log::trace!(
-            "Copying compute {compute_valid_frame_index} to graphic {graphic_valid_frame_index}"
-        );
+        // log::trace!(
+        //     "Copying compute {compute_valid_frame_index} to graphic {graphic_valid_frame_index}"
+        // );
 
         // Perform a copy
         match transfer.perform_compute_copy(
@@ -116,6 +116,7 @@ struct Transfer {
     pub device: ash::Device,
     queue: vk::Queue,
     semaphore: vk::Semaphore,
+    #[allow(dead_code)]
     command_pool: Destructor<vk::CommandPool>,
     commands: [vk::CommandBuffer; 4],
 }

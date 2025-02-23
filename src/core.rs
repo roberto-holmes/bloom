@@ -3,6 +3,7 @@ use crate::structures::{
     QueueFamilyIndices, SurfaceStuff, SwapChainStuff, SwapChainSupportDetails,
 };
 use crate::tools::read_shader_code;
+use crate::vulkan::Destructor;
 use crate::{
     bvh, material, primitives, vulkan, IDEAL_RADIANCE_IMAGE_SIZE_HEIGHT,
     IDEAL_RADIANCE_IMAGE_SIZE_WIDTH, MAX_FRAMES_IN_FLIGHT, MAX_MATERIAL_COUNT, MAX_OBJECT_COUNT,
@@ -489,7 +490,7 @@ fn create_image_view(
     image: &vk::Image,
     format: vk::Format,
     aspect_flags: vk::ImageAspectFlags,
-) -> Result<vk::ImageView> {
+) -> Result<Destructor<vk::ImageView>> {
     let create_info = vk::ImageViewCreateInfo::default()
         .view_type(vk::ImageViewType::TYPE_2D)
         .format(format)
@@ -501,19 +502,23 @@ fn create_image_view(
             base_array_layer: 0,
             layer_count: 1,
         });
-    Ok(unsafe { device.create_image_view(&create_info, None)? })
+    Ok(Destructor::new(
+        device,
+        unsafe { device.create_image_view(&create_info, None)? },
+        device.fp_v1_0().destroy_image_view,
+    ))
 }
 
 pub fn create_image_views(
     device: &ash::Device,
     surface_format: vk::Format,
     swapchain_images: &Vec<vk::Image>,
-) -> Result<Vec<vk::ImageView>> {
+) -> Result<Vec<Destructor<vk::ImageView>>> {
     let mut image_views = vec![];
     for image in swapchain_images {
         image_views.push(create_image_view(
             device,
-            image,
+            &image,
             surface_format,
             vk::ImageAspectFlags::COLOR,
         )?);
@@ -521,7 +526,10 @@ pub fn create_image_views(
     Ok(image_views)
 }
 
-pub fn create_shader_module(device: &ash::Device, code: &Vec<u8>) -> Result<vk::ShaderModule> {
+pub fn create_shader_module(
+    device: &ash::Device,
+    code: &Vec<u8>,
+) -> Result<Destructor<vk::ShaderModule>> {
     let mut create_info = vk::ShaderModuleCreateInfo::default();
     create_info.code_size = code.len();
     create_info.p_code = code.as_ptr() as *const u32;
@@ -529,12 +537,18 @@ pub fn create_shader_module(device: &ash::Device, code: &Vec<u8>) -> Result<vk::
     let shader_module = unsafe { device.create_shader_module(&create_info, None) };
 
     match shader_module {
-        Ok(module) => Ok(module),
+        Ok(module) => Ok(Destructor::new(
+            device,
+            module,
+            device.fp_v1_0().destroy_shader_module,
+        )),
         Err(e) => Err(anyhow!("Failed to create shader module: {}", e)),
     }
 }
 
-pub fn create_descriptor_set_layout(device: &ash::Device) -> Result<vk::DescriptorSetLayout> {
+pub fn create_descriptor_set_layout(
+    device: &ash::Device,
+) -> Result<Destructor<vk::DescriptorSetLayout>> {
     let fragment_image_layout_binding = vk::DescriptorSetLayoutBinding::default()
         .binding(0)
         .descriptor_count(1)
@@ -589,15 +603,19 @@ pub fn create_descriptor_set_layout(device: &ash::Device) -> Result<vk::Descript
 
     let layout_info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings);
 
-    Ok(unsafe { device.create_descriptor_set_layout(&layout_info, None) }?)
+    Ok(Destructor::new(
+        device,
+        unsafe { device.create_descriptor_set_layout(&layout_info, None) }?,
+        device.fp_v1_0().destroy_descriptor_set_layout,
+    ))
 }
 
 pub fn create_descriptor_sets(
     device: &ash::Device,
     pool: &vk::DescriptorPool,
     set_layout: &vk::DescriptorSetLayout,
-    uniforms_buffers: &Vec<vk::Buffer>,
-    material_buffers: &Vec<vk::Buffer>,
+    uniforms_buffers: &Vec<Destructor<vk::Buffer>>,
+    material_buffers: &Vec<Destructor<vk::Buffer>>,
     bvh_buffer: vk::Buffer,
     spheres_buffer: vk::Buffer,
     quads_buffer: vk::Buffer,
@@ -618,12 +636,12 @@ pub fn create_descriptor_sets(
     // TODO: Target 4 descriptors (apparently this is the guaranteed supported amount and more can be slow)
     for (i, &descriptor_set) in descriptor_sets.iter().enumerate() {
         let buffer_info = [vk::DescriptorBufferInfo::default()
-            .buffer(uniforms_buffers[i])
+            .buffer(uniforms_buffers[i].get())
             .offset(0)
             .range(std::mem::size_of::<UniformBufferObject>() as u64)];
 
         let material_buffer_info = [vk::DescriptorBufferInfo::default()
-            .buffer(material_buffers[i])
+            .buffer(material_buffers[i].get())
             .offset(0)
             .range((std::mem::size_of::<material::Material>() * MAX_MATERIAL_COUNT) as u64)];
 
@@ -712,9 +730,9 @@ pub fn create_descriptor_sets(
 
 pub fn create_graphics_pipeline(
     device: &ash::Device,
-    swap_chain_stuff: &SwapChainStuff,
+    swapchain_stuff: &SwapChainStuff,
     set_layout: &vk::DescriptorSetLayout,
-) -> Result<(vk::PipelineLayout, Vec<vk::Pipeline>)> {
+) -> Result<(Destructor<vk::PipelineLayout>, Destructor<vk::Pipeline>)> {
     // let vert_shader_code = read_shader_code(Path::new("shaders/spv/vertex.wgsl.spv"))?;
     let vert_shader_code = read_shader_code(Path::new("shaders/spv/triangle.vert.spv"))?;
     let frag_shader_code = read_shader_code(Path::new("shaders/spv/frag.wgsl.spv"))?;
@@ -728,11 +746,11 @@ pub fn create_graphics_pipeline(
     let shader_stages = [
         vk::PipelineShaderStageCreateInfo::default()
             .stage(vk::ShaderStageFlags::VERTEX)
-            .module(vert_shader_module)
+            .module(vert_shader_module.get())
             .name(&main_function_name),
         vk::PipelineShaderStageCreateInfo::default()
             .stage(vk::ShaderStageFlags::FRAGMENT)
-            .module(frag_shader_module)
+            .module(frag_shader_module.get())
             .name(&main_function_name),
     ];
 
@@ -791,13 +809,17 @@ pub fn create_graphics_pipeline(
 
     let set_layouts = [*set_layout];
     // Pipeline Layout (Uniforms are declared here)
-    let format = [swap_chain_stuff.swapchain_format];
+    let format = [swapchain_stuff.format];
     let mut pipeline_rendering_create_info =
         vk::PipelineRenderingCreateInfo::default().color_attachment_formats(&format);
 
     let pipeline_layout_info = vk::PipelineLayoutCreateInfo::default().set_layouts(&set_layouts);
 
-    let pipeline_layout = unsafe { device.create_pipeline_layout(&pipeline_layout_info, None)? };
+    let pipeline_layout = Destructor::new(
+        device,
+        unsafe { device.create_pipeline_layout(&pipeline_layout_info, None)? },
+        device.fp_v1_0().destroy_pipeline_layout,
+    );
 
     // Actual pipeline
     let pipeline_info = [vk::GraphicsPipelineCreateInfo::default()
@@ -809,7 +831,7 @@ pub fn create_graphics_pipeline(
         .multisample_state(&multisampling)
         .color_blend_state(&colour_blending)
         .dynamic_state(&dynamic_state)
-        .layout(pipeline_layout)
+        .layout(pipeline_layout.get())
         // .depth_stencil_state(&depth_stencil)
         // .subpass(0)
         .push(&mut pipeline_rendering_create_info)];
@@ -818,13 +840,11 @@ pub fn create_graphics_pipeline(
         device.create_graphics_pipelines(vk::PipelineCache::null(), &pipeline_info, None)
     };
 
-    unsafe {
-        device.destroy_shader_module(vert_shader_module, None);
-        device.destroy_shader_module(frag_shader_module, None);
-    }
-
     match pipeline {
-        Ok(v) => Ok((pipeline_layout, v)),
+        Ok(v) => Ok((
+            pipeline_layout,
+            Destructor::new(device, v[0], device.fp_v1_0().destroy_pipeline),
+        )),
         Err(e) => Err(anyhow!("Failed to create graphics pipeline: {:?}", e)),
     }
 }
@@ -850,18 +870,18 @@ fn create_buffer(
     size: u64,
     usage: vk::BufferUsageFlags,
     required_memory_properties: vk::MemoryPropertyFlags,
-) -> Result<(vk::Buffer, vk::DeviceMemory)> {
+) -> Result<(Destructor<vk::Buffer>, Destructor<vk::DeviceMemory>)> {
     let buffer_info = vk::BufferCreateInfo::default()
         .size(size)
         .usage(usage)
         .sharing_mode(vk::SharingMode::EXCLUSIVE);
 
     let buffer = match unsafe { device.create_buffer(&buffer_info, None) } {
-        Ok(value) => value,
+        Ok(value) => Destructor::new(device, value, device.fp_v1_0().destroy_buffer),
         Err(e) => return Err(anyhow!("Failed to create vertex buffer: {}", e)),
     };
 
-    let mem_requirements = unsafe { device.get_buffer_memory_requirements(buffer) };
+    let mem_requirements = unsafe { device.get_buffer_memory_requirements(buffer.get()) };
 
     let mem_properties =
         unsafe { instance.get_physical_device_memory_properties(*physical_device) };
@@ -875,9 +895,13 @@ fn create_buffer(
         .allocation_size(mem_requirements.size)
         .memory_type_index(memory_type);
 
-    let memory = unsafe { device.allocate_memory(&allocate_info, None) }?;
+    let memory = Destructor::new(
+        device,
+        unsafe { device.allocate_memory(&allocate_info, None) }?,
+        device.fp_v1_0().free_memory,
+    );
 
-    unsafe { device.bind_buffer_memory(buffer, memory, 0)? };
+    unsafe { device.bind_buffer_memory(buffer.get(), memory.get(), 0)? };
 
     Ok((buffer, memory))
 }
@@ -905,7 +929,7 @@ pub fn create_vertex_buffer(
     physical_device: &vk::PhysicalDevice,
     command_pool: &vk::CommandPool,
     queue: &vk::Queue,
-) -> Result<(vk::Buffer, vk::DeviceMemory)> {
+) -> Result<(Destructor<vk::Buffer>, Destructor<vk::DeviceMemory>)> {
     let buffer_size = (std::mem::size_of::<Vertex>() * VERTICES.len()) as u64;
 
     let (staging_buffer, staging_buffer_memory) = create_buffer(
@@ -919,7 +943,7 @@ pub fn create_vertex_buffer(
 
     unsafe {
         let data_ptr = device.map_memory(
-            staging_buffer_memory,
+            staging_buffer_memory.get(),
             0,
             buffer_size,
             vk::MemoryMapFlags::empty(),
@@ -927,7 +951,7 @@ pub fn create_vertex_buffer(
 
         data_ptr.copy_from_nonoverlapping(VERTICES.as_ptr(), VERTICES.len());
 
-        device.unmap_memory(staging_buffer_memory);
+        device.unmap_memory(staging_buffer_memory.get());
     };
 
     let (vertex_buffer, vertex_memory) = create_buffer(
@@ -941,18 +965,12 @@ pub fn create_vertex_buffer(
 
     copy_buffer(
         device,
-        &staging_buffer,
-        &vertex_buffer,
+        &staging_buffer.get(),
+        &vertex_buffer.get(),
         buffer_size,
         command_pool,
         queue,
     )?;
-
-    unsafe {
-        device.destroy_buffer(staging_buffer, None);
-        device.free_memory(staging_buffer_memory, None);
-    }
-
     Ok((vertex_buffer, vertex_memory))
 }
 
@@ -962,7 +980,7 @@ pub fn create_index_buffer(
     physical_device: &vk::PhysicalDevice,
     command_pool: &vk::CommandPool,
     queue: &vk::Queue,
-) -> Result<(vk::Buffer, vk::DeviceMemory)> {
+) -> Result<(Destructor<vk::Buffer>, Destructor<vk::DeviceMemory>)> {
     let buffer_size = (std::mem::size_of::<Vertex>() * INDICES.len()) as u64;
 
     let (staging_buffer, staging_buffer_memory) = create_buffer(
@@ -976,7 +994,7 @@ pub fn create_index_buffer(
 
     unsafe {
         let data_ptr = device.map_memory(
-            staging_buffer_memory,
+            staging_buffer_memory.get(),
             0,
             buffer_size,
             vk::MemoryMapFlags::empty(),
@@ -984,7 +1002,7 @@ pub fn create_index_buffer(
 
         data_ptr.copy_from_nonoverlapping(INDICES.as_ptr(), INDICES.len());
 
-        device.unmap_memory(staging_buffer_memory);
+        device.unmap_memory(staging_buffer_memory.get());
     };
 
     let (index_buffer, index_memory) = create_buffer(
@@ -998,17 +1016,12 @@ pub fn create_index_buffer(
 
     copy_buffer(
         device,
-        &staging_buffer,
-        &index_buffer,
+        &staging_buffer.get(),
+        &index_buffer.get(),
         buffer_size,
         command_pool,
         queue,
     )?;
-
-    unsafe {
-        device.destroy_buffer(staging_buffer, None);
-        device.free_memory(staging_buffer_memory, None);
-    }
 
     Ok((index_buffer, index_memory))
 }
@@ -1018,7 +1031,11 @@ pub fn create_uniform_buffer<T>(
     instance: &ash::Instance,
     physical_device: &vk::PhysicalDevice,
     array_length: u64,
-) -> Result<(Vec<vk::Buffer>, Vec<vk::DeviceMemory>, Vec<*mut T>)> {
+) -> Result<(
+    Vec<Destructor<vk::Buffer>>,
+    Vec<Destructor<vk::DeviceMemory>>,
+    Vec<*mut T>,
+)> {
     let buffer_size = (std::mem::size_of::<T>() as u64) * array_length;
 
     let mut uniform_buffers = vec![];
@@ -1040,7 +1057,7 @@ pub fn create_uniform_buffer<T>(
         )?;
         uniform_buffers_mapped.push(unsafe {
             device.map_memory(
-                uniform_buffers_memory_temp,
+                uniform_buffers_memory_temp.get(),
                 0,
                 buffer_size,
                 vk::MemoryMapFlags::empty(),
@@ -1063,7 +1080,7 @@ pub fn create_storage_buffer<T>(
     command_pool: &vk::CommandPool,
     submit_queue: &vk::Queue,
     data_in: &Vec<T>,
-) -> Result<(vk::Buffer, vk::DeviceMemory)> {
+) -> Result<(Destructor<vk::Buffer>, Destructor<vk::DeviceMemory>)> {
     let buffer_size = (std::mem::size_of::<T>() * data_in.len()) as u64;
 
     let (staging_buffer, staging_buffer_memory) = create_buffer(
@@ -1078,7 +1095,7 @@ pub fn create_storage_buffer<T>(
     unsafe {
         let data_ptr = device
             .map_memory(
-                staging_buffer_memory,
+                staging_buffer_memory.get(),
                 0,
                 buffer_size,
                 vk::MemoryMapFlags::empty(),
@@ -1088,7 +1105,7 @@ pub fn create_storage_buffer<T>(
 
         data_ptr.copy_from_nonoverlapping(data_in.as_ptr(), data_in.len());
 
-        device.unmap_memory(staging_buffer_memory);
+        device.unmap_memory(staging_buffer_memory.get());
     }
 
     let (buffer, buffer_memory) = create_buffer(
@@ -1103,18 +1120,13 @@ pub fn create_storage_buffer<T>(
     // Copy data from staging buffer to our actual one
     let command_buffer = begin_single_time_commands(device, command_pool)?;
     let regions = [vk::BufferCopy::default().size(buffer_size)];
-    unsafe { device.cmd_copy_buffer(command_buffer, staging_buffer, buffer, &regions) };
+    unsafe { device.cmd_copy_buffer(command_buffer, staging_buffer.get(), buffer.get(), &regions) };
     end_single_time_command(device, command_pool, submit_queue, &command_buffer)?;
-
-    unsafe {
-        device.destroy_buffer(staging_buffer, None);
-        device.free_memory(staging_buffer_memory, None);
-    }
 
     Ok((buffer, buffer_memory))
 }
 
-pub fn create_descriptor_pool(device: &ash::Device) -> Result<vk::DescriptorPool> {
+pub fn create_descriptor_pool(device: &ash::Device) -> Result<Destructor<vk::DescriptorPool>> {
     let pool_sizes = [
         vk::DescriptorPoolSize::default()
             .descriptor_count(MAX_FRAMES_IN_FLIGHT as u32)
@@ -1143,17 +1155,25 @@ pub fn create_descriptor_pool(device: &ash::Device) -> Result<vk::DescriptorPool
         .pool_sizes(&pool_sizes)
         .max_sets(MAX_FRAMES_IN_FLIGHT as u32);
 
-    Ok(unsafe { device.create_descriptor_pool(&pool_info, None)? })
+    Ok(Destructor::new(
+        device,
+        unsafe { device.create_descriptor_pool(&pool_info, None)? },
+        device.fp_v1_0().destroy_descriptor_pool,
+    ))
 }
 
 pub fn create_command_pool(
     device: &ash::Device,
     queue_family_index: u32,
-) -> Result<vk::CommandPool> {
+) -> Result<Destructor<vk::CommandPool>> {
     let pool_info = vk::CommandPoolCreateInfo::default()
         .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
         .queue_family_index(queue_family_index);
-    Ok(unsafe { device.create_command_pool(&pool_info, None) }?)
+    Ok(Destructor::new(
+        device,
+        unsafe { device.create_command_pool(&pool_info, None) }?,
+        device.fp_v1_0().destroy_command_pool,
+    ))
 }
 
 pub fn create_command_buffers(
@@ -1171,7 +1191,11 @@ pub fn create_command_buffers(
 
 pub fn create_sync_object(
     device: &ash::Device,
-) -> Result<(Vec<vk::Semaphore>, Vec<vk::Semaphore>, Vec<vk::Fence>)> {
+) -> Result<(
+    Vec<Destructor<vk::Semaphore>>,
+    Vec<Destructor<vk::Semaphore>>,
+    Vec<Destructor<vk::Fence>>,
+)> {
     // Semaphore is to tell the GPU to wait
     let semaphore_info = vk::SemaphoreCreateInfo::default();
     // Fence is to tell the CPU to wait
@@ -1183,9 +1207,21 @@ pub fn create_sync_object(
 
     for _ in 0..MAX_FRAMES_IN_FLIGHT {
         unsafe {
-            semaphores1.push(device.create_semaphore(&semaphore_info, None)?);
-            semaphores2.push(device.create_semaphore(&semaphore_info, None)?);
-            fences.push(device.create_fence(&fence_info, None)?);
+            semaphores1.push(Destructor::new(
+                device,
+                device.create_semaphore(&semaphore_info, None)?,
+                device.fp_v1_0().destroy_semaphore,
+            ));
+            semaphores2.push(Destructor::new(
+                device,
+                device.create_semaphore(&semaphore_info, None)?,
+                device.fp_v1_0().destroy_semaphore,
+            ));
+            fences.push(Destructor::new(
+                device,
+                device.create_fence(&fence_info, None)?,
+                device.fp_v1_0().destroy_fence,
+            ));
         }
     }
     Ok((semaphores1, semaphores2, fences))
@@ -1200,7 +1236,7 @@ fn create_image(
     usage: vk::ImageUsageFlags,
     required_memory_properties: vk::MemoryPropertyFlags,
     device_memory_properties: &vk::PhysicalDeviceMemoryProperties,
-) -> Result<(vk::Image, vk::DeviceMemory)> {
+) -> Result<(Destructor<vk::Image>, Destructor<vk::DeviceMemory>)> {
     let image_create_info = vk::ImageCreateInfo::default()
         .image_type(vk::ImageType::TYPE_2D)
         .extent(vk::Extent3D {
@@ -1243,8 +1279,10 @@ fn create_image(
             .bind_image_memory(texture_image, texture_image_memory, 0)
             .context("Failed to bind image memory")?
     };
+    let image = Destructor::new(device, texture_image, device.fp_v1_0().destroy_image);
+    let image_memory = Destructor::new(device, texture_image_memory, device.fp_v1_0().free_memory);
 
-    Ok((texture_image, texture_image_memory))
+    Ok((image, image_memory))
 }
 
 #[allow(unused)]
@@ -1254,7 +1292,7 @@ pub fn create_texture_image(
     physical_device: &vk::PhysicalDevice,
     command_pool: &vk::CommandPool,
     submit_queue: &vk::Queue,
-) -> Result<(vk::Image, vk::DeviceMemory)> {
+) -> Result<(Destructor<vk::Image>, Destructor<vk::DeviceMemory>)> {
     let mut image_object = image::ImageReader::open("textures/statue.jpg")?.decode()?; // Apparently this function is slow in debug mode
     image_object = image_object.flipv();
     let (image_width, image_height) = (image_object.width(), image_object.height());
@@ -1278,7 +1316,7 @@ pub fn create_texture_image(
     unsafe {
         let data_ptr = device
             .map_memory(
-                staging_buffer_memory,
+                staging_buffer_memory.get(),
                 0,
                 image_size,
                 vk::MemoryMapFlags::empty(),
@@ -1288,7 +1326,7 @@ pub fn create_texture_image(
 
         data_ptr.copy_from_nonoverlapping(image_data.as_ptr(), image_data.len());
 
-        device.unmap_memory(staging_buffer_memory);
+        device.unmap_memory(staging_buffer_memory.get());
     }
 
     let mem_properties =
@@ -1309,7 +1347,7 @@ pub fn create_texture_image(
         device,
         command_pool,
         submit_queue,
-        texture_image,
+        texture_image.get(),
         vk::ImageLayout::UNDEFINED,
         vk::ImageLayout::TRANSFER_DST_OPTIMAL,
     )?;
@@ -1318,8 +1356,8 @@ pub fn create_texture_image(
         device,
         command_pool,
         submit_queue,
-        staging_buffer,
-        texture_image,
+        staging_buffer.get(),
+        texture_image.get(),
         image_width,
         image_height,
     )?;
@@ -1328,15 +1366,10 @@ pub fn create_texture_image(
         device,
         command_pool,
         submit_queue,
-        texture_image,
+        texture_image.get(),
         vk::ImageLayout::TRANSFER_DST_OPTIMAL,
         vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
     )?;
-
-    unsafe {
-        device.destroy_buffer(staging_buffer, None);
-        device.free_memory(staging_buffer_memory, None);
-    }
 
     Ok((texture_image, texture_image_memory))
 }
@@ -1348,7 +1381,11 @@ pub fn create_storage_image_pair(
     command_pool: &vk::CommandPool,
     submit_queue: &vk::Queue,
     usage: vk::ImageUsageFlags,
-) -> Result<([vk::Image; 2], [vk::DeviceMemory; 2], [vk::ImageView; 2])> {
+) -> Result<(
+    [Destructor<vk::Image>; 2],
+    [Destructor<vk::DeviceMemory>; 2],
+    [Destructor<vk::ImageView>; 2],
+)> {
     let image_width = std::cmp::min(
         IDEAL_RADIANCE_IMAGE_SIZE_WIDTH,
         get_max_image_size(instance, physical_device),
@@ -1361,12 +1398,16 @@ pub fn create_storage_image_pair(
     let mem_properties =
         unsafe { instance.get_physical_device_memory_properties(*physical_device) };
 
-    let mut images = [vk::Image::null(); 2];
-    let mut image_memories = [vk::DeviceMemory::null(); 2];
-    let mut image_views = [vk::ImageView::null(); 2];
+    let mut images = vec![];
+    let mut image_memories = vec![];
+    let mut image_views = vec![];
+
+    images.reserve_exact(2);
+    image_memories.reserve_exact(2);
+    image_views.reserve_exact(2);
 
     for i in 0..2 {
-        (images[i], image_memories[i]) = create_image(
+        let (image, image_memory) = create_image(
             device,
             image_width,
             image_height,
@@ -1377,24 +1418,31 @@ pub fn create_storage_image_pair(
             &mem_properties,
         )?;
 
+        images.push(image);
+        image_memories.push(image_memory);
+
         transition_image_layout(
             device,
             command_pool,
             submit_queue,
-            images[i],
+            images[i].get(),
             vk::ImageLayout::UNDEFINED,
             vk::ImageLayout::GENERAL,
         )?;
 
-        image_views[i] = create_image_view(
+        image_views.push(create_image_view(
             device,
-            &images[i],
+            &images[i].get(),
             vk::Format::R32G32B32A32_SFLOAT,
             vk::ImageAspectFlags::COLOR,
-        )?;
+        )?);
     }
 
-    Ok((images, image_memories, image_views))
+    Ok((
+        images.try_into().unwrap(),
+        image_memories.try_into().unwrap(),
+        image_views.try_into().unwrap(),
+    ))
 }
 
 fn begin_single_time_commands(
@@ -1563,7 +1611,7 @@ fn copy_buffer_to_image(
 pub fn create_texture_image_view(
     device: &ash::Device,
     texture_image: &vk::Image,
-) -> Result<vk::ImageView> {
+) -> Result<Destructor<vk::ImageView>> {
     Ok(create_image_view(
         device,
         texture_image,
@@ -1649,32 +1697,47 @@ pub fn create_depth_resources(
     instance: &ash::Instance,
     physical_device: &vk::PhysicalDevice,
     swap_chain_stuff: &SwapChainStuff,
-) -> Result<(vk::Image, vk::DeviceMemory, vk::ImageView)> {
+) -> Result<(
+    Destructor<vk::Image>,
+    Destructor<vk::DeviceMemory>,
+    Destructor<vk::ImageView>,
+)> {
     let depth_format = find_depth_format(instance, physical_device)?;
     let mem_properties =
         unsafe { instance.get_physical_device_memory_properties(*physical_device) };
     let (image, image_memory) = create_image(
         device,
-        swap_chain_stuff.swapchain_extent.width,
-        swap_chain_stuff.swapchain_extent.height,
+        swap_chain_stuff.extent.width,
+        swap_chain_stuff.extent.height,
         depth_format,
         vk::ImageTiling::OPTIMAL,
         vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
         vk::MemoryPropertyFlags::DEVICE_LOCAL,
         &mem_properties,
     )?;
-    let image_view = create_image_view(device, &image, depth_format, vk::ImageAspectFlags::DEPTH)?;
+    let image_view = create_image_view(
+        device,
+        &image.get(),
+        depth_format,
+        vk::ImageAspectFlags::DEPTH,
+    )?;
 
     Ok((image, image_memory, image_view))
 }
 
-pub fn prepare_timestamp_queries(device: &ash::Device) -> Result<(vk::QueryPool, Vec<u64>)> {
+pub fn prepare_timestamp_queries(
+    device: &ash::Device,
+) -> Result<(Destructor<vk::QueryPool>, Vec<u64>)> {
     let timestamps = vec![0; 2];
     let query_pool_info = vk::QueryPoolCreateInfo::default()
         .query_type(vk::QueryType::TIMESTAMP)
         .query_count(timestamps.len() as u32);
 
-    let timestamps_query_pool = unsafe { device.create_query_pool(&query_pool_info, None)? };
+    let timestamps_query_pool = Destructor::new(
+        device,
+        unsafe { device.create_query_pool(&query_pool_info, None)? },
+        device.fp_v1_0().destroy_query_pool,
+    );
 
     Ok((timestamps_query_pool, timestamps))
 }

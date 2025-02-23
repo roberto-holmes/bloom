@@ -100,17 +100,30 @@ pub fn populate_debug_messenger_create_info() -> vk::DebugUtilsMessengerCreateIn
         .pfn_user_callback(Some(crate::debug::vulkan_debug_callback))
 }
 
-pub fn setup_debug_utils(
-    entry: &ash::Entry,
-    instance: &ash::Instance,
-) -> Result<Option<(debug_utils::Instance, vk::DebugUtilsMessengerEXT)>> {
-    if VALIDATION.is_enable == false {
-        return Ok(None);
-    }
-    let debug_info = populate_debug_messenger_create_info();
-    let debug_utils_loader = debug_utils::Instance::new(entry, instance);
-    let debug_callback =
-        unsafe { debug_utils_loader.create_debug_utils_messenger(&debug_info, None)? };
+pub struct DebugUtils {
+    loader: ash::ext::debug_utils::Instance,
+    messenger: vk::DebugUtilsMessengerEXT,
+}
 
-    Ok(Some((debug_utils_loader, debug_callback)))
+impl DebugUtils {
+    pub fn new(entry: &ash::Entry, instance: &ash::Instance) -> Result<Option<Self>> {
+        if VALIDATION.is_enable == false {
+            return Ok(None);
+        }
+        let debug_info = populate_debug_messenger_create_info();
+        let loader = debug_utils::Instance::new(entry, instance);
+        let messenger = unsafe { loader.create_debug_utils_messenger(&debug_info, None)? };
+
+        Ok(Some(Self { loader, messenger }))
+    }
+}
+
+impl Drop for DebugUtils {
+    fn drop(&mut self) {
+        log::trace!("Dropping debug utils");
+        unsafe {
+            self.loader
+                .destroy_debug_utils_messenger(self.messenger, None);
+        }
+    }
 }
