@@ -1,15 +1,125 @@
-use std::{array, ffi::CString, path::Path};
+use std::{
+    array,
+    ffi::CString,
+    path::Path,
+    sync::{mpsc, Arc, RwLock},
+};
 
 use anyhow::{anyhow, Result};
 use ash::vk;
 
-use crate::{
-    core, structures, tools::read_shader_code, vulkan::Destructor,
-    IDEAL_RADIANCE_IMAGE_SIZE_HEIGHT, IDEAL_RADIANCE_IMAGE_SIZE_WIDTH, MAX_FRAMES_IN_FLIGHT,
-};
+use crate::{core, structures, tools::read_shader_code, vulkan::Destructor, MAX_FRAMES_IN_FLIGHT};
 
-pub struct Compute {
+pub fn compute_thread(
     device: ash::Device,
+    queue_family_indices: structures::QueueFamilyIndices,
+    radiance_images: [vk::Image; 2],
+    radiance_image_views: [vk::ImageView; 2],
+    radiance_image_memories: [vk::DeviceMemory; 2],
+
+    should_threads_die: Arc<RwLock<bool>>,
+    notify_transfer_wait: mpsc::Receiver<u64>,
+    notify_complete_frame: mpsc::Sender<u8>,
+    transfer_semaphore: vk::Semaphore,
+) {
+    let compute = match Compute::new(
+        device,
+        queue_family_indices,
+        radiance_images,
+        radiance_image_views,
+        radiance_image_memories,
+    ) {
+        Ok(v) => v,
+        Err(e) => panic!("Failed to create compute object: {}", e),
+    };
+
+    // The latest value used by the timeline semaphore
+    let mut current_timestamp = 0;
+    // The latest value we have been geiven by Transfer that we cannot work until complete
+    let mut current_transfer_timestamp = 0;
+    // The index in the frames in flight that we are currently writing to
+    let mut current_frame_index = 0;
+
+    let mut first_run = true;
+
+    loop {
+        // Check if we should end the thread
+        match should_threads_die.read() {
+            Ok(should_die) => {
+                if *should_die == true {
+                    break;
+                }
+            }
+            Err(e) => {
+                log::error!("rwlock is poisoned, ending thread: {}", e)
+            }
+        }
+
+        if !first_run {
+            match core::block_on_semaphore(
+                &compute.device,
+                compute.semaphore.get(),
+                current_timestamp,
+                10_000_000, // 10ms
+            ) {
+                Err(vk::Result::TIMEOUT) => continue,
+                Err(e) => {
+                    log::error!("Failed to wait for compute task to finish: {e}");
+                    break;
+                }
+                Ok(()) => {}
+            }
+
+            // Compute sets the MSb of the frame so that transfer knows where it came from
+            let channel_frame = current_frame_index as u8 | 0x80;
+            // Send current frame to transfer thread so that it knows where it can get a valid frame from
+            match notify_complete_frame.send(channel_frame) {
+                Err(e) => {
+                    log::error!("Failed to notify transfer channel: {e}")
+                }
+                Ok(()) => {}
+            }
+            current_frame_index += 1;
+            current_frame_index %= MAX_FRAMES_IN_FLIGHT;
+        }
+
+        // Check if we need to wait for a transfer to complete
+        match notify_transfer_wait.try_recv() {
+            Err(mpsc::TryRecvError::Empty) => {
+                // Nothing to wait for, we can go on as planned
+            }
+            Ok(v) => {
+                // We have been told to not do any work until a new timeline has been reached
+                current_transfer_timestamp = v;
+            }
+            Err(mpsc::TryRecvError::Disconnected) => {
+                log::error!("Failed to receive a notification from transfer");
+                break;
+            }
+        }
+
+        // Perform a render
+        // TODO: Measure time taken
+        match compute.perform_compute(
+            current_frame_index,
+            transfer_semaphore,
+            current_transfer_timestamp,
+            current_timestamp,
+            current_timestamp + 1,
+        ) {
+            Err(e) => {
+                log::error!("Failed to perform compute: {}", e)
+            }
+            _ => {}
+        };
+        first_run = false;
+        current_timestamp += 1;
+    }
+    log::warn!("Ending thread");
+}
+
+struct Compute {
+    pub device: ash::Device,
     semaphore: Destructor<vk::Semaphore>,
 
     radiance_images: [vk::Image; 2],
@@ -22,12 +132,8 @@ pub struct Compute {
     pipeline: Destructor<vk::Pipeline>,
     command_pool: Destructor<vk::CommandPool>,
     commands: [vk::CommandBuffer; 2],
-    copy_commands: [vk::CommandBuffer; 4],
     descriptor_pool: Destructor<vk::DescriptorPool>,
     descriptor_sets: Vec<vk::DescriptorSet>,
-
-    current_timestamp: u64,
-    current_frame_index: usize,
 }
 
 impl Compute {
@@ -37,29 +143,28 @@ impl Compute {
         radiance_images: [vk::Image; 2],
         radiance_image_views: [vk::ImageView; 2],
         radiance_image_memories: [vk::DeviceMemory; 2],
-        output_images: [vk::Image; 2],
     ) -> Result<Self> {
         // Populates queue
-        let queue = create_queue(&device, queue_family_indices);
+        let queue = core::create_queue(&device, queue_family_indices.compute_family.unwrap());
         // Populates descriptor_set_layout, pipeline_layout, descriptor_pool, descriptor_sets, and pipeline
         let (descriptor_pool, descriptor_set_layout, descriptor_sets, pipeline_layout, pipeline) =
             create_pipeline(&device, &radiance_image_views)?;
         // Populates command_pool, commands, and copy_commands
-        let (command_pool, commands, copy_commands) = create_commands(
+        let (command_pool, commands) = create_commands(
             &device,
             queue_family_indices,
             &descriptor_sets,
             pipeline_layout.get(),
             pipeline.get(),
-            radiance_images,
-            output_images,
         )?;
         // populates semaphore
         let semaphore = Destructor::new(
             &device,
-            create_semaphore(&device)?,
+            core::create_semaphore(&device)?,
             device.fp_v1_0().destroy_semaphore,
         );
+
+        log::debug!("Command buffer {:?}", commands);
 
         Ok(Self {
             device,
@@ -73,101 +178,44 @@ impl Compute {
             pipeline,
             command_pool,
             commands,
-            copy_commands,
             descriptor_pool,
             descriptor_sets,
-            current_timestamp: 0,
-            current_frame_index: 0,
         })
     }
-    pub fn get_semaphore(&self) -> vk::Semaphore {
-        self.semaphore.get()
-    }
-    pub fn update(&mut self) -> Result<()> {
-        // Perform a render
-        self.perform_compute(self.current_timestamp, self.current_timestamp + 1)?;
+    fn perform_compute(
+        &self,
+        current_frame_index: usize,
+        transfer_semaphore: vk::Semaphore,
+        transfer_timestamp_to_wait: u64,
+        compute_timestamp_to_wait: u64,
+        timestamp_to_signal: u64,
+    ) -> Result<()> {
+        let wait_timestamps = [transfer_timestamp_to_wait, compute_timestamp_to_wait];
+        let wait_semaphores = [transfer_semaphore, self.semaphore.get()];
+        let wait_stages = [
+            vk::PipelineStageFlags::TRANSFER,
+            vk::PipelineStageFlags::COMPUTE_SHADER,
+        ];
 
-        self.current_frame_index += 1;
-        self.current_frame_index %= MAX_FRAMES_IN_FLIGHT;
-
-        // Perform a copy
-        self.perform_compute_copy(self.current_timestamp + 1, self.current_timestamp + 2)?;
-
-        // Wait for the copy to complete
-        self.wait_for_compute_operation(self.current_timestamp + 2)?;
-        self.current_timestamp += 2;
-
-        Ok(())
-    }
-    fn wait_for_compute_operation(&mut self, timestamp_to_wait: u64) -> Result<()> {
-        let semaphores = [self.semaphore.get()];
-        let wait_values = [timestamp_to_wait];
-        let wait_info = vk::SemaphoreWaitInfo::default()
-            .semaphores(&semaphores)
-            .values(&wait_values);
-        unsafe { self.device.wait_semaphores(&wait_info, u64::MAX) }?;
-        Ok(())
-    }
-    fn perform_compute(&self, timestamp_to_wait: u64, timestamp_to_signal: u64) -> Result<()> {
-        let wait_timestamps = [timestamp_to_wait];
         let signal_timestamps = [timestamp_to_signal];
-        let semaphores = [self.semaphore.get()];
+        let signal_semaphores = [self.semaphore.get()];
 
-        let command_buffer = [self.commands[self.current_frame_index]];
+        let command_buffer = [self.commands[current_frame_index]];
 
         let mut timeline_info = vk::TimelineSemaphoreSubmitInfo::default()
             .signal_semaphore_values(&signal_timestamps)
             .wait_semaphore_values(&wait_timestamps);
         let submit_info = [vk::SubmitInfo::default()
             .command_buffers(&command_buffer)
-            .signal_semaphores(&semaphores)
+            .wait_semaphores(&wait_semaphores)
+            .wait_dst_stage_mask(&wait_stages)
+            .signal_semaphores(&signal_semaphores)
             .push(&mut timeline_info)];
 
         unsafe {
             self.device
                 .queue_submit(self.queue, &submit_info, vk::Fence::null())
         }?;
-        Ok(())
-    }
-    fn perform_compute_copy(
-        &mut self,
-        timestamp_to_wait: u64,
-        timestamp_to_signal: u64,
-    ) -> Result<()> {
-        let wait_timestamps = [timestamp_to_wait];
-        let signal_timestamps = [timestamp_to_signal];
-        let semaphores = [self.semaphore.get()];
-
-        let command_index = 1 << self.current_frame_index | self.current_frame_index;
-        let command_buffer = [self.copy_commands[command_index]];
-
-        let mut timeline_info = vk::TimelineSemaphoreSubmitInfo::default()
-            .signal_semaphore_values(&signal_timestamps)
-            .wait_semaphore_values(&wait_timestamps);
-        let submit_info = [vk::SubmitInfo::default()
-            .command_buffers(&command_buffer)
-            .signal_semaphores(&semaphores)
-            .push(&mut timeline_info)];
-
-        match unsafe {
-            self.device
-                .queue_submit(self.queue, &submit_info, vk::Fence::null())
-        } {
-            Err(e) => return Err(anyhow!("Failed to submit compute commands: {}", e)),
-            _ => {}
-        }
-        Ok(())
-    }
-    pub fn signal_end_compute(&self) -> Result<()> {
-        let signal_info = vk::SemaphoreSignalInfo::default()
-            .semaphore(self.semaphore.get())
-            .value(u64::MAX);
-        match unsafe { self.device.signal_semaphore(&signal_info) } {
-            Err(e) => {
-                return Err(anyhow!("Failed to signal compute copy semaphore: {}", e));
-            }
-            _ => {}
-        };
         Ok(())
     }
 }
@@ -186,29 +234,6 @@ impl Drop for Compute {
             }
         }
     }
-}
-
-fn create_queue(
-    device: &ash::Device,
-    queue_family_indices: structures::QueueFamilyIndices,
-) -> vk::Queue {
-    unsafe {
-        device.get_device_queue(
-            queue_family_indices.compute_family.unwrap(),
-            if queue_family_indices.queue_count > 1 {
-                1
-            } else {
-                0
-            },
-        )
-    }
-}
-fn create_semaphore(device: &ash::Device) -> Result<vk::Semaphore> {
-    let mut type_info = vk::SemaphoreTypeCreateInfo::default()
-        .semaphore_type(vk::SemaphoreType::TIMELINE)
-        .initial_value(0);
-    let semaphore_info = vk::SemaphoreCreateInfo::default().push(&mut type_info);
-    Ok(unsafe { device.create_semaphore(&semaphore_info, None) }?)
 }
 
 fn create_pipeline(
@@ -343,16 +368,10 @@ fn create_commands(
     descriptor_sets: &Vec<vk::DescriptorSet>,
     pipeline_layout: vk::PipelineLayout,
     pipeline: vk::Pipeline,
-    radiance_images: [vk::Image; 2],
-    output_images: [vk::Image; 2],
-) -> Result<(
-    Destructor<vk::CommandPool>,
-    [vk::CommandBuffer; 2],
-    [vk::CommandBuffer; 4],
-)> {
+) -> Result<(Destructor<vk::CommandPool>, [vk::CommandBuffer; 2])> {
     let pool_info = vk::CommandPoolCreateInfo::default()
         .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
-        .queue_family_index(queue_family_indices.compute_family.unwrap());
+        .queue_family_index(queue_family_indices.compute_family.unwrap().0);
     let command_pool = Destructor::new(
         device,
         unsafe { device.create_command_pool(&pool_info, None)? },
@@ -361,8 +380,6 @@ fn create_commands(
 
     let command_buffers = core::create_command_buffers(device, command_pool.get(), 2)?;
 
-    let copy_command_buffers = core::create_command_buffers(device, command_pool.get(), 4)?;
-
     let commands = record_commands(
         device,
         pipeline_layout,
@@ -370,14 +387,8 @@ fn create_commands(
         &descriptor_sets,
         &command_buffers,
     )?;
-    let copy_commands = record_copy_commands(
-        device,
-        &copy_command_buffers,
-        &radiance_images,
-        &output_images,
-    )?;
 
-    Ok((command_pool, commands, copy_commands))
+    Ok((command_pool, commands))
 }
 
 fn compute_commands(
@@ -411,7 +422,7 @@ fn compute_commands(
     Ok(command_buffer)
 }
 
-pub fn record_commands(
+fn record_commands(
     device: &ash::Device,
     pipeline_layout: vk::PipelineLayout,
     pipeline: vk::Pipeline,
@@ -438,155 +449,4 @@ pub fn record_commands(
     //     c = self.compute_commands(command_buffers, self.descriptor_sets[0], 0)?;
     // }
     Ok(commands)
-}
-
-fn copy_commands(
-    device: &ash::Device,
-    command_buffers: &Vec<vk::CommandBuffer>,
-    current_frame_index: usize,
-    draw_frame: usize,
-    radiance_images: &[vk::Image; 2],
-    output_images: &[vk::Image; 2],
-) -> Result<vk::CommandBuffer> {
-    assert_eq!(command_buffers.len(), 4);
-    let command_buffer = command_buffers[1 << draw_frame | current_frame_index];
-
-    let subresource_range = vk::ImageSubresourceRange {
-        aspect_mask: vk::ImageAspectFlags::COLOR,
-        base_mip_level: 0,
-        level_count: 1,
-        base_array_layer: 0,
-        layer_count: 1,
-    };
-
-    let mut compute_barrier = vk::ImageMemoryBarrier::default()
-        .old_layout(vk::ImageLayout::GENERAL)
-        .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
-        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-        .image(radiance_images[current_frame_index])
-        .subresource_range(subresource_range)
-        .src_access_mask(vk::AccessFlags::SHADER_READ)
-        .dst_access_mask(vk::AccessFlags::TRANSFER_READ);
-    let mut draw_barrier = vk::ImageMemoryBarrier::default()
-        .old_layout(vk::ImageLayout::UNDEFINED)
-        .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-        .image(output_images[draw_frame])
-        .subresource_range(subresource_range)
-        .src_access_mask(vk::AccessFlags::SHADER_READ)
-        .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE);
-
-    let mut image_memory_barriers = [compute_barrier, draw_barrier];
-
-    let subresource = vk::ImageSubresourceLayers {
-        aspect_mask: vk::ImageAspectFlags::COLOR,
-        mip_level: 0,
-        base_array_layer: 0,
-        layer_count: 1,
-    };
-
-    let regions = [vk::ImageCopy {
-        src_subresource: subresource,
-        dst_subresource: subresource,
-        src_offset: vk::Offset3D { x: 0, y: 0, z: 0 },
-        dst_offset: vk::Offset3D { x: 0, y: 0, z: 0 },
-        extent: vk::Extent3D {
-            width: IDEAL_RADIANCE_IMAGE_SIZE_WIDTH, // TODO: Resize dynamically
-            height: IDEAL_RADIANCE_IMAGE_SIZE_HEIGHT,
-            depth: 1,
-        },
-    }];
-
-    let begin_info = vk::CommandBufferBeginInfo::default();
-    unsafe {
-        device.begin_command_buffer(command_buffer, &begin_info)?;
-        device.cmd_pipeline_barrier(
-            command_buffer,
-            vk::PipelineStageFlags::COMPUTE_SHADER,
-            vk::PipelineStageFlags::TRANSFER,
-            vk::DependencyFlags::empty(),
-            &[],
-            &[],
-            &image_memory_barriers,
-        );
-        device.cmd_copy_image(
-            command_buffer,
-            radiance_images[current_frame_index],
-            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
-            output_images[draw_frame],
-            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-            &regions,
-        );
-    }
-
-    compute_barrier.src_access_mask = vk::AccessFlags::TRANSFER_READ;
-    compute_barrier.dst_access_mask = vk::AccessFlags::SHADER_READ;
-    draw_barrier.src_access_mask = vk::AccessFlags::TRANSFER_WRITE;
-    draw_barrier.dst_access_mask = vk::AccessFlags::SHADER_READ;
-    compute_barrier.old_layout = vk::ImageLayout::TRANSFER_SRC_OPTIMAL;
-    compute_barrier.new_layout = vk::ImageLayout::GENERAL;
-    draw_barrier.old_layout = vk::ImageLayout::TRANSFER_DST_OPTIMAL;
-    draw_barrier.new_layout = vk::ImageLayout::GENERAL;
-
-    image_memory_barriers = [compute_barrier, draw_barrier]; // TODO: Is this necessary or will the changes already be here?
-
-    unsafe {
-        device.cmd_pipeline_barrier(
-            command_buffer,
-            vk::PipelineStageFlags::TRANSFER,
-            vk::PipelineStageFlags::FRAGMENT_SHADER,
-            vk::DependencyFlags::empty(),
-            &[],
-            &[],
-            &image_memory_barriers,
-        );
-        device.end_command_buffer(command_buffer)?;
-    }
-
-    Ok(command_buffer)
-}
-
-pub fn record_copy_commands(
-    device: &ash::Device,
-    command_buffers: &Vec<vk::CommandBuffer>,
-    radiance_images: &[vk::Image; 2],
-    output_images: &[vk::Image; 2],
-) -> Result<[vk::CommandBuffer; 4]> {
-    // We need a set of commands for each permutation of the frames lining up
-    Ok([
-        copy_commands(
-            device,
-            command_buffers,
-            0,
-            0,
-            radiance_images,
-            output_images,
-        )?,
-        copy_commands(
-            device,
-            command_buffers,
-            1,
-            0,
-            radiance_images,
-            output_images,
-        )?,
-        copy_commands(
-            device,
-            command_buffers,
-            0,
-            1,
-            radiance_images,
-            output_images,
-        )?,
-        copy_commands(
-            device,
-            command_buffers,
-            1,
-            1,
-            radiance_images,
-            output_images,
-        )?,
-    ])
 }

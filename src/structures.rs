@@ -77,8 +77,8 @@ impl SwapChainStuff {
             .clipped(true); // Ignore pixels that are obscured(i.e. hidden behind other windows)
 
         let queue_family_total = vec![
-            queue_family.graphics_family.unwrap(),
-            queue_family.present_family.unwrap(),
+            queue_family.graphics_family.unwrap().0,
+            queue_family.present_family.unwrap().0,
         ];
         // Check if we are just using one queue for everything
         if queue_family.graphics_family != queue_family.present_family {
@@ -111,11 +111,12 @@ impl SwapChainStuff {
 }
 
 #[derive(Debug, Clone, Copy)]
+// Stores the family and index of each each queue that we want
 pub struct QueueFamilyIndices {
-    pub graphics_family: Option<u32>,
-    pub present_family: Option<u32>,
-    pub compute_family: Option<u32>,
-    pub queue_count: usize,
+    pub graphics_family: Option<(u32, u32)>,
+    pub present_family: Option<(u32, u32)>,
+    pub compute_family: Option<(u32, u32)>,
+    pub transfer_family: Option<(u32, u32)>,
 }
 
 impl QueueFamilyIndices {
@@ -124,7 +125,7 @@ impl QueueFamilyIndices {
             graphics_family: None,
             present_family: None,
             compute_family: None,
-            queue_count: 0,
+            transfer_family: None,
         }
     }
 
@@ -132,6 +133,26 @@ impl QueueFamilyIndices {
         self.graphics_family.is_some()
             && self.present_family.is_some()
             && self.compute_family.is_some()
+    }
+
+    pub fn is_index_taken(&self, queue_index: u32, index: u32) -> bool {
+        if self
+            .graphics_family
+            .is_some_and(|x| x.0 == queue_index && x.1 == index)
+            || self
+                .compute_family
+                .is_some_and(|x| x.0 == queue_index && x.1 == index)
+            || self
+                .transfer_family
+                .is_some_and(|x| x.0 == queue_index && x.1 == index)
+            || self
+                .present_family
+                .is_some_and(|x| x.0 == queue_index && x.1 == index)
+        {
+            true
+        } else {
+            false
+        }
     }
 }
 

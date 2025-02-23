@@ -161,12 +161,15 @@ fn find_queue_families(
     let queue_family_properties =
         unsafe { instance.get_physical_device_queue_family_properties(*device) };
 
+    let mut fallback_compute_queue_index = None;
+    let mut fallback_transfer_queue_index = None;
+
     for (family_index, queue_family) in queue_family_properties.iter().enumerate() {
-        if queue_family.queue_count > 0
+        if queue_family_indices.graphics_family.is_none()
+            && queue_family.queue_count > 0
             && queue_family.queue_flags.contains(vk::QueueFlags::GRAPHICS)
         {
-            queue_family_indices.graphics_family = Some(family_index as u32);
-            queue_family_indices.queue_count += 1;
+            queue_family_indices.graphics_family = Some((family_index as u32, 0));
         }
 
         // Check if the current queue supports presenting images
@@ -180,41 +183,57 @@ fn find_queue_families(
                 )
                 .expect("Failed to check device for presentation support")
         };
-        if queue_family.queue_count > 0 && is_present_supported {
-            queue_family_indices.present_family = Some(family_index as u32);
-        }
-
-        // TODO: Select a separate queue for compute if possible, if not just use the same queue and keep track of how many distinct queues we have
-        // Make sure our compute queue is separate from the graphics and presentation queues
-        if queue_family_indices
-            .graphics_family
-            .is_some_and(|x| x == family_index as u32) // Select the same family as the graphics queue
+        if queue_family_indices.present_family.is_none()
             && queue_family.queue_count > 0
-            && queue_family.queue_flags.contains(vk::QueueFlags::COMPUTE)
-        // if queue_family.queue_count > 0
-        // && queue_family.queue_flags.contains(vk::QueueFlags::COMPUTE)
+            && is_present_supported
         {
-            // The compute queue will use the same queue family as graphics but there are multiple queues to use
-            queue_family_indices.compute_family = Some(family_index as u32);
-            // queue_family_indices.queue_count += 1;
+            queue_family_indices.present_family = Some((family_index as u32, 0));
         }
-        // TODO: Add the  possiblity to pick a queue that does not support graphics work
-        // else if queue_family_indices
-        //     .graphics_family
-        //     .is_some_and(|x| x != family_index as u32)
-        //     && queue_family.queue_count > 0
-        //     && queue_family.queue_flags.contains(vk::QueueFlags::COMPUTE)
-        // {
-        //     // The compute queue will use a different queue family as graphics so there only needs to be 1
-        //     queue_family_indices.compute_family = Some(family_index as u32);
-        // }
 
-        // TODO: Get a queue for transfer
+        if queue_family_indices.compute_family.is_none()
+            && queue_family.queue_flags.contains(vk::QueueFlags::COMPUTE)
+            && queue_family.queue_count > 0
+        {
+            for i in 0..queue_family.queue_count {
+                if !queue_family_indices.is_index_taken(family_index as u32, i) {
+                    queue_family_indices.compute_family = Some((family_index as u32, i));
+                    break;
+                } else if fallback_compute_queue_index.is_none() {
+                    // Queue family supports compute but has been used by another queue
+                    //(We don't want to share the queue so we will set this as as fallback value in case we don't find a better alternative)
+                    fallback_compute_queue_index = Some((family_index as u32, 0));
+                }
+            }
+        }
+
+        if queue_family_indices.transfer_family.is_none()
+            && queue_family.queue_flags.contains(vk::QueueFlags::TRANSFER)
+            && queue_family.queue_count > 0
+        {
+            for i in 0..queue_family.queue_count {
+                if !queue_family_indices.is_index_taken(family_index as u32, i) {
+                    queue_family_indices.transfer_family = Some((family_index as u32, i));
+                    break;
+                } else if fallback_transfer_queue_index.is_none() {
+                    // Queue family supports trasnfer but has been used by another queue
+                    //(We don't want to share the queue so we will set this as as fallback value in case we don't find a better alternative)
+                    fallback_transfer_queue_index = Some((family_index as u32, 0));
+                }
+            }
+        }
 
         // We only need to find one queue family that meets our requirements
         if queue_family_indices.is_complete() {
             break;
         }
+    }
+
+    if queue_family_indices.compute_family.is_none() {
+        queue_family_indices.compute_family = fallback_compute_queue_index;
+    }
+
+    if queue_family_indices.transfer_family.is_none() {
+        queue_family_indices.transfer_family = fallback_transfer_queue_index;
     }
 
     queue_family_indices
@@ -402,23 +421,33 @@ pub fn create_logical_device(
 ) -> Result<(vulkan::Device, QueueFamilyIndices)> {
     let indices = find_queue_families(instance, &physical_device, surface_stuff);
 
+    let mut queue_families = vec![];
+    queue_families.push(indices.graphics_family.unwrap().0);
+    queue_families.push(indices.present_family.unwrap().0);
+    queue_families.push(indices.compute_family.unwrap().0);
+    queue_families.push(indices.transfer_family.unwrap().0);
+
+    let mut queue_priorities = vec![1.0];
+
     // Create a set to store all the queue families we want in case a single queue has satisfies multiple requirements
     let mut unique_queue_families = HashSet::new();
-    unique_queue_families.insert(indices.graphics_family.unwrap());
-    unique_queue_families.insert(indices.present_family.unwrap());
-    unique_queue_families.insert(indices.compute_family.unwrap());
-
-    // Set up priorities for as many queeus as there are
-    let mut queue_priorities = vec![1.0];
-    for i in 1..indices.queue_count {
-        queue_priorities.push(queue_priorities[i] / 2.0);
+    for q in &queue_families {
+        unique_queue_families.insert(q);
+        // Set up priorities for as many queues as there are
+        queue_priorities.push(0.5);
     }
-    // let queue_priorities = [1.0];
+
     let mut queue_create_infos = vec![];
-    for queue_family in unique_queue_families {
+    for &queue_family in unique_queue_families {
+        let mut queue_count = 0;
+        for &q in &queue_families {
+            if q == queue_family {
+                queue_count += 1;
+            }
+        }
         let queue_create_info = vk::DeviceQueueCreateInfo::default()
             .queue_family_index(queue_family)
-            .queue_priorities(&queue_priorities);
+            .queue_priorities(&queue_priorities[..queue_count]);
         queue_create_infos.push(queue_create_info);
     }
 
@@ -1648,4 +1677,30 @@ pub fn prepare_timestamp_queries(device: &ash::Device) -> Result<(vk::QueryPool,
     let timestamps_query_pool = unsafe { device.create_query_pool(&query_pool_info, None)? };
 
     Ok((timestamps_query_pool, timestamps))
+}
+
+pub fn block_on_semaphore(
+    device: &ash::Device,
+    semaphore: vk::Semaphore,
+    timestamp_to_wait: u64,
+    timeout_ns: u64,
+) -> ash::VkResult<()> {
+    let semaphores = [semaphore];
+    let wait_values = [timestamp_to_wait];
+    let wait_info = vk::SemaphoreWaitInfo::default()
+        .semaphores(&semaphores)
+        .values(&wait_values);
+    unsafe { device.wait_semaphores(&wait_info, timeout_ns) }
+}
+
+pub fn create_queue(device: &ash::Device, queue_index: (u32, u32)) -> vk::Queue {
+    unsafe { device.get_device_queue(queue_index.0, queue_index.1) }
+}
+
+pub fn create_semaphore(device: &ash::Device) -> Result<vk::Semaphore> {
+    let mut type_info = vk::SemaphoreTypeCreateInfo::default()
+        .semaphore_type(vk::SemaphoreType::TIMELINE)
+        .initial_value(0);
+    let semaphore_info = vk::SemaphoreCreateInfo::default().push(&mut type_info);
+    Ok(unsafe { device.create_semaphore(&semaphore_info, None) }?)
 }

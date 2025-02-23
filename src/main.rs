@@ -8,10 +8,13 @@ mod primitives;
 mod select;
 mod structures;
 mod tools;
+mod transfer;
 mod vec;
 mod vulkan;
 
 use std::{
+    sync::{mpsc, Arc, RwLock},
+    thread::{self, JoinHandle},
     time::{Duration, SystemTime},
     u64,
 };
@@ -24,6 +27,7 @@ use debug::{setup_debug_utils, ValidationInfo};
 use primitives::Scene;
 use structures::{QueueFamilyIndices, SurfaceStuff, SwapChainStuff};
 use vec::Vec3;
+use vulkan::Destructor;
 use winit::{
     application::ApplicationHandler,
     dpi::{PhysicalPosition, PhysicalSize},
@@ -248,15 +252,19 @@ impl ApplicationHandler for App {
 }
 
 struct VulkanApp {
+    should_compute_die: Arc<RwLock<bool>>,
+    should_transfer_die: Arc<RwLock<bool>>,
+    compute_thread: Option<JoinHandle<()>>,
+    transfer_thread: Option<JoinHandle<()>>,
+    transfer_sender: mpsc::Sender<u8>,
+    graphic_receiver: mpsc::Receiver<u64>,
+    graphic_transfer_semaphore: Destructor<vk::Semaphore>, // TODO: Should this object own the destructor
+
     graphics_queue: vk::Queue,
     _presentation_queue: vk::Queue,
     swap_chain_stuff: SwapChainStuff,
     swap_chain_image_views: Vec<vk::ImageView>,
     queue_family_indices: QueueFamilyIndices,
-
-    current_timestamp: u64,
-
-    compute: compute::Compute,
 
     query_pool_timestamps: vk::QueryPool,
     timestamps: Vec<u64>,
@@ -291,9 +299,9 @@ struct VulkanApp {
     triangle_buffer: vk::Buffer,
     triangle_buffer_memory: vk::DeviceMemory,
 
-    radiance_images: [vk::Image; 2],
-    radiance_image_memories: [vk::DeviceMemory; 2],
-    radiance_image_views: [vk::ImageView; 2],
+    graphic_images: [vk::Image; 2],
+    graphic_image_memories: [vk::DeviceMemory; 2],
+    graphic_image_views: [vk::ImageView; 2],
 
     depth_image: vk::Image,
     depth_image_memory: vk::DeviceMemory,
@@ -308,7 +316,6 @@ struct VulkanApp {
     camera: Camera,
     scene: Scene,
 
-    // compute_frame: usize,
     current_frame_index: usize,
     frame_count: u128,
 
@@ -386,26 +393,11 @@ impl VulkanApp {
         let physical_device = pick_physical_device(instance.get(), &surface_stuff)?;
         let (device, queue_family_indices) =
             create_logical_device(instance.get(), &physical_device, &surface_stuff)?;
-        let graphics_queue = unsafe {
-            device
-                .get()
-                .get_device_queue(queue_family_indices.graphics_family.unwrap(), 0)
-        };
-        let presentation_queue = unsafe {
-            device
-                .get()
-                .get_device_queue(queue_family_indices.present_family.unwrap(), 0)
-        };
-        // let compute_queue = unsafe {
-        //     device.get().get_device_queue(
-        //         queue_family_indices.compute_family.unwrap(),
-        //         if queue_family_indices.queue_count > 1 {
-        //             1
-        //         } else {
-        //             0
-        //         },
-        //     )
-        // };
+
+        let graphics_queue =
+            core::create_queue(device.get(), queue_family_indices.graphics_family.unwrap());
+        let presentation_queue =
+            core::create_queue(device.get(), queue_family_indices.present_family.unwrap());
 
         let (query_pool_timestamps, timestamps) = prepare_timestamp_queries(device.get())?;
 
@@ -452,8 +444,10 @@ impl VulkanApp {
             &swap_chain_stuff,
         )?;
 
-        let command_pool =
-            create_command_pool(device.get(), queue_family_indices.graphics_family.unwrap())?;
+        let command_pool = create_command_pool(
+            device.get(),
+            queue_family_indices.graphics_family.unwrap().0,
+        )?;
 
         let (vertex_buffer, vertex_buffer_memory) = create_vertex_buffer(
             device.get(),
@@ -471,7 +465,7 @@ impl VulkanApp {
             &graphics_queue,
         )?;
 
-        let (radiance_images, radiance_image_memories, radiance_image_views) =
+        let (graphic_images, graphic_image_memories, graphic_image_views) =
             create_storage_image_pair(
                 device.get(),
                 instance.get(),
@@ -537,20 +531,80 @@ impl VulkanApp {
             sphere_buffer,
             quad_buffer,
             triangle_buffer,
-            &radiance_image_views,
+            &graphic_image_views,
         )?;
 
         let command_buffers =
             create_command_buffers(device.get(), command_pool, MAX_FRAMES_IN_FLIGHT as u32)?;
 
-        let compute = compute::Compute::new(
-            device.get().clone(),
-            queue_family_indices,
-            compute_images,
-            compute_image_views,
-            compute_image_memories,
-            radiance_images,
-        )?;
+        let should_transfer_die = Arc::new(RwLock::new(false));
+        let should_compute_die = Arc::new(RwLock::new(false));
+        let transfer_mutex = Arc::clone(&should_transfer_die);
+        let compute_mutex = Arc::clone(&should_compute_die);
+
+        let compute_device = device.get().clone();
+        let transfer_device = device.get().clone();
+
+        let (transfer_sender, transfer_receiver) = mpsc::channel();
+        let (graphic_sender, graphic_receiver) = mpsc::channel();
+        let (compute_sender, compute_receiver) = mpsc::channel();
+
+        let compute_transfer_send = transfer_sender.clone();
+
+        let transfer_semaphore = Destructor::new(
+            device.get(),
+            core::create_semaphore(device.get())?,
+            device.get().fp_v1_0().destroy_semaphore,
+        );
+
+        let compute_transfer_semaphore = transfer_semaphore.get().clone();
+        let transfer_transfer_semaphore = transfer_semaphore.get().clone();
+
+        let compute_thread =
+            match thread::Builder::new()
+                .name("Compute".to_string())
+                .spawn(move || {
+                    compute::compute_thread(
+                        compute_device,
+                        queue_family_indices,
+                        compute_images,
+                        compute_image_views,
+                        compute_image_memories,
+                        compute_mutex,
+                        compute_receiver,
+                        compute_transfer_send,
+                        compute_transfer_semaphore,
+                    );
+                }) {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    log::error!("Failed to create compute thread: {e}");
+                    None
+                }
+            };
+
+        let transfer_thread =
+            match thread::Builder::new()
+                .name("Transfer".to_string())
+                .spawn(move || {
+                    transfer::transfer_thread(
+                        transfer_device,
+                        queue_family_indices,
+                        transfer_transfer_semaphore,
+                        &compute_images,
+                        &graphic_images,
+                        transfer_mutex,
+                        transfer_receiver,
+                        compute_sender,
+                        graphic_sender,
+                    );
+                }) {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    log::error!("Failed to create transfer thread: {e}");
+                    None
+                }
+            };
 
         let (image_available_semaphores, render_finished_semaphores, in_flight_fences) =
             create_sync_object(device.get())?;
@@ -582,9 +636,13 @@ impl VulkanApp {
             swap_chain_image_views,
             queue_family_indices,
 
-            current_timestamp: 0,
-
-            compute,
+            transfer_sender,
+            graphic_receiver,
+            should_compute_die,
+            should_transfer_die,
+            compute_thread,
+            transfer_thread,
+            graphic_transfer_semaphore: transfer_semaphore,
 
             query_pool_timestamps,
             timestamps,
@@ -618,9 +676,9 @@ impl VulkanApp {
             triangle_buffer,
             triangle_buffer_memory,
 
-            radiance_images,
-            radiance_image_memories,
-            radiance_image_views,
+            graphic_images,
+            graphic_image_memories,
+            graphic_image_views,
 
             depth_image,
             depth_image_memory,
@@ -651,7 +709,7 @@ impl VulkanApp {
     }
 
     pub fn draw_frame(&mut self, delta_time: Duration) {
-        self.current_timestamp += 2;
+        // Wait for the previous frame to finish
         unsafe {
             match self.device.get().wait_for_fences(
                 &[self.in_flight_fences[self.current_frame_index]],
@@ -697,7 +755,20 @@ impl VulkanApp {
             }
         }
 
-        self.compute.update();
+        match self.transfer_sender.send(self.current_frame_index as u8) {
+            Err(e) => {
+                log::error!("Failed to notify transfer channel: {e}")
+            }
+            Ok(()) => {}
+        };
+
+        let timestamp = match self.graphic_receiver.recv() {
+            Ok(v) => v,
+            Err(mpsc::RecvError) => {
+                log::error!("Transfer channel is dead");
+                return;
+            }
+        };
 
         match unsafe {
             self.device.get().reset_command_buffer(
@@ -723,15 +794,15 @@ impl VulkanApp {
 
         let wait_semaphores = [
             self.image_available_semaphores[self.current_frame_index],
-            self.compute.get_semaphore(),
+            self.graphic_transfer_semaphore.get(),
         ];
         let wait_stages = [
             vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-            vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+            vk::PipelineStageFlags::TRANSFER,
         ];
         let wait_values = [
             0, // Binary so will be ignored
-            self.current_timestamp,
+            timestamp,
         ];
         let signal_semaphores = [self.render_finished_semaphores[self.current_frame_index]];
         let command_buffers = [self.command_buffers[self.current_frame_index]];
@@ -1093,22 +1164,36 @@ impl Drop for VulkanApp {
         log::debug!("Cleaning up");
         // TODO: Replace with a deletion queue
         unsafe {
-            let _ = self.compute.signal_end_compute();
-            log::debug!("Performed one last compute operation");
+            // Kill threads
+            match self.should_transfer_die.write() {
+                Ok(mut m) => *m = true,
+                Err(e) => log::error!("Failed to write to transfer death mutex: {e}"),
+            }
+            if let Some(t) = self.transfer_thread.take() {
+                log::debug!("Wating for transfer to finish");
+                t.join().unwrap();
+            }
+            match self.should_compute_die.write() {
+                Ok(mut m) => *m = true,
+                Err(e) => log::error!("Failed to write to transfer death mutex: {e}"),
+            }
+            if let Some(t) = self.compute_thread.take() {
+                log::debug!("Wating for compute to finish");
+                t.join().unwrap();
+            }
+
             self.wait_idle();
             log::debug!("Device now idle");
 
-            // std::ptr::drop_in_place(&mut self.compute);
-
             self.cleanup_swap_chain();
 
-            for image_view in self.radiance_image_views {
+            for image_view in self.graphic_image_views {
                 self.device.get().destroy_image_view(image_view, None);
             }
-            for image in self.radiance_images {
+            for image in self.graphic_images {
                 self.device.get().destroy_image(image, None);
             }
-            for image_memory in self.radiance_image_memories {
+            for image_memory in self.graphic_image_memories {
                 self.device.get().free_memory(image_memory, None);
             }
 
