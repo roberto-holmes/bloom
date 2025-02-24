@@ -1,18 +1,21 @@
+pub mod api;
 mod bvh;
 mod camera;
 mod compute;
 mod core;
 mod debug;
-mod material;
-mod primitives;
-mod select;
+pub mod material;
+pub mod primitives;
+pub mod select;
 mod structures;
 mod tools;
 mod transfer;
-mod vec;
+pub mod vec;
 mod vulkan;
 
 use std::{
+    cell::RefCell,
+    rc::Rc,
     sync::{mpsc, Arc, RwLock},
     thread::{self, JoinHandle},
     time::{Duration, SystemTime},
@@ -20,18 +23,16 @@ use std::{
 };
 
 use anyhow::Result;
+use api::{BloomAPI, Bloomable};
 use ash::{vk, Entry};
-use camera::Camera;
 use core::*;
 use debug::ValidationInfo;
-use primitives::Scene;
 use structures::{QueueFamilyIndices, SurfaceStuff, SwapChainStuff};
-use vec::Vec3;
 use vulkan::Destructor;
 use winit::{
     application::ApplicationHandler,
-    dpi::{PhysicalPosition, PhysicalSize},
-    event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent},
+    dpi::PhysicalSize,
+    event::{ElementState, KeyEvent, WindowEvent},
     event_loop::{self, ActiveEventLoop, EventLoop},
     keyboard::{KeyCode, PhysicalKey},
     window::{Window, WindowId},
@@ -49,10 +50,6 @@ pub const MAX_QUAD_COUNT: usize = 20;
 pub const MAX_TRIANGLE_COUNT: usize = 20;
 pub const MAX_OBJECT_COUNT: usize = MAX_SPHERE_COUNT + MAX_QUAD_COUNT + MAX_TRIANGLE_COUNT;
 
-const FOCAL_DISTANCE: f32 = 4.5;
-const VFOV_DEG: f32 = 40.;
-const DOF_SCALE: f32 = 0.05;
-
 #[cfg(debug_assertions)]
 const VALIDATION: ValidationInfo = ValidationInfo {
     is_enable: true,
@@ -65,7 +62,7 @@ const VALIDATION: ValidationInfo = ValidationInfo {
     required_validation_layers: [""],
 };
 
-pub fn init() -> Result<()> {
+pub fn run<T: Bloomable>(user_app: T) {
     env_logger::init();
     // log::error!("Testing Error");
     // log::warn!("Testing Warn");
@@ -73,85 +70,46 @@ pub fn init() -> Result<()> {
     // log::debug!("Testing Debug");
     // log::trace!("Testing Trace");
 
-    let mut app = App::new();
-    let event_loop = EventLoop::new()?;
+    let mut app = App::new(user_app);
+    let event_loop = match EventLoop::new() {
+        Ok(v) => v,
+        Err(e) => {
+            log::error!("Failed to create event loop: {e}");
+            return;
+        }
+    };
 
     event_loop.set_control_flow(event_loop::ControlFlow::Poll);
 
-    event_loop.run_app(&mut app)?;
-    Ok(())
-}
-
-#[derive(Debug, Default)]
-struct MouseState {
-    left_pressed: bool,
-    right_pressed: bool,
-    middle_pressed: bool,
-    forward_pressed: bool,
-    backward_pressed: bool,
-
-    click_position: PhysicalPosition<f64>,
-
-    last_position: PhysicalPosition<f64>,
-    current_position: PhysicalPosition<f64>,
-}
-
-impl MouseState {
-    pub fn update_button(&mut self, button: MouseButton, state: ElementState) {
-        match button {
-            MouseButton::Left => {
-                self.left_pressed = state.is_pressed();
-                if state.is_pressed() {
-                    self.click_position = self.current_position
-                }
-            }
-            MouseButton::Right => self.right_pressed = state.is_pressed(),
-            MouseButton::Middle => self.middle_pressed = state.is_pressed(),
-            MouseButton::Forward => self.forward_pressed = state.is_pressed(),
-            MouseButton::Back => self.backward_pressed = state.is_pressed(),
-            MouseButton::Other(v) => {
-                log::warn!("Ignoring mouse button {}", v)
-            }
+    match event_loop.run_app(&mut app) {
+        Err(e) => {
+            log::error!("Failed to run bloom app {e}")
         }
-    }
-    pub fn update_position(&mut self, position: PhysicalPosition<f64>) {
-        self.last_position = self.current_position;
-        self.current_position = position;
-    }
-    pub fn get_pos_delta(&self) -> (f32, f32) {
-        (
-            (self.current_position.x - self.last_position.x) as f32,
-            (self.current_position.y - self.last_position.y) as f32,
-        )
-    }
-    pub fn get_click_delta(&self) -> f32 {
-        // We just need an approximation to decide if the mouse has moved too much to ignore the click
-        ((self.current_position.x - self.click_position.x).abs()
-            + (self.current_position.y - self.click_position.y).abs()) as f32
-    }
+        Ok(()) => {}
+    };
 }
 
-struct App {
+struct App<T: Bloomable> {
     window: Option<Window>,
-    vulkan: Option<VulkanApp>,
+    vulkan: Option<VulkanApp<T>>,
     last_frame_time: SystemTime,
 
-    mouse_state: MouseState,
+    user_app: Option<T>,
 }
 
-impl App {
-    pub fn new() -> Self {
+impl<T: Bloomable> App<T> {
+    pub fn new(user_app: T) -> Self {
         Self {
             window: None,
             vulkan: None,
             last_frame_time: SystemTime::now(),
 
-            mouse_state: MouseState::default(),
+            user_app: Some(user_app),
         }
     }
 }
 
-impl ApplicationHandler for App {
+impl<T: Bloomable> ApplicationHandler for App<T> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         let window = event_loop
             .create_window(
@@ -160,7 +118,10 @@ impl ApplicationHandler for App {
                     .with_inner_size(PhysicalSize::new(WINDOW_WIDTH, WINDOW_HEIGHT)),
             )
             .unwrap();
-        self.vulkan = Some(VulkanApp::new(&window).expect("Failed to create vulkan app"));
+        self.vulkan = Some(
+            VulkanApp::new(&window, self.user_app.take().unwrap())
+                .expect("Failed to create vulkan app"),
+        );
         self.window = Some(window);
     }
 
@@ -180,11 +141,11 @@ impl ApplicationHandler for App {
                 event_loop.exit();
             }
             WindowEvent::Resized(physical_size) => {
-                // log::info!(
-                //     "Requested window resize to {}x{}",
-                //     physical_size.width,
-                //     physical_size.height
-                // );
+                self.vulkan
+                    .as_mut()
+                    .unwrap()
+                    .user_app
+                    .resize(physical_size.width, physical_size.height);
                 self.vulkan.as_mut().unwrap().resize(physical_size);
             }
             WindowEvent::RedrawRequested => {
@@ -199,60 +160,17 @@ impl ApplicationHandler for App {
                 self.last_frame_time = SystemTime::now();
                 self.vulkan.as_mut().unwrap().draw_frame(delta_time);
             }
-            WindowEvent::CursorMoved { position, .. } => {
-                self.mouse_state.update_position(position);
-                let (mut dx, mut dy) = self.mouse_state.get_pos_delta();
-                dx *= -0.01;
-                dy *= 0.01;
-
-                if self.mouse_state.left_pressed {
-                    self.vulkan.as_mut().unwrap().camera.orbit(dx, dy);
-                    self.vulkan.as_mut().unwrap().uniform.reset_samples();
-                } else if self.mouse_state.middle_pressed {
-                    self.vulkan.as_mut().unwrap().camera.pan(dx, dy);
-                    self.vulkan.as_mut().unwrap().uniform.reset_samples();
-                } else if self.mouse_state.right_pressed {
-                    self.vulkan.as_mut().unwrap().camera.zoom(-dy);
-                    self.vulkan.as_mut().unwrap().uniform.reset_samples();
-                }
-            }
-            WindowEvent::MouseInput { state, button, .. } => {
-                self.mouse_state.update_button(button, state);
-
-                if button == MouseButton::Left
-                    && !state.is_pressed()
-                    && self.mouse_state.get_click_delta() < 5.0
-                {
-                    let (hit_object, dist_to_object) = select::get_selected_object(
-                        &self.mouse_state.current_position,
-                        &self.vulkan.as_ref().unwrap().uniform,
-                        &self.vulkan.as_ref().unwrap().scene.get_sphere_arr(),
-                    );
-                    if hit_object == usize::MAX {
-                        self.vulkan.as_mut().unwrap().camera.uniforms.dof_scale = 0.;
-                    } else {
-                        self.vulkan.as_mut().unwrap().camera.uniforms.focal_distance =
-                            dist_to_object;
-                        self.vulkan.as_mut().unwrap().camera.uniforms.dof_scale = DOF_SCALE;
-                    }
-                    self.vulkan.as_mut().unwrap().uniform.reset_samples();
-                }
-            }
-            WindowEvent::MouseWheel { delta, .. } => {
-                let delta = match delta {
-                    MouseScrollDelta::PixelDelta(delta) => 0.001 * delta.y as f32,
-                    MouseScrollDelta::LineDelta(_, y) => y * 0.1,
-                };
-                self.vulkan.as_mut().unwrap().camera.zoom(delta);
-                self.vulkan.as_mut().unwrap().uniform.reset_samples();
-            }
-            _ => (),
+            e => self.vulkan.as_mut().unwrap().user_app.input(e),
         }
     }
 }
 
 #[allow(dead_code)]
-struct VulkanApp {
+struct VulkanApp<T: Bloomable> {
+    pub user_app: T,
+    api: Rc<RefCell<BloomAPI>>,
+    user_app_initialised: bool,
+
     should_compute_die: Arc<RwLock<bool>>,
     should_transfer_die: Arc<RwLock<bool>>,
     compute_thread: Option<JoinHandle<()>>,
@@ -281,7 +199,7 @@ struct VulkanApp {
     set_layout: Destructor<vk::DescriptorSetLayout>,
     descriptor_pool: Destructor<vk::DescriptorPool>,
     descriptor_sets: Vec<vk::DescriptorSet>,
-    uniform: core::UniformBufferObject,
+
     uniform_buffers: Vec<Destructor<vk::Buffer>>,
     uniform_buffers_memory: Vec<Destructor<vk::DeviceMemory>>,
     uniform_buffers_mapped: Vec<*mut core::UniformBufferObject>,
@@ -313,9 +231,6 @@ struct VulkanApp {
     minimized: bool,
     resized: bool,
 
-    camera: Camera,
-    scene: Scene,
-
     current_frame_index: usize,
     frame_count: u128,
 
@@ -327,58 +242,11 @@ struct VulkanApp {
     _entry: Entry,
 }
 
-impl VulkanApp {
-    pub fn new(window: &Window) -> Result<Self> {
-        let mut scene = Scene::new();
-        scene.add_material(material::Material::new_basic(Vec3::new(0.5, 0.5, 0.5), 0.));
-        scene.add_sphere(primitives::Sphere::new(
-            Vec3::new(0., -1000., -1.),
-            1000.,
-            1,
-        ));
-
-        {
-            scene.add_sphere(primitives::Sphere::new(Vec3::new(2., 1., -2.), 1.0, 0));
-            let mut current_material_index =
-                scene.add_material(material::Material::new_clear(Vec3::new(1., 1., 1.)));
-            scene.add_sphere(primitives::Sphere::new(
-                Vec3::new(-2., 1., 0.),
-                1.0,
-                current_material_index,
-            ));
-            current_material_index = scene.add_material(material::Material::new(
-                Vec3::new(0.9, 0.0, 0.3),
-                0.,
-                1.,
-                0.67,
-                1.,
-                0.1,
-                Vec3::new(0.9, 0.0, 0.3),
-            ));
-            scene.add_sphere(primitives::Sphere::new(
-                Vec3::new(0., 3., 0.),
-                0.5,
-                current_material_index,
-            ));
-            current_material_index = scene.add_material(material::Material::new(
-                Vec3::new(1.0, 1.0, 1.0),
-                0.,
-                1.,
-                0.67,
-                1.,
-                1.,
-                Vec3::new(1.0, 1.0, 1.0),
-            ));
-            scene.add_sphere(primitives::Sphere::new(
-                Vec3::new(0., 3., -1.5),
-                0.5,
-                current_material_index,
-            ));
-            scene.add_quad(primitives::Quad::default());
-            scene.add_triangle(primitives::Triangle::default());
-        }
-
-        let bvh = vec![bvh::create_bvh(&mut scene)];
+impl<T: Bloomable> VulkanApp<T> {
+    pub fn new(window: &Window, mut user_app: T) -> Result<Self> {
+        let api = Rc::new(RefCell::new(BloomAPI::new()));
+        user_app.init(Rc::downgrade(&api));
+        let bvh = vec![bvh::create_bvh(&mut api.borrow_mut().scene)];
 
         log::debug!("Initialising vulkan application");
         let entry = unsafe { Entry::load()? };
@@ -504,7 +372,7 @@ impl VulkanApp {
             &physical_device,
             &command_pool.get(),
             &graphics_queue,
-            &scene.get_sphere_arr().to_vec(),
+            &api.borrow().scene.get_sphere_arr().to_vec(),
         )?;
 
         let (quad_buffer, quad_buffer_memory) = create_storage_buffer(
@@ -513,7 +381,7 @@ impl VulkanApp {
             &physical_device,
             &command_pool.get(),
             &graphics_queue,
-            &scene.get_quad_arr().to_vec(),
+            &api.borrow().scene.get_quad_arr().to_vec(),
         )?;
 
         let (triangle_buffer, triangle_buffer_memory) = create_storage_buffer(
@@ -522,7 +390,7 @@ impl VulkanApp {
             &physical_device,
             &command_pool.get(),
             &graphics_queue,
-            &scene.get_triangle_arr().to_vec(),
+            &api.borrow().scene.get_triangle_arr().to_vec(),
         )?;
         let descriptor_sets = create_descriptor_sets(
             device.get(),
@@ -615,20 +483,12 @@ impl VulkanApp {
         let (image_available_semaphores, render_finished_semaphores, in_flight_fences) =
             create_sync_object(device.get())?;
 
-        let camera = Camera::look_at(
-            Vec3::new(3., 2., 3.),
-            Vec3::new(0., 1., 0.),
-            Vec3::new(0., 1., 0.),
-            FOCAL_DISTANCE,
-            VFOV_DEG,
-            DOF_SCALE,
-        );
-
-        // log::debug!("{:#?}", bvh[0][0]);
-        // log::debug!("{:#?}", scene.get_sphere_arr().to_vec());
+        api.borrow_mut().uniform.update(swapchain_stuff.extent);
 
         Ok(Self {
-            uniform: core::UniformBufferObject::new().update(swapchain_stuff.extent),
+            user_app,
+            api,
+            user_app_initialised: false,
 
             _entry: entry,
             instance,
@@ -692,9 +552,6 @@ impl VulkanApp {
             image_available_semaphores,
             render_finished_semaphores,
             in_flight_fences,
-
-            camera,
-            scene,
 
             minimized: false,
             resized: false,
@@ -908,12 +765,6 @@ impl VulkanApp {
     }
 
     fn wait_idle(&self) {
-        // unsafe {
-        //     match self.device.get().queue_wait_idle(self.graphics_queue) {
-        //         Err(e) => log::error!("Failed to wait for graphics queue to finish: {:?}", e),
-        //         _ => {}
-        //     }
-        // };
         match unsafe { self.device.get().device_wait_idle() } {
             Err(e) => log::error!("Failed to wait for the device to return to idle: {}", e),
             _ => {}
@@ -921,13 +772,14 @@ impl VulkanApp {
     }
 
     fn update_uniform_buffers(&mut self, current_image: u32, _delta_time: Duration) {
-        self.uniform.tick();
-        self.uniform.update(self.swapchain_stuff.extent);
+        let mut api = self.api.borrow_mut();
+        api.uniform.tick();
+        api.uniform.update(self.swapchain_stuff.extent);
 
-        self.uniform.update_camera(&self.camera);
+        api.update_camera();
 
-        let ubos = [self.uniform.clone()];
-        let mats = self.scene.get_material_arr();
+        let ubos = [api.uniform.clone()];
+        let mats = api.scene.get_material_arr();
 
         unsafe {
             self.uniform_buffers_mapped[current_image as usize]
@@ -977,7 +829,7 @@ impl VulkanApp {
                 return;
             }
         };
-        self.uniform.reset_samples();
+        self.api.borrow_mut().uniform.reset_samples();
         self.resized = false;
     }
 
@@ -1124,7 +976,7 @@ impl VulkanApp {
     }
 }
 
-impl Drop for VulkanApp {
+impl<T: Bloomable> Drop for VulkanApp<T> {
     fn drop(&mut self) {
         log::debug!("Cleaning up");
         // Kill threads
