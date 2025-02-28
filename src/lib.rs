@@ -14,9 +14,7 @@ pub mod vec;
 mod vulkan;
 
 use std::{
-    cell::RefCell,
-    rc::Rc,
-    sync::{mpsc, Arc, RwLock},
+    sync::{mpsc, Arc, Mutex, RwLock},
     thread::{self, JoinHandle},
     time::{Duration, SystemTime},
     u64,
@@ -168,7 +166,7 @@ impl<T: Bloomable> ApplicationHandler for App<T> {
 #[allow(dead_code)]
 struct VulkanApp<T: Bloomable> {
     pub user_app: T,
-    api: Rc<RefCell<BloomAPI>>,
+    api: Arc<Mutex<BloomAPI>>,
     user_app_initialised: bool,
 
     should_compute_die: Arc<RwLock<bool>>,
@@ -244,9 +242,9 @@ struct VulkanApp<T: Bloomable> {
 
 impl<T: Bloomable> VulkanApp<T> {
     pub fn new(window: &Window, mut user_app: T) -> Result<Self> {
-        let api = Rc::new(RefCell::new(BloomAPI::new()));
-        user_app.init(Rc::downgrade(&api));
-        let bvh = vec![bvh::create_bvh(&mut api.borrow_mut().scene)];
+        let api = Arc::new(Mutex::new(BloomAPI::new()));
+        user_app.init(Arc::downgrade(&api));
+        let bvh = vec![bvh::create_bvh(&mut api.lock().unwrap().scene)];
 
         log::debug!("Initialising vulkan application");
         let entry = unsafe { Entry::load()? };
@@ -483,7 +481,7 @@ impl<T: Bloomable> VulkanApp<T> {
         let (image_available_semaphores, render_finished_semaphores, in_flight_fences) =
             create_sync_object(device.get())?;
 
-        api.borrow_mut().uniform.update(swapchain_stuff.extent);
+        api.lock().unwrap().uniform.update(swapchain_stuff.extent);
 
         Ok(Self {
             user_app,
@@ -772,7 +770,7 @@ impl<T: Bloomable> VulkanApp<T> {
     }
 
     fn update_uniform_buffers(&mut self, current_image: u32, _delta_time: Duration) {
-        let mut api = self.api.borrow_mut();
+        let mut api = self.api.lock().unwrap();
         api.uniform.tick();
         api.uniform.update(self.swapchain_stuff.extent);
 
@@ -829,7 +827,7 @@ impl<T: Bloomable> VulkanApp<T> {
                 return;
             }
         };
-        self.api.borrow_mut().uniform.reset_samples();
+        self.api.lock().unwrap().uniform.reset_samples();
         self.resized = false;
     }
 

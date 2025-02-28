@@ -1,4 +1,4 @@
-use std::{cell::RefCell, rc::Weak};
+use std::sync::{Mutex, Weak};
 
 use winit::event::WindowEvent;
 
@@ -14,7 +14,7 @@ pub const VFOV_DEG: f32 = 40.;
 pub const DOF_SCALE: f32 = 0.05;
 
 pub trait Bloomable {
-    fn init(&mut self, api: Weak<RefCell<BloomAPI>>);
+    fn init(&mut self, api: Weak<Mutex<BloomAPI>>);
     fn input(&mut self, event: WindowEvent);
     fn resize(&mut self, width: u32, height: u32);
     // fn update(&mut self);
