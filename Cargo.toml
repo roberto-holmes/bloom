@@ -19,4 +19,5 @@ log = "0.4"
 memoffset = "0.9.1"
 num = "0.4.3"
 rand = "0.9.0"
+vk-mem = { path = "./vk-mem-rs" }
 winit = "0.30.8"

@@ -1,3 +1,6 @@
 [submodule "ash"]
 	path = ash
 	url = https://github.com/ash-rs/ash.git
+[submodule "vk-mem-rs"]
+	path = vk-mem-rs
+	url = https://github.com/roberto-holmes/vk-mem-rs.git
