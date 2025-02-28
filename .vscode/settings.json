@@ -10,12 +10,16 @@
       {
         "match": "\\.wgsl$",
         "cmd": "naga ${fileDirname}/${fileBasename} ${workspaceFolder}/shaders/spv/${fileBasename}.spv"
+      },
+      {
+        "match": "\\.slang$",
+        "cmd": "slangc ${fileDirname}/${fileBasename} -target spirv -o ${workspaceFolder}/shaders/spv/${fileBasename}.spv"
       }
     ]
   },
   "files.readonlyInclude": {
     "ash/**": true,
     "**/.cargo/registry/src/**/*.rs": true,
-    "**/lib/rustlib/src/rust/library/**/*.rs": true,
-  },
+    "**/lib/rustlib/src/rust/library/**/*.rs": true
+  }
 }

@@ -1,0 +1,9 @@
+---
+BasedOnStyle: Google
+IndentWidth: 4
+ColumnLimit: 0
+TabWidth: 4
+UseTab: Always
+NamespaceIndentation: Inner
+DerivePointerAlignment: false
+PointerAlignment: Left
