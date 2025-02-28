@@ -1,6 +1,4 @@
-use std::cell::RefCell;
-use std::rc::Rc;
-use std::rc::Weak;
+use std::sync::{Arc, Mutex, Weak};
 
 use bloom;
 use bloom::api::BloomAPI;
@@ -19,7 +17,7 @@ fn main() {
 }
 
 struct Demo {
-    api: Weak<RefCell<BloomAPI>>,
+    api: Weak<Mutex<BloomAPI>>,
     mouse_state: MouseState,
 }
 
@@ -30,98 +28,70 @@ impl Demo {
             mouse_state: MouseState::default(),
         }
     }
-    fn get_api(&mut self) -> Rc<RefCell<BloomAPI>> {
+    fn get_api(&mut self) -> Arc<Mutex<BloomAPI>> {
         self.api.upgrade().unwrap()
     }
 }
 
 impl Bloomable for Demo {
-    fn init(&mut self, api: Weak<RefCell<BloomAPI>>) {
-        self.api = api;
-        self.get_api().borrow_mut().scene = primitives::Scene::new();
-        self.get_api()
-            .borrow_mut()
-            .scene
+    fn init(&mut self, api_in: Weak<Mutex<BloomAPI>>) {
+        self.api = api_in;
+        let binding = self.get_api();
+        let mut api = binding.lock().unwrap();
+        api.scene = primitives::Scene::new();
+        api.scene
             .add_material(material::Material::new_basic(Vec3::new(0.5, 0.5, 0.5), 0.));
-        self.get_api()
-            .borrow_mut()
-            .scene
-            .add_sphere(primitives::Sphere::new(
-                Vec3::new(0., -1000., -1.),
-                1000.,
-                1,
-            ));
+        api.scene.add_sphere(primitives::Sphere::new(
+            Vec3::new(0., -1000., -1.),
+            1000.,
+            1,
+        ));
 
-        self.get_api()
-            .borrow_mut()
-            .scene
+        api.scene
             .add_sphere(primitives::Sphere::new(Vec3::new(2., 1., -2.), 1.0, 0));
-        let mut current_material_index = self
-            .get_api()
-            .borrow_mut()
+        let mut current_material_index = api
             .scene
             .add_material(material::Material::new_clear(Vec3::new(1., 1., 1.)));
-        self.get_api()
-            .borrow_mut()
-            .scene
-            .add_sphere(primitives::Sphere::new(
-                Vec3::new(-2., 1., 0.),
-                1.0,
-                current_material_index,
-            ));
-        current_material_index =
-            self.get_api()
-                .borrow_mut()
-                .scene
-                .add_material(material::Material::new(
-                    Vec3::new(0.9, 0.0, 0.3),
-                    0.,
-                    1.,
-                    0.67,
-                    1.,
-                    0.1,
-                    Vec3::new(0.9, 0.0, 0.3),
-                ));
-        self.get_api()
-            .borrow_mut()
-            .scene
-            .add_sphere(primitives::Sphere::new(
-                Vec3::new(0., 3., 0.),
-                0.5,
-                current_material_index,
-            ));
-        current_material_index =
-            self.get_api()
-                .borrow_mut()
-                .scene
-                .add_material(material::Material::new(
-                    Vec3::new(1.0, 1.0, 1.0),
-                    0.,
-                    1.,
-                    0.67,
-                    1.,
-                    1.,
-                    Vec3::new(1.0, 1.0, 1.0),
-                ));
-        self.get_api()
-            .borrow_mut()
-            .scene
-            .add_sphere(primitives::Sphere::new(
-                Vec3::new(0., 3., -1.5),
-                0.5,
-                current_material_index,
-            ));
-        self.get_api()
-            .borrow_mut()
-            .scene
-            .add_quad(primitives::Quad::default());
-        self.get_api()
-            .borrow_mut()
-            .scene
-            .add_triangle(primitives::Triangle::default());
+        api.scene.add_sphere(primitives::Sphere::new(
+            Vec3::new(-2., 1., 0.),
+            1.0,
+            current_material_index,
+        ));
+        current_material_index = api.scene.add_material(material::Material::new(
+            Vec3::new(0.9, 0.0, 0.3),
+            0.,
+            1.,
+            0.67,
+            1.,
+            0.1,
+            Vec3::new(0.9, 0.0, 0.3),
+        ));
+        api.scene.add_sphere(primitives::Sphere::new(
+            Vec3::new(0., 3., 0.),
+            0.5,
+            current_material_index,
+        ));
+        current_material_index = api.scene.add_material(material::Material::new(
+            Vec3::new(1.0, 1.0, 1.0),
+            0.,
+            1.,
+            0.67,
+            1.,
+            1.,
+            Vec3::new(1.0, 1.0, 1.0),
+        ));
+        api.scene.add_sphere(primitives::Sphere::new(
+            Vec3::new(0., 3., -1.5),
+            0.5,
+            current_material_index,
+        ));
+        api.scene.add_quad(primitives::Quad::default());
+        api.scene.add_triangle(primitives::Triangle::default());
     }
-    fn resize(&mut self, width: u32, height: u32) {}
+    fn resize(&mut self, _width: u32, _height: u32) {}
     fn input(&mut self, event: winit::event::WindowEvent) {
+        let binding = self.get_api();
+        let mut api = binding.lock().unwrap();
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.mouse_state.update_position(position);
@@ -130,14 +100,14 @@ impl Bloomable for Demo {
                 dy *= 0.01;
 
                 if self.mouse_state.left_pressed {
-                    self.get_api().borrow_mut().camera.orbit(dx, dy);
-                    self.get_api().borrow_mut().uniform.reset_samples();
+                    api.camera.orbit(dx, dy);
+                    api.uniform.reset_samples();
                 } else if self.mouse_state.middle_pressed {
-                    self.get_api().borrow_mut().camera.pan(dx, dy);
-                    self.get_api().borrow_mut().uniform.reset_samples();
+                    api.camera.pan(dx, dy);
+                    api.uniform.reset_samples();
                 } else if self.mouse_state.right_pressed {
-                    self.get_api().borrow_mut().camera.zoom(-dy);
-                    self.get_api().borrow_mut().uniform.reset_samples();
+                    api.camera.zoom(-dy);
+                    api.uniform.reset_samples();
                 }
             }
             WindowEvent::MouseInput { state, button, .. } => {
@@ -149,16 +119,16 @@ impl Bloomable for Demo {
                 {
                     let (hit_object, dist_to_object) = select::get_selected_object(
                         &self.mouse_state.current_position,
-                        &self.api.upgrade().unwrap().borrow().uniform,
-                        &self.api.upgrade().unwrap().borrow().scene.get_sphere_arr(),
+                        &api.uniform,
+                        &api.scene.get_sphere_arr(),
                     );
                     if hit_object == usize::MAX {
-                        self.get_api().borrow_mut().camera.uniforms.dof_scale = 0.;
+                        api.camera.uniforms.dof_scale = 0.;
                     } else {
-                        self.get_api().borrow_mut().camera.uniforms.focal_distance = dist_to_object;
-                        self.get_api().borrow_mut().camera.uniforms.dof_scale = DOF_SCALE;
+                        api.camera.uniforms.focal_distance = dist_to_object;
+                        api.camera.uniforms.dof_scale = DOF_SCALE;
                     }
-                    self.get_api().borrow_mut().uniform.reset_samples();
+                    api.uniform.reset_samples();
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
@@ -166,8 +136,8 @@ impl Bloomable for Demo {
                     MouseScrollDelta::PixelDelta(delta) => 0.001 * delta.y as f32,
                     MouseScrollDelta::LineDelta(_, y) => y * 0.1,
                 };
-                self.get_api().borrow_mut().camera.zoom(delta);
-                self.get_api().borrow_mut().uniform.reset_samples();
+                api.camera.zoom(delta);
+                api.uniform.reset_samples();
             }
             _ => (),
         }
