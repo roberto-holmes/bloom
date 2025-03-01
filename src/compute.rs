@@ -8,27 +8,25 @@ use std::{
 use anyhow::{anyhow, Result};
 use ash::vk;
 
-use crate::{core, structures, tools::read_shader_code, vulkan::Destructor, MAX_FRAMES_IN_FLIGHT};
+use crate::{
+    core, structures,
+    tools::read_shader_code,
+    vulkan::{self, Destructor},
+    MAX_FRAMES_IN_FLIGHT, WINDOW_HEIGHT, WINDOW_WIDTH,
+};
 
-pub fn compute_thread(
+pub fn thread<'a>(
     device: ash::Device,
     queue_family_indices: structures::QueueFamilyIndices,
-    radiance_images: [Destructor<vk::Image>; 2],
-    radiance_image_views: [Destructor<vk::ImageView>; 2],
-    radiance_image_memories: [Destructor<vk::DeviceMemory>; 2],
+    images: [vulkan::Image<'a>; 2],
 
     should_threads_die: Arc<RwLock<bool>>,
     notify_transfer_wait: mpsc::Receiver<u64>,
     notify_complete_frame: mpsc::Sender<u8>,
     transfer_semaphore: vk::Semaphore,
 ) {
-    let compute = match Compute::new(
-        device,
-        queue_family_indices,
-        radiance_images,
-        radiance_image_views,
-        radiance_image_memories,
-    ) {
+    log::trace!("Creating thread");
+    let compute = match Compute::new(device, queue_family_indices, images) {
         Ok(v) => v,
         Err(e) => panic!("Failed to create compute object: {}", e),
     };
@@ -51,7 +49,7 @@ pub fn compute_thread(
                 }
             }
             Err(e) => {
-                log::error!("rwlock is poisoned, ending thread: {}", e)
+                log::error!("rwlock is poisoned, ending thread: {e}")
             }
         }
 
@@ -119,13 +117,11 @@ pub fn compute_thread(
 }
 
 #[allow(dead_code)]
-struct Compute {
+struct Compute<'a> {
     pub device: ash::Device,
     semaphore: Destructor<vk::Semaphore>,
 
-    radiance_image_views: [Destructor<vk::ImageView>; 2],
-    radiance_images: [Destructor<vk::Image>; 2],
-    radiance_image_memories: [Destructor<vk::DeviceMemory>; 2],
+    radiance_images: [vulkan::Image<'a>; 2],
 
     queue: vk::Queue,
     descriptor_set_layout: Destructor<vk::DescriptorSetLayout>,
@@ -137,19 +133,18 @@ struct Compute {
     descriptor_sets: Vec<vk::DescriptorSet>,
 }
 
-impl Compute {
+impl<'a> Compute<'a> {
     pub fn new(
         device: ash::Device,
         queue_family_indices: structures::QueueFamilyIndices,
-        radiance_images: [Destructor<vk::Image>; 2],
-        radiance_image_views: [Destructor<vk::ImageView>; 2],
-        radiance_image_memories: [Destructor<vk::DeviceMemory>; 2],
+        radiance_images: [vulkan::Image<'a>; 2],
     ) -> Result<Self> {
+        log::trace!("Creating object");
         // Populates queue
         let queue = core::create_queue(&device, queue_family_indices.compute_family.unwrap());
 
         let (descriptor_pool, descriptor_set_layout, descriptor_sets, pipeline_layout, pipeline) =
-            create_pipeline(&device, &radiance_image_views)?;
+            create_pipeline(&device, &radiance_images)?;
         // Populates command_pool, commands, and copy_commands
         let (command_pool, commands) = create_commands(
             &device,
@@ -165,14 +160,10 @@ impl Compute {
             device.fp_v1_0().destroy_semaphore,
         );
 
-        log::debug!("Command buffer {:?}", commands);
-
         Ok(Self {
             device,
             semaphore,
             radiance_images,
-            radiance_image_views,
-            radiance_image_memories,
             queue,
             descriptor_set_layout,
             pipeline_layout,
@@ -223,7 +214,7 @@ impl Compute {
 
 fn create_pipeline(
     device: &ash::Device,
-    radiance_image_views: &[Destructor<vk::ImageView>; 2],
+    radiance_images: &[vulkan::Image; 2],
 ) -> Result<(
     Destructor<vk::DescriptorPool>,
     Destructor<vk::DescriptorSetLayout>,
@@ -290,11 +281,11 @@ fn create_pipeline(
         // Swap radiance image views around each frame
         let image_info = [vk::DescriptorImageInfo::default()
             .image_layout(vk::ImageLayout::GENERAL)
-            .image_view(radiance_image_views[i].get())];
+            .image_view(radiance_images[i].view())];
 
         let storage_image_info = [vk::DescriptorImageInfo::default()
             .image_layout(vk::ImageLayout::GENERAL)
-            .image_view(radiance_image_views[(i + 1) % 2].get())];
+            .image_view(radiance_images[(i + 1) % 2].view())];
 
         let descriptor_writes = [
             vk::WriteDescriptorSet::default()
@@ -315,7 +306,8 @@ fn create_pipeline(
         unsafe { device.update_descriptor_sets(&descriptor_writes, &[]) };
     }
 
-    let shader_code = read_shader_code(Path::new("shaders/spv/ray.comp.spv"))?;
+    // let shader_code = read_shader_code(Path::new("shaders/spv/ray.comp.spv"))?;
+    let shader_code = read_shader_code(Path::new("shaders/spv/ray.slang.spv"))?;
     let shader_module = core::create_shader_module(&device, &shader_code)?;
     let main_function_name = CString::new("main").unwrap(); // the beginning function name in shader code.
     let stage = vk::PipelineShaderStageCreateInfo::default()
@@ -400,7 +392,13 @@ fn compute_commands(
             &descriptor_sets_to_bind,
             &[],
         );
-        device.cmd_dispatch(command_buffer, 16, 16, 1);
+        // TODO: Regenerate these commands when the window is resized so we can change these group counts
+        device.cmd_dispatch(
+            command_buffer,
+            WINDOW_WIDTH / 32 + 1,
+            WINDOW_HEIGHT / 32 + 1,
+            1,
+        );
         device.end_command_buffer(command_buffer)?;
     }
     Ok(command_buffer)

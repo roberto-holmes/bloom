@@ -21,6 +21,7 @@ use memoffset::offset_of;
 use std::collections::HashSet;
 use std::ffi::CString;
 use std::path::Path;
+use std::sync::Arc;
 use winit::{raw_window_handle::HasDisplayHandle, window::Window};
 
 #[derive(Debug, Copy, Clone, Pod, Zeroable)]
@@ -154,13 +155,13 @@ pub fn create_instance(entry: &ash::Entry, window: &Window) -> Result<vulkan::In
 
 fn find_queue_families(
     instance: &ash::Instance,
-    device: &vk::PhysicalDevice,
+    device: vk::PhysicalDevice,
     surface_stuff: &SurfaceStuff,
 ) -> QueueFamilyIndices {
     let mut queue_family_indices = QueueFamilyIndices::new();
     // Find graphics queue family
     let queue_family_properties =
-        unsafe { instance.get_physical_device_queue_family_properties(*device) };
+        unsafe { instance.get_physical_device_queue_family_properties(device) };
 
     let mut fallback_compute_queue_index = None;
     let mut fallback_transfer_queue_index = None;
@@ -178,7 +179,7 @@ fn find_queue_families(
             surface_stuff
                 .surface_loader
                 .get_physical_device_surface_support(
-                    *device,
+                    device,
                     family_index as u32,
                     surface_stuff.surface,
                 )
@@ -242,11 +243,11 @@ fn find_queue_families(
 
 fn is_device_extension_supported(
     instance: &ash::Instance,
-    physical_device: &vk::PhysicalDevice,
+    physical_device: vk::PhysicalDevice,
 ) -> Result<bool> {
     let available_extensions = unsafe {
         instance
-            .enumerate_device_extension_properties(*physical_device)
+            .enumerate_device_extension_properties(physical_device)
             .expect("Failed to get device extension properties.")
     };
 
@@ -263,6 +264,13 @@ fn is_device_extension_supported(
     let device_extensions = [
         ash::khr::swapchain::NAME,
         ash::khr::storage_buffer_storage_class::NAME,
+        ash::khr::acceleration_structure::NAME,
+        ash::khr::ray_tracing_pipeline::NAME,
+        ash::khr::buffer_device_address::NAME,
+        ash::khr::deferred_host_operations::NAME,
+        ash::ext::descriptor_indexing::NAME,
+        ash::khr::spirv_1_4::NAME,
+        ash::khr::shader_float_controls::NAME,
         #[cfg(any(target_os = "macos", target_os = "ios"))]
         ash::khr::portability_subset::NAME,
     ];
@@ -290,12 +298,12 @@ fn is_device_extension_supported(
 
 fn is_physical_device_suitable(
     instance: &ash::Instance,
-    physical_device: &vk::PhysicalDevice,
+    physical_device: vk::PhysicalDevice,
     surface_stuff: &SurfaceStuff,
 ) -> Result<bool> {
-    let device_properties = unsafe { instance.get_physical_device_properties(*physical_device) };
+    let device_properties = unsafe { instance.get_physical_device_properties(physical_device) };
     let device_queue_families =
-        unsafe { instance.get_physical_device_queue_family_properties(*physical_device) };
+        unsafe { instance.get_physical_device_queue_family_properties(physical_device) };
 
     let device_type = match device_properties.device_type {
         vk::PhysicalDeviceType::CPU => "CPU",
@@ -359,13 +367,17 @@ fn is_physical_device_suitable(
         );
     }
 
-    // Check 1.3 features
+    // Check features from different parts of the Vulkan spec
+    let mut features_as = vk::PhysicalDeviceAccelerationStructureFeaturesKHR::default();
+    let mut features_rt = vk::PhysicalDeviceRayTracingPipelineFeaturesKHR::default();
     let mut features12 = vk::PhysicalDeviceVulkan12Features::default();
     let mut features13 = vk::PhysicalDeviceVulkan13Features::default();
     let mut features = vk::PhysicalDeviceFeatures2::default()
+        .push(&mut features_as)
+        .push(&mut features_rt)
         .push(&mut features13)
         .push(&mut features12);
-    unsafe { instance.get_physical_device_features2(*physical_device, &mut features) };
+    unsafe { instance.get_physical_device_features2(physical_device, &mut features) };
 
     let indices = find_queue_families(instance, physical_device, surface_stuff);
     let extensions_supported = is_device_extension_supported(instance, physical_device)?;
@@ -378,7 +390,7 @@ fn is_physical_device_suitable(
             && !swapchain_support_details.present_modes.is_empty();
     }
 
-    let supported_features = unsafe { instance.get_physical_device_features(*physical_device) };
+    let supported_features = unsafe { instance.get_physical_device_features(physical_device) };
 
     Ok(indices.is_complete()
         && extensions_supported
@@ -388,12 +400,16 @@ fn is_physical_device_suitable(
         && device_properties.limits.timestamp_period > 0.0
         && device_properties.limits.timestamp_compute_and_graphics == vk::TRUE // If this is false we could still use it but we need to check the queues we want to use for timestamp_valid_bits
         && features12.timeline_semaphore == vk::TRUE
+        && features12.descriptor_indexing == vk::TRUE
+        && features12.buffer_device_address == vk::TRUE
         && features13.dynamic_rendering == vk::TRUE
-        && features13.synchronization2 == vk::TRUE)
+        && features13.synchronization2 == vk::TRUE
+        && features_rt.ray_tracing_pipeline == vk::TRUE
+        && features_as.acceleration_structure == vk::TRUE)
 }
 
-fn get_max_image_size(instance: &ash::Instance, physical_device: &vk::PhysicalDevice) -> u32 {
-    let device_properties = unsafe { instance.get_physical_device_properties(*physical_device) };
+fn get_max_image_size(instance: &ash::Instance, physical_device: vk::PhysicalDevice) -> u32 {
+    let device_properties = unsafe { instance.get_physical_device_properties(physical_device) };
     device_properties.limits.max_image_dimension2_d
 }
 
@@ -408,7 +424,7 @@ pub fn pick_physical_device(
     log::debug!("Found {} GPUs with Vulkan support", physical_devices.len());
     for device in physical_devices {
         // TODO: Figure out a better way of selecting GPU (e.g. allowing the user to select or ranking them)
-        if is_physical_device_suitable(instance, &device, surface_stuff)? {
+        if is_physical_device_suitable(instance, device, surface_stuff)? {
             return Ok(device);
         }
     }
@@ -417,10 +433,10 @@ pub fn pick_physical_device(
 
 pub fn create_logical_device(
     instance: &ash::Instance,
-    physical_device: &vk::PhysicalDevice,
+    physical_device: vk::PhysicalDevice,
     surface_stuff: &SurfaceStuff,
 ) -> Result<(vulkan::Device, QueueFamilyIndices)> {
-    let indices = find_queue_families(instance, &physical_device, surface_stuff);
+    let indices = find_queue_families(instance, physical_device, surface_stuff);
 
     let mut queue_families = vec![];
     queue_families.push(indices.graphics_family.unwrap().0);
@@ -459,11 +475,25 @@ pub fn create_logical_device(
     let device_extensions = [
         ash::khr::swapchain::NAME.as_ptr(),
         ash::khr::storage_buffer_storage_class::NAME.as_ptr(),
+        ash::khr::acceleration_structure::NAME.as_ptr(),
+        ash::khr::ray_tracing_pipeline::NAME.as_ptr(),
+        ash::khr::buffer_device_address::NAME.as_ptr(),
+        ash::khr::deferred_host_operations::NAME.as_ptr(),
+        ash::ext::descriptor_indexing::NAME.as_ptr(),
+        ash::khr::spirv_1_4::NAME.as_ptr(),
+        ash::khr::shader_float_controls::NAME.as_ptr(),
         #[cfg(any(target_os = "macos", target_os = "ios"))]
         ash::khr::portability_subset::NAME.as_ptr(),
     ];
 
-    let mut features12 = vk::PhysicalDeviceVulkan12Features::default().timeline_semaphore(true);
+    let mut as_features =
+        vk::PhysicalDeviceAccelerationStructureFeaturesKHR::default().acceleration_structure(true);
+    let mut rt_features =
+        vk::PhysicalDeviceRayTracingPipelineFeaturesKHR::default().ray_tracing_pipeline(true);
+    let mut features12 = vk::PhysicalDeviceVulkan12Features::default()
+        .timeline_semaphore(true)
+        .descriptor_indexing(true)
+        .buffer_device_address(true);
     let mut features13 = vk::PhysicalDeviceVulkan13Features::default()
         .dynamic_rendering(true)
         .synchronization2(true);
@@ -471,6 +501,8 @@ pub fn create_logical_device(
         vk::PhysicalDeviceFeatures2::default()
             .extend(&mut features12)
             .extend(&mut features13)
+            .extend(&mut rt_features)
+            .extend(&mut as_features)
             .features(device_features)
     };
 
@@ -487,14 +519,14 @@ pub fn create_logical_device(
 
 fn create_image_view(
     device: &ash::Device,
-    image: &vk::Image,
+    image: vk::Image,
     format: vk::Format,
     aspect_flags: vk::ImageAspectFlags,
 ) -> Result<Destructor<vk::ImageView>> {
     let create_info = vk::ImageViewCreateInfo::default()
         .view_type(vk::ImageViewType::TYPE_2D)
         .format(format)
-        .image(*image)
+        .image(image)
         .subresource_range(vk::ImageSubresourceRange {
             aspect_mask: aspect_flags,
             base_mip_level: 0,
@@ -515,10 +547,10 @@ pub fn create_image_views(
     swapchain_images: &Vec<vk::Image>,
 ) -> Result<Vec<Destructor<vk::ImageView>>> {
     let mut image_views = vec![];
-    for image in swapchain_images {
+    for &image in swapchain_images {
         image_views.push(create_image_view(
             device,
-            &image,
+            image,
             surface_format,
             vk::ImageAspectFlags::COLOR,
         )?);
@@ -612,8 +644,8 @@ pub fn create_descriptor_set_layout(
 
 pub fn create_descriptor_sets(
     device: &ash::Device,
-    pool: &vk::DescriptorPool,
-    set_layout: &vk::DescriptorSetLayout,
+    pool: vk::DescriptorPool,
+    set_layout: vk::DescriptorSetLayout,
     uniforms_buffers: &Vec<Destructor<vk::Buffer>>,
     material_buffers: &Vec<Destructor<vk::Buffer>>,
     bvh_buffer: vk::Buffer,
@@ -624,11 +656,11 @@ pub fn create_descriptor_sets(
 ) -> Result<Vec<vk::DescriptorSet>> {
     let mut layouts: Vec<vk::DescriptorSetLayout> = vec![];
     for _ in 0..MAX_FRAMES_IN_FLIGHT {
-        layouts.push(*set_layout);
+        layouts.push(set_layout);
     }
 
     let allocate_info = vk::DescriptorSetAllocateInfo::default()
-        .descriptor_pool(*pool)
+        .descriptor_pool(pool)
         .set_layouts(layouts.as_slice());
 
     let descriptor_sets = unsafe { device.allocate_descriptor_sets(&allocate_info)? };
@@ -731,7 +763,7 @@ pub fn create_descriptor_sets(
 pub fn create_graphics_pipeline(
     device: &ash::Device,
     swapchain_stuff: &SwapChainStuff,
-    set_layout: &vk::DescriptorSetLayout,
+    set_layout: vk::DescriptorSetLayout,
 ) -> Result<(Destructor<vk::PipelineLayout>, Destructor<vk::Pipeline>)> {
     // let vert_shader_code = read_shader_code(Path::new("shaders/spv/vertex.wgsl.spv"))?;
     let vert_shader_code = read_shader_code(Path::new("shaders/spv/triangle.vert.spv"))?;
@@ -807,7 +839,7 @@ pub fn create_graphics_pipeline(
     //     .depth_write_enable(true)
     //     .depth_compare_op(vk::CompareOp::LESS);
 
-    let set_layouts = [*set_layout];
+    let set_layouts = [set_layout];
     // Pipeline Layout (Uniforms are declared here)
     let format = [swapchain_stuff.format];
     let mut pipeline_rendering_create_info =
@@ -849,10 +881,10 @@ pub fn create_graphics_pipeline(
     }
 }
 
-fn find_memory_type(
+pub fn find_memory_type(
     type_filter: u32,
     required_properties: vk::MemoryPropertyFlags,
-    mem_properties: &vk::PhysicalDeviceMemoryProperties,
+    mem_properties: vk::PhysicalDeviceMemoryProperties,
 ) -> Result<u32> {
     for (i, memory_type) in mem_properties.memory_types.iter().enumerate() {
         if (type_filter & (1 << i)) > 0 && memory_type.property_flags.contains(required_properties)
@@ -863,10 +895,9 @@ fn find_memory_type(
     return Err(anyhow!("Failed to find a memory type"));
 }
 
-fn create_buffer(
+pub fn create_buffer(
     device: &ash::Device,
-    instance: &ash::Instance,
-    physical_device: &vk::PhysicalDevice,
+    mem_properties: vk::PhysicalDeviceMemoryProperties,
     size: u64,
     usage: vk::BufferUsageFlags,
     required_memory_properties: vk::MemoryPropertyFlags,
@@ -883,12 +914,10 @@ fn create_buffer(
 
     let mem_requirements = unsafe { device.get_buffer_memory_requirements(buffer.get()) };
 
-    let mem_properties =
-        unsafe { instance.get_physical_device_memory_properties(*physical_device) };
     let memory_type = find_memory_type(
         mem_requirements.memory_type_bits,
         required_memory_properties,
-        &mem_properties,
+        mem_properties,
     )?;
 
     let allocate_info = vk::MemoryAllocateInfo::default()
@@ -908,34 +937,32 @@ fn create_buffer(
 
 pub fn copy_buffer(
     device: &ash::Device,
-    src: &vk::Buffer,
-    dst: &vk::Buffer,
+    src: vk::Buffer,
+    dst: vk::Buffer,
     size: u64,
-    command_pool: &vk::CommandPool,
-    queue: &vk::Queue,
+    command_pool: vk::CommandPool,
+    queue: vk::Queue,
 ) -> Result<()> {
     let command_buffer = begin_single_time_commands(device, command_pool)?;
     unsafe {
         let copy_region = [vk::BufferCopy::default().size(size)];
-        device.cmd_copy_buffer(command_buffer, *src, *dst, &copy_region);
+        device.cmd_copy_buffer(command_buffer, src, dst, &copy_region);
     }
-    end_single_time_command(device, command_pool, queue, &command_buffer)?;
+    end_single_time_command(device, command_pool, queue, command_buffer)?;
     Ok(())
 }
 
 pub fn create_vertex_buffer(
     device: &ash::Device,
-    instance: &ash::Instance,
-    physical_device: &vk::PhysicalDevice,
-    command_pool: &vk::CommandPool,
-    queue: &vk::Queue,
+    mem_properties: vk::PhysicalDeviceMemoryProperties,
+    command_pool: vk::CommandPool,
+    queue: vk::Queue,
 ) -> Result<(Destructor<vk::Buffer>, Destructor<vk::DeviceMemory>)> {
     let buffer_size = (std::mem::size_of::<Vertex>() * VERTICES.len()) as u64;
 
     let (staging_buffer, staging_buffer_memory) = create_buffer(
         device,
-        instance,
-        physical_device,
+        mem_properties,
         buffer_size,
         vk::BufferUsageFlags::TRANSFER_SRC,
         vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
@@ -956,8 +983,7 @@ pub fn create_vertex_buffer(
 
     let (vertex_buffer, vertex_memory) = create_buffer(
         device,
-        instance,
-        physical_device,
+        mem_properties,
         buffer_size,
         vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::VERTEX_BUFFER,
         vk::MemoryPropertyFlags::DEVICE_LOCAL,
@@ -965,8 +991,8 @@ pub fn create_vertex_buffer(
 
     copy_buffer(
         device,
-        &staging_buffer.get(),
-        &vertex_buffer.get(),
+        staging_buffer.get(),
+        vertex_buffer.get(),
         buffer_size,
         command_pool,
         queue,
@@ -976,17 +1002,15 @@ pub fn create_vertex_buffer(
 
 pub fn create_index_buffer(
     device: &ash::Device,
-    instance: &ash::Instance,
-    physical_device: &vk::PhysicalDevice,
-    command_pool: &vk::CommandPool,
-    queue: &vk::Queue,
+    mem_properties: vk::PhysicalDeviceMemoryProperties,
+    command_pool: vk::CommandPool,
+    queue: vk::Queue,
 ) -> Result<(Destructor<vk::Buffer>, Destructor<vk::DeviceMemory>)> {
     let buffer_size = (std::mem::size_of::<Vertex>() * INDICES.len()) as u64;
 
     let (staging_buffer, staging_buffer_memory) = create_buffer(
         device,
-        instance,
-        physical_device,
+        mem_properties,
         buffer_size,
         vk::BufferUsageFlags::TRANSFER_SRC,
         vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
@@ -1007,8 +1031,7 @@ pub fn create_index_buffer(
 
     let (index_buffer, index_memory) = create_buffer(
         device,
-        instance,
-        physical_device,
+        mem_properties,
         buffer_size,
         vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::INDEX_BUFFER,
         vk::MemoryPropertyFlags::DEVICE_LOCAL,
@@ -1016,8 +1039,8 @@ pub fn create_index_buffer(
 
     copy_buffer(
         device,
-        &staging_buffer.get(),
-        &index_buffer.get(),
+        staging_buffer.get(),
+        index_buffer.get(),
         buffer_size,
         command_pool,
         queue,
@@ -1028,8 +1051,7 @@ pub fn create_index_buffer(
 
 pub fn create_uniform_buffer<T>(
     device: &ash::Device,
-    instance: &ash::Instance,
-    physical_device: &vk::PhysicalDevice,
+    mem_properties: vk::PhysicalDeviceMemoryProperties,
     array_length: u64,
 ) -> Result<(
     Vec<Destructor<vk::Buffer>>,
@@ -1049,8 +1071,7 @@ pub fn create_uniform_buffer<T>(
     for _ in 0..MAX_FRAMES_IN_FLIGHT {
         let (uniform_buffer_temp, uniform_buffers_memory_temp) = create_buffer(
             device,
-            instance,
-            physical_device,
+            mem_properties,
             buffer_size,
             vk::BufferUsageFlags::UNIFORM_BUFFER,
             vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
@@ -1075,18 +1096,16 @@ pub fn create_uniform_buffer<T>(
 
 pub fn create_storage_buffer<T>(
     device: &ash::Device,
-    instance: &ash::Instance,
-    physical_device: &vk::PhysicalDevice,
-    command_pool: &vk::CommandPool,
-    submit_queue: &vk::Queue,
+    mem_properties: vk::PhysicalDeviceMemoryProperties,
+    command_pool: vk::CommandPool,
+    submit_queue: vk::Queue,
     data_in: &Vec<T>,
 ) -> Result<(Destructor<vk::Buffer>, Destructor<vk::DeviceMemory>)> {
     let buffer_size = (std::mem::size_of::<T>() * data_in.len()) as u64;
 
     let (staging_buffer, staging_buffer_memory) = create_buffer(
         device,
-        instance,
-        physical_device,
+        mem_properties,
         buffer_size,
         vk::BufferUsageFlags::TRANSFER_SRC,
         vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
@@ -1110,8 +1129,7 @@ pub fn create_storage_buffer<T>(
 
     let (buffer, buffer_memory) = create_buffer(
         device,
-        instance,
-        physical_device,
+        mem_properties,
         buffer_size,
         vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::STORAGE_BUFFER,
         vk::MemoryPropertyFlags::DEVICE_LOCAL,
@@ -1121,7 +1139,7 @@ pub fn create_storage_buffer<T>(
     let command_buffer = begin_single_time_commands(device, command_pool)?;
     let regions = [vk::BufferCopy::default().size(buffer_size)];
     unsafe { device.cmd_copy_buffer(command_buffer, staging_buffer.get(), buffer.get(), &regions) };
-    end_single_time_command(device, command_pool, submit_queue, &command_buffer)?;
+    end_single_time_command(device, command_pool, submit_queue, command_buffer)?;
 
     Ok((buffer, buffer_memory))
 }
@@ -1235,7 +1253,7 @@ fn create_image(
     tiling: vk::ImageTiling,
     usage: vk::ImageUsageFlags,
     required_memory_properties: vk::MemoryPropertyFlags,
-    device_memory_properties: &vk::PhysicalDeviceMemoryProperties,
+    device_memory_properties: vk::PhysicalDeviceMemoryProperties,
 ) -> Result<(Destructor<vk::Image>, Destructor<vk::DeviceMemory>)> {
     let image_create_info = vk::ImageCreateInfo::default()
         .image_type(vk::ImageType::TYPE_2D)
@@ -1288,10 +1306,9 @@ fn create_image(
 #[allow(unused)]
 pub fn create_texture_image(
     device: &ash::Device,
-    instance: &ash::Instance,
-    physical_device: &vk::PhysicalDevice,
-    command_pool: &vk::CommandPool,
-    submit_queue: &vk::Queue,
+    mem_properties: vk::PhysicalDeviceMemoryProperties,
+    command_pool: vk::CommandPool,
+    submit_queue: vk::Queue,
 ) -> Result<(Destructor<vk::Image>, Destructor<vk::DeviceMemory>)> {
     let mut image_object = image::ImageReader::open("textures/statue.jpg")?.decode()?; // Apparently this function is slow in debug mode
     image_object = image_object.flipv();
@@ -1306,8 +1323,7 @@ pub fn create_texture_image(
 
     let (staging_buffer, staging_buffer_memory) = create_buffer(
         device,
-        instance,
-        physical_device,
+        mem_properties,
         image_size,
         vk::BufferUsageFlags::TRANSFER_SRC,
         vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
@@ -1329,9 +1345,6 @@ pub fn create_texture_image(
         device.unmap_memory(staging_buffer_memory.get());
     }
 
-    let mem_properties =
-        unsafe { instance.get_physical_device_memory_properties(*physical_device) };
-
     let (texture_image, texture_image_memory) = create_image(
         device,
         image_width,
@@ -1340,7 +1353,7 @@ pub fn create_texture_image(
         vk::ImageTiling::OPTIMAL,
         vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED,
         vk::MemoryPropertyFlags::DEVICE_LOCAL,
-        &mem_properties,
+        mem_properties,
     )?;
 
     transition_image_layout(
@@ -1374,52 +1387,40 @@ pub fn create_texture_image(
     Ok((texture_image, texture_image_memory))
 }
 
-pub fn create_storage_image_pair(
+pub fn create_storage_image_pair<'a>(
     device: &ash::Device,
     instance: &ash::Instance,
-    physical_device: &vk::PhysicalDevice,
-    command_pool: &vk::CommandPool,
-    submit_queue: &vk::Queue,
+    allocator: &Arc<vk_mem::Allocator>,
+    physical_device: vk::PhysicalDevice,
+    command_pool: vk::CommandPool,
+    submit_queue: vk::Queue,
     usage: vk::ImageUsageFlags,
-) -> Result<(
-    [Destructor<vk::Image>; 2],
-    [Destructor<vk::DeviceMemory>; 2],
-    [Destructor<vk::ImageView>; 2],
-)> {
-    let image_width = std::cmp::min(
+) -> Result<[vulkan::Image<'a>; 2]> {
+    let width = std::cmp::min(
         IDEAL_RADIANCE_IMAGE_SIZE_WIDTH,
         get_max_image_size(instance, physical_device),
     );
-    let image_height = std::cmp::min(
+    let height = std::cmp::min(
         IDEAL_RADIANCE_IMAGE_SIZE_HEIGHT,
         get_max_image_size(instance, physical_device),
     );
 
-    let mem_properties =
-        unsafe { instance.get_physical_device_memory_properties(*physical_device) };
-
     let mut images = vec![];
-    let mut image_memories = vec![];
-    let mut image_views = vec![];
-
     images.reserve_exact(2);
-    image_memories.reserve_exact(2);
-    image_views.reserve_exact(2);
 
     for i in 0..2 {
-        let (image, image_memory) = create_image(
+        images.push(vulkan::Image::new(
             device,
-            image_width,
-            image_height,
+            allocator,
+            vk_mem::MemoryUsage::AutoPreferDevice,
+            vk_mem::AllocationCreateFlags::empty(),
+            width,
+            height,
             vk::Format::R32G32B32A32_SFLOAT,
             vk::ImageTiling::OPTIMAL,
             usage,
-            vk::MemoryPropertyFlags::DEVICE_LOCAL,
-            &mem_properties,
-        )?;
-
-        images.push(image);
-        image_memories.push(image_memory);
+            vk::ImageAspectFlags::COLOR,
+        )?);
 
         transition_image_layout(
             device,
@@ -1429,29 +1430,23 @@ pub fn create_storage_image_pair(
             vk::ImageLayout::UNDEFINED,
             vk::ImageLayout::GENERAL,
         )?;
-
-        image_views.push(create_image_view(
-            device,
-            &images[i].get(),
-            vk::Format::R32G32B32A32_SFLOAT,
-            vk::ImageAspectFlags::COLOR,
-        )?);
     }
 
-    Ok((
-        images.try_into().unwrap(),
-        image_memories.try_into().unwrap(),
-        image_views.try_into().unwrap(),
-    ))
+    match <Vec<vulkan::Image<'_>> as TryInto<[vulkan::Image<'_>; 2]>>::try_into(images) {
+        Ok(v) => Ok(v),
+        Err(_) => Err(anyhow!(
+            "Failed to convert storage image vector to an array"
+        )),
+    }
 }
 
-fn begin_single_time_commands(
+pub fn begin_single_time_commands(
     device: &ash::Device,
-    command_pool: &vk::CommandPool,
+    command_pool: vk::CommandPool,
 ) -> Result<vk::CommandBuffer> {
     let allocate_info = vk::CommandBufferAllocateInfo::default()
         .level(vk::CommandBufferLevel::PRIMARY)
-        .command_pool(*command_pool)
+        .command_pool(command_pool)
         .command_buffer_count(1);
     let command_buffer = unsafe { device.allocate_command_buffers(&allocate_info)? }[0];
 
@@ -1462,28 +1457,28 @@ fn begin_single_time_commands(
     Ok(command_buffer)
 }
 
-fn end_single_time_command(
+pub fn end_single_time_command(
     device: &ash::Device,
-    command_pool: &vk::CommandPool,
-    submit_queue: &vk::Queue,
-    command_buffer: &vk::CommandBuffer,
+    command_pool: vk::CommandPool,
+    submit_queue: vk::Queue,
+    command_buffer: vk::CommandBuffer,
 ) -> Result<()> {
-    unsafe { device.end_command_buffer(*command_buffer)? };
-    let buffers_to_submit = [*command_buffer];
+    unsafe { device.end_command_buffer(command_buffer)? };
+    let buffers_to_submit = [command_buffer];
     let submit_info = [vk::SubmitInfo::default().command_buffers(&buffers_to_submit)];
 
     unsafe {
-        device.queue_submit(*submit_queue, &submit_info, vk::Fence::null())?;
-        device.queue_wait_idle(*submit_queue)?;
-        device.free_command_buffers(*command_pool, &buffers_to_submit);
+        device.queue_submit(submit_queue, &submit_info, vk::Fence::null())?;
+        device.queue_wait_idle(submit_queue)?;
+        device.free_command_buffers(command_pool, &buffers_to_submit);
     };
     Ok(())
 }
 
 pub fn transition_image_layout(
     device: &ash::Device,
-    command_pool: &vk::CommandPool,
-    submit_queue: &vk::Queue,
+    command_pool: vk::CommandPool,
+    submit_queue: vk::Queue,
     image: vk::Image,
     old_layout: vk::ImageLayout,
     new_layout: vk::ImageLayout,
@@ -1561,14 +1556,14 @@ pub fn transition_image_layout(
         );
     }
 
-    end_single_time_command(device, command_pool, submit_queue, &command_buffer)?;
+    end_single_time_command(device, command_pool, submit_queue, command_buffer)?;
     Ok(())
 }
 
 fn copy_buffer_to_image(
     device: &ash::Device,
-    command_pool: &vk::CommandPool,
-    submit_queue: &vk::Queue,
+    command_pool: vk::CommandPool,
+    submit_queue: vk::Queue,
     buffer: vk::Buffer,
     image: vk::Image,
     width: u32,
@@ -1603,14 +1598,14 @@ fn copy_buffer_to_image(
         )
     };
 
-    end_single_time_command(device, command_pool, submit_queue, &command_buffer)?;
+    end_single_time_command(device, command_pool, submit_queue, command_buffer)?;
     Ok(())
 }
 
 #[allow(unused)]
 pub fn create_texture_image_view(
     device: &ash::Device,
-    texture_image: &vk::Image,
+    texture_image: vk::Image,
 ) -> Result<Destructor<vk::ImageView>> {
     Ok(create_image_view(
         device,
@@ -1624,9 +1619,9 @@ pub fn create_texture_image_view(
 pub fn create_texture_sampler(
     device: &ash::Device,
     instance: &ash::Instance,
-    physical_device: &vk::PhysicalDevice,
+    physical_device: vk::PhysicalDevice,
 ) -> Result<vk::Sampler> {
-    let device_properties = unsafe { instance.get_physical_device_properties(*physical_device) };
+    let device_properties = unsafe { instance.get_physical_device_properties(physical_device) };
     let create_info = vk::SamplerCreateInfo::default()
         .mag_filter(vk::Filter::LINEAR) // Linear interpolation if we need to oversample the image (magnifying)
         .min_filter(vk::Filter::LINEAR) // Linear interpolation if we are undersampling (minifying)
@@ -1648,14 +1643,14 @@ pub fn create_texture_sampler(
 
 fn find_supported_format(
     instance: &ash::Instance,
-    physical_device: &vk::PhysicalDevice,
+    physical_device: vk::PhysicalDevice,
     candidates: &Vec<vk::Format>,
     tiling: vk::ImageTiling,
     features: vk::FormatFeatureFlags,
 ) -> Result<vk::Format> {
     for &format in candidates {
         let props =
-            unsafe { instance.get_physical_device_format_properties(*physical_device, format) };
+            unsafe { instance.get_physical_device_format_properties(physical_device, format) };
 
         if tiling == vk::ImageTiling::LINEAR
             && (props.linear_tiling_features & features) == features
@@ -1672,7 +1667,7 @@ fn find_supported_format(
 
 fn find_depth_format(
     instance: &ash::Instance,
-    physical_device: &vk::PhysicalDevice,
+    physical_device: vk::PhysicalDevice,
 ) -> Result<vk::Format> {
     let candidates = vec![
         vk::Format::D32_SFLOAT,
@@ -1695,7 +1690,8 @@ fn find_depth_format(
 pub fn create_depth_resources(
     device: &ash::Device,
     instance: &ash::Instance,
-    physical_device: &vk::PhysicalDevice,
+    physical_device: vk::PhysicalDevice,
+    mem_properties: vk::PhysicalDeviceMemoryProperties,
     swap_chain_stuff: &SwapChainStuff,
 ) -> Result<(
     Destructor<vk::Image>,
@@ -1703,8 +1699,6 @@ pub fn create_depth_resources(
     Destructor<vk::ImageView>,
 )> {
     let depth_format = find_depth_format(instance, physical_device)?;
-    let mem_properties =
-        unsafe { instance.get_physical_device_memory_properties(*physical_device) };
     let (image, image_memory) = create_image(
         device,
         swap_chain_stuff.extent.width,
@@ -1713,11 +1707,11 @@ pub fn create_depth_resources(
         vk::ImageTiling::OPTIMAL,
         vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
         vk::MemoryPropertyFlags::DEVICE_LOCAL,
-        &mem_properties,
+        mem_properties,
     )?;
     let image_view = create_image_view(
         device,
-        &image.get(),
+        image.get(),
         depth_format,
         vk::ImageAspectFlags::DEPTH,
     )?;

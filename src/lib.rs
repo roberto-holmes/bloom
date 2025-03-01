@@ -6,6 +6,7 @@ mod core;
 mod debug;
 pub mod material;
 pub mod primitives;
+mod ray;
 pub mod select;
 mod structures;
 mod tools;
@@ -39,8 +40,10 @@ use winit::{
 const WINDOW_WIDTH: u32 = 800;
 const WINDOW_HEIGHT: u32 = 600;
 const MAX_FRAMES_IN_FLIGHT: usize = 2;
-const IDEAL_RADIANCE_IMAGE_SIZE_WIDTH: u32 = 5120;
-const IDEAL_RADIANCE_IMAGE_SIZE_HEIGHT: u32 = 2160;
+// const IDEAL_RADIANCE_IMAGE_SIZE_WIDTH: u32 = 5120;
+const IDEAL_RADIANCE_IMAGE_SIZE_WIDTH: u32 = 800;
+// const IDEAL_RADIANCE_IMAGE_SIZE_HEIGHT: u32 = 2160;
+const IDEAL_RADIANCE_IMAGE_SIZE_HEIGHT: u32 = 600;
 
 pub const MAX_MATERIAL_COUNT: usize = 10;
 pub const MAX_SPHERE_COUNT: usize = 20;
@@ -87,15 +90,15 @@ pub fn run<T: Bloomable>(user_app: T) {
     };
 }
 
-struct App<T: Bloomable> {
+struct App<'a, T: Bloomable> {
     window: Option<Window>,
-    vulkan: Option<VulkanApp<T>>,
+    vulkan: Option<VulkanApp<'a, T>>,
     last_frame_time: SystemTime,
 
     user_app: Option<T>,
 }
 
-impl<T: Bloomable> App<T> {
+impl<'a, T: Bloomable> App<'a, T> {
     pub fn new(user_app: T) -> Self {
         Self {
             window: None,
@@ -107,7 +110,7 @@ impl<T: Bloomable> App<T> {
     }
 }
 
-impl<T: Bloomable> ApplicationHandler for App<T> {
+impl<'a, T: Bloomable> ApplicationHandler for App<'a, T> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         let window = event_loop
             .create_window(
@@ -164,19 +167,20 @@ impl<T: Bloomable> ApplicationHandler for App<T> {
 }
 
 #[allow(dead_code)]
-struct VulkanApp<T: Bloomable> {
+struct VulkanApp<'a, T: Bloomable> {
     pub user_app: T,
     api: Arc<Mutex<BloomAPI>>,
     user_app_initialised: bool,
 
     should_compute_die: Arc<RwLock<bool>>,
     should_transfer_die: Arc<RwLock<bool>>,
-    compute_thread: Option<JoinHandle<()>>,
+    ray_tracing_thread: Option<JoinHandle<()>>,
     transfer_thread: Option<JoinHandle<()>>,
     transfer_sender: mpsc::Sender<u8>,
     graphic_receiver: mpsc::Receiver<u64>,
     graphic_transfer_semaphore: Destructor<vk::Semaphore>, // TODO: Should this object own the destructor?
 
+    mem_properties: vk::PhysicalDeviceMemoryProperties,
     graphics_queue: vk::Queue,
     _presentation_queue: vk::Queue,
     swapchain_stuff: SwapChainStuff,
@@ -215,9 +219,7 @@ struct VulkanApp<T: Bloomable> {
     triangle_buffer: Destructor<vk::Buffer>,
     triangle_buffer_memory: Destructor<vk::DeviceMemory>,
 
-    graphic_image_views: [Destructor<vk::ImageView>; 2],
-    graphic_images: [Destructor<vk::Image>; 2],
-    graphic_image_memories: [Destructor<vk::DeviceMemory>; 2],
+    graphic_images: [vulkan::Image<'a>; 2],
 
     depth_image_view: Destructor<vk::ImageView>,
     depth_image: Destructor<vk::Image>,
@@ -240,7 +242,7 @@ struct VulkanApp<T: Bloomable> {
     _entry: Entry,
 }
 
-impl<T: Bloomable> VulkanApp<T> {
+impl<'a, T: Bloomable> VulkanApp<'a, T> {
     pub fn new(window: &Window, mut user_app: T) -> Result<Self> {
         let api = Arc::new(Mutex::new(BloomAPI::new()));
         user_app.init(Arc::downgrade(&api));
@@ -258,7 +260,20 @@ impl<T: Bloomable> VulkanApp<T> {
         // Pick a graphics card
         let physical_device = pick_physical_device(instance.get(), &surface_stuff)?;
         let (device, queue_family_indices) =
-            create_logical_device(instance.get(), &physical_device, &surface_stuff)?;
+            create_logical_device(instance.get(), physical_device, &surface_stuff)?;
+
+        let mut allocator_create_info =
+            vk_mem::AllocatorCreateInfo::new(&instance.get(), &device.get(), physical_device);
+        allocator_create_info.vulkan_api_version = vk::API_VERSION_1_3;
+        allocator_create_info.flags = vk_mem::AllocatorCreateFlags::BUFFER_DEVICE_ADDRESS;
+
+        let allocator = Arc::new(unsafe { vk_mem::Allocator::new(allocator_create_info)? });
+
+        let mem_properties = unsafe {
+            instance
+                .get()
+                .get_physical_device_memory_properties(physical_device)
+        };
 
         let graphics_queue =
             core::create_queue(device.get(), queue_family_indices.graphics_family.unwrap());
@@ -270,7 +285,7 @@ impl<T: Bloomable> VulkanApp<T> {
         let swapchain_stuff = SwapChainStuff::new(
             instance.get(),
             device.get(),
-            &physical_device,
+            physical_device,
             &surface_stuff,
             &queue_family_indices,
         )?;
@@ -278,28 +293,23 @@ impl<T: Bloomable> VulkanApp<T> {
         let descriptor_pool = create_descriptor_pool(device.get())?;
 
         let (pipeline_layout, pipelines) =
-            create_graphics_pipeline(device.get(), &swapchain_stuff, &set_layout.get())?;
+            create_graphics_pipeline(device.get(), &swapchain_stuff, set_layout.get())?;
 
         let (uniform_buffers, uniform_buffers_memory, uniform_buffers_mapped) =
-            create_uniform_buffer::<UniformBufferObject>(
-                device.get(),
-                instance.get(),
-                &physical_device,
-                1,
-            )?;
+            create_uniform_buffer::<UniformBufferObject>(device.get(), mem_properties, 1)?;
 
         let (material_buffers, material_buffers_memory, material_buffers_mapped) =
             create_uniform_buffer::<material::Material>(
                 device.get(),
-                instance.get(),
-                &physical_device,
+                mem_properties,
                 MAX_MATERIAL_COUNT as u64,
             )?;
 
         let (depth_image, depth_image_memory, depth_image_view) = create_depth_resources(
             device.get(),
             instance.get(),
-            &physical_device,
+            physical_device,
+            mem_properties,
             &swapchain_stuff,
         )?;
 
@@ -310,90 +320,84 @@ impl<T: Bloomable> VulkanApp<T> {
 
         let (vertex_buffer, vertex_buffer_memory) = create_vertex_buffer(
             device.get(),
-            instance.get(),
-            &physical_device,
-            &command_pool.get(),
-            &graphics_queue,
+            mem_properties,
+            command_pool.get(),
+            graphics_queue,
         )?;
 
         let (index_buffer, index_buffer_memory) = create_index_buffer(
             device.get(),
-            instance.get(),
-            &physical_device,
-            &command_pool.get(),
-            &graphics_queue,
+            mem_properties,
+            command_pool.get(),
+            graphics_queue,
         )?;
 
-        let (graphic_images, graphic_image_memories, graphic_image_views) =
-            create_storage_image_pair(
-                device.get(),
-                instance.get(),
-                &physical_device,
-                &command_pool.get(),
-                &graphics_queue,
-                vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::TRANSFER_DST,
-            )?;
+        let graphic_images = create_storage_image_pair(
+            device.get(),
+            instance.get(),
+            &allocator,
+            physical_device,
+            command_pool.get(),
+            graphics_queue,
+            vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::TRANSFER_DST,
+        )?;
         let mut raw_graphic_images = [vk::Image::null(); 2];
         for i in 0..graphic_images.len() {
             raw_graphic_images[i] = graphic_images[i].get();
         }
         let mut raw_graphic_image_views = [vk::ImageView::null(); 2];
-        for i in 0..graphic_image_views.len() {
-            raw_graphic_image_views[i] = graphic_image_views[i].get();
+        for i in 0..graphic_images.len() {
+            raw_graphic_image_views[i] = graphic_images[i].view();
         }
 
-        let (compute_images, compute_image_memories, compute_image_views) =
-            create_storage_image_pair(
-                device.get(),
-                instance.get(),
-                &physical_device,
-                &command_pool.get(),
-                &graphics_queue,
-                vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::TRANSFER_SRC,
-            )?;
+        let compute_images = create_storage_image_pair(
+            device.get(),
+            instance.get(),
+            &allocator,
+            physical_device,
+            command_pool.get(),
+            graphics_queue,
+            vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::TRANSFER_SRC,
+        )?;
         let mut raw_compute_images = [vk::Image::null(); 2];
         for i in 0..compute_images.len() {
             raw_compute_images[i] = compute_images[i].get();
         }
         let (bvh_buffer, bvh_buffer_memory) = create_storage_buffer(
             device.get(),
-            instance.get(),
-            &physical_device,
-            &command_pool.get(),
-            &graphics_queue,
+            mem_properties,
+            command_pool.get(),
+            graphics_queue,
             &bvh,
         )?;
 
         let (sphere_buffer, sphere_buffer_memory) = create_storage_buffer(
             device.get(),
-            instance.get(),
-            &physical_device,
-            &command_pool.get(),
-            &graphics_queue,
-            &api.borrow().scene.get_sphere_arr().to_vec(),
+            mem_properties,
+            command_pool.get(),
+            graphics_queue,
+            &api.lock().unwrap().scene.get_sphere_arr().to_vec(),
         )?;
 
         let (quad_buffer, quad_buffer_memory) = create_storage_buffer(
             device.get(),
-            instance.get(),
-            &physical_device,
-            &command_pool.get(),
-            &graphics_queue,
-            &api.borrow().scene.get_quad_arr().to_vec(),
+            mem_properties,
+            command_pool.get(),
+            graphics_queue,
+            &api.lock().unwrap().scene.get_quad_arr().to_vec(),
         )?;
 
         let (triangle_buffer, triangle_buffer_memory) = create_storage_buffer(
             device.get(),
-            instance.get(),
-            &physical_device,
-            &command_pool.get(),
-            &graphics_queue,
-            &api.borrow().scene.get_triangle_arr().to_vec(),
+            mem_properties,
+            command_pool.get(),
+            graphics_queue,
+            &api.lock().unwrap().scene.get_triangle_arr().to_vec(),
         )?;
         let descriptor_sets = create_descriptor_sets(
             device.get(),
-            &descriptor_pool.get(),
-            &set_layout.get(),
+            descriptor_pool.get(),
+            set_layout.get(),
             &uniform_buffers,
             &material_buffers,
             bvh_buffer.get(),
@@ -417,6 +421,10 @@ impl<T: Bloomable> VulkanApp<T> {
         let compute_device = device.get().clone();
         let transfer_device = device.get().clone();
 
+        let compute_instance = instance.get().clone();
+
+        let compute_api = Arc::clone(&api);
+
         let (transfer_sender, transfer_receiver) = mpsc::channel();
         let (graphic_sender, graphic_receiver) = mpsc::channel();
         let (compute_sender, compute_receiver) = mpsc::channel();
@@ -429,23 +437,27 @@ impl<T: Bloomable> VulkanApp<T> {
             device.get().fp_v1_0().destroy_semaphore,
         );
 
-        let compute_transfer_semaphore = transfer_semaphore.get().clone();
+        let ray_tracing_transfer_semaphore = transfer_semaphore.get().clone();
         let transfer_transfer_semaphore = transfer_semaphore.get().clone();
 
-        let compute_thread =
+        // TODO: Choose whether to enable the compute thread or ray_tracing thread depending on HW capabilitie
+        let ray_tracing_thread = if true {
             match thread::Builder::new()
-                .name("Compute".to_string())
+                .name("RayTracing".to_string())
                 .spawn(move || {
-                    compute::compute_thread(
+                    ray::thread(
                         compute_device,
+                        compute_instance,
+                        physical_device,
                         queue_family_indices,
                         compute_images,
-                        compute_image_views,
-                        compute_image_memories,
                         compute_mutex,
                         compute_receiver,
                         compute_transfer_send,
-                        compute_transfer_semaphore,
+                        ray_tracing_transfer_semaphore,
+                        IDEAL_RADIANCE_IMAGE_SIZE_WIDTH,
+                        IDEAL_RADIANCE_IMAGE_SIZE_HEIGHT,
+                        compute_api,
                     );
                 }) {
                 Ok(v) => Some(v),
@@ -453,13 +465,34 @@ impl<T: Bloomable> VulkanApp<T> {
                     log::error!("Failed to create compute thread: {e}");
                     None
                 }
-            };
+            }
+        } else {
+            match thread::Builder::new()
+                .name("Compute".to_string())
+                .spawn(move || {
+                    compute::thread(
+                        compute_device,
+                        queue_family_indices,
+                        compute_images,
+                        compute_mutex,
+                        compute_receiver,
+                        compute_transfer_send,
+                        ray_tracing_transfer_semaphore,
+                    );
+                }) {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    log::error!("Failed to create compute thread: {e}");
+                    None
+                }
+            }
+        };
 
         let transfer_thread =
             match thread::Builder::new()
                 .name("Transfer".to_string())
                 .spawn(move || {
-                    transfer::transfer_thread(
+                    transfer::thread(
                         transfer_device,
                         queue_family_indices,
                         transfer_transfer_semaphore,
@@ -492,6 +525,7 @@ impl<T: Bloomable> VulkanApp<T> {
             instance,
             debug_messenger,
             physical_device,
+            mem_properties,
             device,
             graphics_queue,
             _presentation_queue: presentation_queue,
@@ -503,7 +537,7 @@ impl<T: Bloomable> VulkanApp<T> {
             graphic_receiver,
             should_compute_die,
             should_transfer_die,
-            compute_thread,
+            ray_tracing_thread,
             transfer_thread,
             graphic_transfer_semaphore: transfer_semaphore,
 
@@ -540,8 +574,6 @@ impl<T: Bloomable> VulkanApp<T> {
             triangle_buffer_memory,
 
             graphic_images,
-            graphic_image_memories,
-            graphic_image_views,
 
             depth_image,
             depth_image_memory,
@@ -745,7 +777,7 @@ impl<T: Bloomable> VulkanApp<T> {
                         * timestamp_period
                         / 1_000_000.0;
                     log::trace!(
-                        "Pipeline took {:.2} ms [{:.2} fps]",
+                        "Graphics pipeline took {:.2} ms [{:.2} fps]",
                         delta_in_ms,
                         1000.0 / delta_in_ms
                     );
@@ -802,7 +834,7 @@ impl<T: Bloomable> VulkanApp<T> {
             .reset(
                 self.instance.get(),
                 &self.device.get(),
-                &self.physical_device,
+                self.physical_device,
                 &self.surface_stuff,
                 &self.queue_family_indices,
             )
@@ -815,7 +847,8 @@ impl<T: Bloomable> VulkanApp<T> {
         ) = match create_depth_resources(
             self.device.get(),
             self.instance.get(),
-            &self.physical_device,
+            self.physical_device,
+            self.mem_properties,
             &self.swapchain_stuff,
         ) {
             Ok(v) => v,
@@ -886,8 +919,8 @@ impl<T: Bloomable> VulkanApp<T> {
 
         transition_image_layout(
             self.device.get(),
-            &self.command_pool.get(),
-            &self.graphics_queue,
+            self.command_pool.get(),
+            self.graphics_queue,
             self.swapchain_stuff.images[image_index as usize],
             vk::ImageLayout::UNDEFINED,
             vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
@@ -961,8 +994,8 @@ impl<T: Bloomable> VulkanApp<T> {
 
             transition_image_layout(
                 self.device.get(),
-                &self.command_pool.get(),
-                &self.graphics_queue,
+                self.command_pool.get(),
+                self.graphics_queue,
                 self.swapchain_stuff.images[image_index as usize],
                 vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
                 vk::ImageLayout::PRESENT_SRC_KHR,
@@ -974,7 +1007,7 @@ impl<T: Bloomable> VulkanApp<T> {
     }
 }
 
-impl<T: Bloomable> Drop for VulkanApp<T> {
+impl<'a, T: Bloomable> Drop for VulkanApp<'a, T> {
     fn drop(&mut self) {
         log::debug!("Cleaning up");
         // Kill threads
@@ -990,7 +1023,7 @@ impl<T: Bloomable> Drop for VulkanApp<T> {
             Ok(mut m) => *m = true,
             Err(e) => log::error!("Failed to write to transfer death mutex: {e}"),
         }
-        if let Some(t) = self.compute_thread.take() {
+        if let Some(t) = self.ray_tracing_thread.take() {
             log::debug!("Wating for compute to finish");
             t.join().unwrap();
         }
