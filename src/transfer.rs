@@ -11,7 +11,7 @@ use crate::{
     IDEAL_RADIANCE_IMAGE_SIZE_WIDTH,
 };
 
-pub fn transfer_thread(
+pub fn thread(
     device: ash::Device,
     queue_family_indices: structures::QueueFamilyIndices,
     semaphore: vk::Semaphore,
@@ -23,6 +23,7 @@ pub fn transfer_thread(
     compute_channel: mpsc::Sender<u64>,
     graphic_channel: mpsc::Sender<u64>,
 ) {
+    log::trace!("Creating thread");
     let transfer = match Transfer::new(
         device,
         semaphore,
@@ -129,6 +130,7 @@ impl Transfer {
         compute_images: &[vk::Image; 2],
         graphic_images: &[vk::Image; 2],
     ) -> Result<Self> {
+        log::trace!("Creating object");
         let queue = core::create_queue(&device, queue_family_indices.transfer_family.unwrap());
         let (command_pool, commands) = create_commands(
             &device,
@@ -136,7 +138,6 @@ impl Transfer {
             compute_images,
             graphic_images,
         )?;
-        log::debug!("Command buffer {:?}", commands);
         Ok(Self {
             device,
             queue,
