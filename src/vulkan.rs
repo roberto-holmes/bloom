@@ -279,6 +279,10 @@ impl Buffer {
             range: self.size,
         }
     }
+    pub fn get_device_address(&self, device: &ash::Device) -> vk::DeviceAddress {
+        let buffer_device_ai = vk::BufferDeviceAddressInfo::default().buffer(self.buffer);
+        unsafe { device.get_buffer_device_address(&buffer_device_ai) }
+    }
     pub fn get(&self) -> vk::Buffer {
         self.buffer
     }

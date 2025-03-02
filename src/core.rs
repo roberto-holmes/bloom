@@ -470,6 +470,7 @@ pub fn create_logical_device(
 
     let device_features = vk::PhysicalDeviceFeatures::default()
         .sampler_anisotropy(true)
+        .shader_int64(true)
         .fragment_stores_and_atomics(true);
 
     let device_extensions = [
@@ -490,6 +491,7 @@ pub fn create_logical_device(
         vk::PhysicalDeviceAccelerationStructureFeaturesKHR::default().acceleration_structure(true);
     let mut rt_features =
         vk::PhysicalDeviceRayTracingPipelineFeaturesKHR::default().ray_tracing_pipeline(true);
+    let mut features11 = vk::PhysicalDeviceVulkan11Features::default();
     let mut features12 = vk::PhysicalDeviceVulkan12Features::default()
         .timeline_semaphore(true)
         .descriptor_indexing(true)
@@ -499,6 +501,7 @@ pub fn create_logical_device(
         .synchronization2(true);
     let mut features = unsafe {
         vk::PhysicalDeviceFeatures2::default()
+            .extend(&mut features11)
             .extend(&mut features12)
             .extend(&mut features13)
             .extend(&mut rt_features)

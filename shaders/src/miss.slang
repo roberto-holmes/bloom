@@ -17,10 +17,18 @@
 
 struct Payload {
 	[[vk::location(0)]]
-	float3 hitValue;
+	float3 radiance;
+	float3 attenuation;
+	int done;
+	float3 ray_origin;
+	float3 ray_dir;
 };
 
 [shader("miss")]
 void main(inout Payload p) {
-	p.hitValue = float3(0.4, 0.1, 0.3);
+	// p.radiance = float3(0.4, 0.1, 0.3);
+	// p.radiance = float3(0.3, 0.5, 1.0);
+	p.radiance = float3(1.0, 1.0, 1.0);
+	p.attenuation = float3(1.0, 1.0, 1.0);
+	p.done = 1;
 }

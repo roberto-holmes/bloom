@@ -6,7 +6,7 @@ use {
 
 #[derive(Debug, Copy, Clone, Pod, Zeroable)]
 #[repr(C)]
-pub struct Vec3([f32; 3]);
+pub struct Vec3(pub [f32; 3]);
 
 impl Default for Vec3 {
     fn default() -> Self {
