@@ -31,7 +31,7 @@ pub struct BloomAPI {
 impl BloomAPI {
     pub fn new() -> Self {
         let camera = Camera::look_at(
-            Vec3::new(3., 2., 3.),
+            Vec3::new(9., -6., 9.),
             Vec3::new(0., 1., 0.),
             Vec3::new(0., 1., 0.),
             FOCAL_DISTANCE,

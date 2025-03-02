@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 [[vk::binding(0)]]
-RaytracingAccelerationStructure rs;
+RaytracingAccelerationStructure tlas;
 [[vk::binding(1)]]
 RWTexture2D<float4> image;
 
@@ -35,7 +35,11 @@ cbuffer camera {
 
 struct Payload {
 	[[vk::location(0)]]
-	float3 hitValue;
+	float3 radiance;
+	float3 attenuation;
+	int done;
+	float3 ray_origin;
+	float3 ray_dir;
 };
 
 [shader("raygeneration")]
@@ -57,20 +61,30 @@ void main() {
 	// float3x3 camera_rotation = float3x3(camera.u, camera.v, camera.w);
 	float3x3 camera_rotation = transpose(float3x3(camera.u, camera.v, camera.w));
 
-	RayDesc rayDesc;
-	rayDesc.Direction = mul(camera_rotation, float3(uv.xy, camera.focal_distance)).xyz;
-	rayDesc.Origin = camera.origin;
-	// rayDesc.Origin = mul(camera.viewInverse, float4(0, 0, 0, 1)).xyz;
-	// rayDesc.Direction = mul(camera.viewInverse, float4(normalize(target.xyz), 0)).xyz;
-	rayDesc.TMin = 0.001;
-	rayDesc.TMax = 10000.0;
-
 	Payload payload;
-	TraceRay(rs, RAY_FLAG_FORCE_OPAQUE, 0xff, 0, 0, 0, rayDesc, payload);
+	payload.ray_origin = camera.origin;
+	payload.ray_dir = mul(camera_rotation, float3(uv.xy, camera.focal_distance)).xyz;
+	payload.attenuation = float3(1.0);
+	payload.radiance = float3(0.0);
+	payload.done = 0;
 
-	// if (LaunchID.y > 100) {
-	// 	image[int2(LaunchID.xy)] = float4(0.0, 0.0, 1.0, 0.0);
-	// } else {
-	image[int2(LaunchID.xy)] = float4(payload.hitValue, 0.0);
-	// }
+	float3 hit_value = 1.0;
+
+	for (int depth = 0; depth < 64; depth++) {
+		RayDesc rayDesc;
+		rayDesc.Direction = payload.ray_dir;
+		rayDesc.Origin = payload.ray_origin;
+		rayDesc.TMin = 0.001;
+		rayDesc.TMax = 10000.0;
+
+		TraceRay(tlas, RAY_FLAG_FORCE_OPAQUE, 0xff, 0, 0, 0, rayDesc, payload);
+		hit_value *= payload.attenuation;
+
+		if (payload.done == 1 || length(payload.attenuation) < 0.1) {
+			// if (payload.done == 1) {
+			break;
+		}
+	}
+	hit_value *= payload.radiance;
+	image[int2(LaunchID.xy)] = float4(hit_value, 0.0);
 }

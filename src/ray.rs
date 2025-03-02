@@ -4,13 +4,14 @@ use std::sync::{mpsc, Arc, Mutex, RwLock};
 
 use anyhow::{anyhow, Result};
 use ash::{vk, RawPtr};
+use cgmath;
 use vk_mem::{self};
 
 use crate::api::BloomAPI;
 use crate::core::UniformBufferObject;
 use crate::vec::Vec3;
 use crate::vulkan::Destructor;
-use crate::{core, structures, tools, vulkan, MAX_FRAMES_IN_FLIGHT};
+use crate::{core, material, primitives, structures, tools, vulkan, MAX_FRAMES_IN_FLIGHT};
 
 pub fn thread(
     device: ash::Device,
@@ -198,7 +199,8 @@ struct Ray<'a> {
     descriptor_pool: Destructor<vk::DescriptorPool>,
     descriptor_sets: Vec<vk::DescriptorSet>,
 
-    bottom_level_as: AccelerationStructure,
+    buffer_references: vulkan::Buffer,
+    blass: Vec<AccelerationStructure>,
     top_level_as: AccelerationStructure,
 
     allocator: vk_mem::Allocator,
@@ -238,21 +240,14 @@ impl<'a> Ray<'a> {
             )?,
         ];
 
-        log::trace!("Creating bottom level acceleration structure");
-        let bottom_level_as = create_bottom_level_acceleration_structure(
-            &device,
-            &allocator,
-            &as_device,
-            command_pool.get(),
-            queue,
-        )?;
+        let (blass, blas_instances, buffer_references) =
+            create_scene(&allocator, &device, &as_device, command_pool.get(), queue)?;
 
-        log::trace!("Creating top level Acceleration Structure");
         let top_level_as = create_top_level_acceleration_structure(
             &device,
             &allocator,
             &as_device,
-            &bottom_level_as,
+            &blas_instances,
             queue,
             command_pool.get(),
         )?;
@@ -278,6 +273,7 @@ impl<'a> Ray<'a> {
             &top_level_as,
             &images,
             &uniform_buffers,
+            &buffer_references,
         )?;
 
         log::trace!("Building command buffers");
@@ -327,8 +323,9 @@ impl<'a> Ray<'a> {
             hit_shader_binding_table,
             api,
             uniform_buffers,
-            bottom_level_as,
             top_level_as,
+            buffer_references,
+            blass,
         })
     }
     pub fn need_resize(&self, width: u32, height: u32, frame_index: usize) -> bool {
@@ -486,15 +483,8 @@ fn create_bottom_level_acceleration_structure(
     as_device: &ash::khr::acceleration_structure::Device,
     command_pool: vk::CommandPool,
     queue: vk::Queue,
+    obj: &primitives::ModelGPU,
 ) -> Result<AccelerationStructure> {
-    let vertices = vec![
-        Vec3::new(1.0, 1.0, 0.0),
-        Vec3::new(-1.0, 1.0, 0.0),
-        Vec3::new(0.0, -1.0, 0.0),
-    ];
-
-    let indices: Vec<u32> = vec![0, 1, 2];
-
     #[rustfmt::skip]
     let transform_matrix = vk::TransformMatrixKHR { matrix: [
 		1.0, 0.0, 0.0, 0.0, 
@@ -502,26 +492,7 @@ fn create_bottom_level_acceleration_structure(
 		0.0, 0.0, 1.0, 0.0],
 	};
 
-    // TODO: Replace host visibility with a staging buffer
-    log::debug!("Creating vertex buffer");
-    let vertex_buffer = vulkan::Buffer::new_populated(
-        allocator,
-        (vertices.len() * size_of::<Vec3>()) as vk::DeviceSize,
-        vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
-            | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR,
-        vertices.as_ptr(),
-        vertices.len(),
-    )?;
-    log::debug!("Creating index buffer");
-    let index_buffer = vulkan::Buffer::new_populated(
-        allocator,
-        (indices.len() * size_of::<u32>()) as vk::DeviceSize,
-        vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
-            | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR,
-        indices.as_ptr(),
-        indices.len(),
-    )?;
-    log::debug!("Creating transformation buffer");
+    // TODO: Add a staging buffer so these buffers can live on the GPU
     let transform_buffer = vulkan::Buffer::new_populated(
         allocator,
         size_of::<vk::TransformMatrixKHR>() as vk::DeviceSize,
@@ -536,9 +507,9 @@ fn create_bottom_level_acceleration_structure(
     let mut transform_buffer_device_address = vk::DeviceOrHostAddressConstKHR::default();
 
     vertex_buffer_device_address.device_address =
-        get_buffer_device_address(device, vertex_buffer.get());
+        get_buffer_device_address(device, obj.vertex_buffer.get());
     index_buffer_device_address.device_address =
-        get_buffer_device_address(device, index_buffer.get());
+        get_buffer_device_address(device, obj.index_buffer.get());
     transform_buffer_device_address.device_address =
         get_buffer_device_address(device, transform_buffer.get());
 
@@ -550,8 +521,8 @@ fn create_bottom_level_acceleration_structure(
         vk::AccelerationStructureGeometryTrianglesDataKHR::default()
             .vertex_format(vk::Format::R32G32B32_SFLOAT)
             .vertex_data(vertex_buffer_device_address)
-            .max_vertex(vertices.len() as u32)
-            .vertex_stride(size_of::<Vec3>() as u64)
+            .max_vertex(obj.vertex_count)
+            .vertex_stride(size_of::<primitives::Vertex>() as u64)
             .index_type(vk::IndexType::UINT32)
             .index_data(index_buffer_device_address)
             .transform_data(transform_buffer_device_address);
@@ -561,7 +532,7 @@ fn create_bottom_level_acceleration_structure(
         .flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE)
         .geometries(&as_geometries);
 
-    let num_triangles = [1];
+    let num_triangles = [obj.index_count / 3];
     let mut as_build_sizes_info = vk::AccelerationStructureBuildSizesInfoKHR::default();
 
     unsafe {
@@ -588,9 +559,11 @@ fn create_bottom_level_acceleration_structure(
     // The actual build process starts here
 
     // Create a scratch buffer as a temporary storage for the acceleration structure build
+    // TODO: Share the scratch buffer between all BLAS constructions
     let scratch_buffer =
         ScratchBuffer::new(device, allocator, as_build_sizes_info.build_scratch_size)?;
 
+    // TODO: Compaction (https://nvpro-samples.github.io/vk_raytracing_tutorial_KHR/#accelerationstructure/bottom-levelaccelerationstructure/helperdetails:raytracingbuilder::buildblas())
     let mut as_build_geometry_infos = [vk::AccelerationStructureBuildGeometryInfoKHR::default()
         .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
         .flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE)
@@ -627,43 +600,24 @@ fn create_top_level_acceleration_structure(
     device: &ash::Device,
     allocator: &vk_mem::Allocator,
     as_device: &ash::khr::acceleration_structure::Device,
-    bottom_level_as: &AccelerationStructure,
+    blas_instances: &Vec<vk::AccelerationStructureInstanceKHR>,
     queue: vk::Queue,
     command_pool: vk::CommandPool,
 ) -> Result<AccelerationStructure> {
-    #[rustfmt::skip]
-    let transform_matrix = vk::TransformMatrixKHR { matrix: [
-		1.0, 0.0, 0.0, 0.0, 
-		0.0, 1.0, 0.0, 0.0, 
-		0.0, 0.0, 1.0, 0.0],
-	};
-
-    let as_instance = vk::AccelerationStructureInstanceKHR {
-        transform: transform_matrix,
-        instance_custom_index_and_mask: vk::Packed24_8::new(0, 0xff),
-        instance_shader_binding_table_record_offset_and_flags: vk::Packed24_8::new(
-            0,
-            vk::GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE.as_raw() as u8,
-        ),
-        acceleration_structure_reference: vk::AccelerationStructureReferenceKHR {
-            device_handle: bottom_level_as.device_address,
-        },
-    };
-
     let instances_buffer = vulkan::Buffer::new_populated(
         allocator,
-        size_of::<vk::AccelerationStructureInstanceKHR>() as u64,
+        (blas_instances.len() * size_of::<vk::AccelerationStructureInstanceKHR>()) as u64,
         vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
             | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-        &as_instance,
-        size_of::<vk::AccelerationStructureInstanceKHR>(),
+        blas_instances.as_ptr(),
+        blas_instances.len(),
     )?;
 
     let instance_data_device_address = vk::DeviceOrHostAddressConstKHR {
         device_address: get_buffer_device_address(device, instances_buffer.get()),
     };
 
-    // The top level acceleration structure contains (bottom level) instance as the input geometry
+    // The top level acceleration structure contains (bottom level) instances as the input geometry
     let as_geometries = [vk::AccelerationStructureGeometryKHR {
         geometry_type: vk::GeometryTypeKHR::INSTANCES,
         flags: vk::GeometryFlagsKHR::OPAQUE,
@@ -685,7 +639,7 @@ fn create_top_level_acceleration_structure(
     };
     as_build_geometry_info = as_build_geometry_info.geometries(&as_geometries);
 
-    let primitive_count = [1];
+    let primitive_count = [blas_instances.len() as u32];
 
     let mut as_build_sizes_info = vk::AccelerationStructureBuildSizesInfoKHR::default();
     unsafe {
@@ -745,13 +699,41 @@ fn create_top_level_acceleration_structure(
     }
     core::end_single_time_command(device, command_pool, queue, command_buffer)?;
 
-    // Get the top acceleration structure's handle, which will be usedto setup its descriptor
+    Ok(top_level_as)
+}
+
+fn create_blas_instance(
+    as_device: &ash::khr::acceleration_structure::Device,
+    blass: &mut Vec<AccelerationStructure>,
+    blas_id: usize,
+    transform: cgmath::Matrix4<f32>,
+) -> Result<vk::AccelerationStructureInstanceKHR> {
+    #[rustfmt::skip]
+    let transform_matrix = vk::TransformMatrixKHR {matrix:[
+        transform.x[0], transform.y[0], transform.z[0], transform.w[0],
+        transform.x[1], transform.y[1], transform.z[1], transform.w[1],
+        transform.x[2], transform.y[2], transform.z[2], transform.w[2]],
+    };
+
+    let blas = &mut blass[blas_id];
+
+    // Get the bottom acceleration structure's handle, which will be used during the top level acceleration build
     let as_device_address_info = vk::AccelerationStructureDeviceAddressInfoKHR::default()
-        .acceleration_structure(bottom_level_as.handle);
-    top_level_as.device_address =
+        .acceleration_structure(blas.handle);
+    blas.device_address =
         unsafe { as_device.get_acceleration_structure_device_address(&as_device_address_info) };
 
-    Ok(top_level_as)
+    Ok(vk::AccelerationStructureInstanceKHR {
+        transform: transform_matrix,
+        instance_custom_index_and_mask: vk::Packed24_8::new(blas_id as u32, 0xff),
+        instance_shader_binding_table_record_offset_and_flags: vk::Packed24_8::new(
+            0,
+            vk::GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE.as_raw() as u8,
+        ),
+        acceleration_structure_reference: vk::AccelerationStructureReferenceKHR {
+            device_handle: blas.device_address,
+        },
+    })
 }
 
 fn aligned_size(value: u32, alignment: u32) -> u32 {
@@ -801,32 +783,27 @@ fn create_shader_binding_tables(
         sbt_buffer_usage_flags,
     )?;
 
-    log::info!("Buffers created");
     // Copy the pipeline's shader handles into a host buffer
     let shader_handle_storage = unsafe {
         rt_device.get_ray_tracing_shader_group_handles(pipeline, 0, group_count, sbt_size)?
     };
 
-    log::info!("Have ray tracing shader group handles");
     // Copy the shader handles from the host buffer to the binding tables
     unsafe {
         raygen_shader_binding_table
             .populate(shader_handle_storage.as_ptr(), handle_size as usize)?;
-        log::info!("Populated raygen");
         miss_shader_binding_table.populate(
             shader_handle_storage
                 .as_ptr()
                 .offset(handle_size_aligned as isize),
             handle_size as usize,
         )?;
-        log::info!("Populated miss");
         hit_shader_binding_table.populate(
             shader_handle_storage
                 .as_ptr()
                 .offset((handle_size_aligned * 2) as isize),
             handle_size as usize,
         )?;
-        log::info!("Populated hit");
     }
     Ok((
         raygen_shader_binding_table,
@@ -841,6 +818,7 @@ fn create_descriptor_sets(
     top_level_as: &AccelerationStructure,
     storage_images: &[vulkan::Image; 2],
     ubo: &[vulkan::Buffer; 2],
+    scene: &vulkan::Buffer,
 ) -> Result<(Destructor<vk::DescriptorPool>, Vec<vk::DescriptorSet>)> {
     let pool_sizes = vec![
         vk::DescriptorPoolSize {
@@ -853,6 +831,10 @@ fn create_descriptor_sets(
         },
         vk::DescriptorPoolSize {
             ty: vk::DescriptorType::UNIFORM_BUFFER,
+            descriptor_count: MAX_FRAMES_IN_FLIGHT as u32,
+        },
+        vk::DescriptorPoolSize {
+            ty: vk::DescriptorType::STORAGE_BUFFER,
             descriptor_count: MAX_FRAMES_IN_FLIGHT as u32,
         },
     ];
@@ -885,6 +867,7 @@ fn create_descriptor_sets(
         }];
 
         let buffer_descriptor = [ubo[i].create_descriptor()];
+        let scene_descriptor = [scene.create_descriptor()];
 
         let descriptor_writes = [
             vk::WriteDescriptorSet {
@@ -911,6 +894,14 @@ fn create_descriptor_sets(
                 ..Default::default()
             }
             .buffer_info(&buffer_descriptor),
+            vk::WriteDescriptorSet {
+                dst_set: descriptor_set,
+                dst_binding: 3,
+                descriptor_count: 1,
+                descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
+                ..Default::default()
+            }
+            .buffer_info(&scene_descriptor),
         ];
         unsafe { device.update_descriptor_sets(&descriptor_writes, &[]) };
     }
@@ -931,7 +922,7 @@ fn create_pipeline<'a>(
             binding: 0,
             descriptor_type: vk::DescriptorType::ACCELERATION_STRUCTURE_KHR,
             descriptor_count: 1,
-            stage_flags: vk::ShaderStageFlags::RAYGEN_KHR,
+            stage_flags: vk::ShaderStageFlags::RAYGEN_KHR | vk::ShaderStageFlags::CLOSEST_HIT_KHR,
             ..Default::default()
         },
         vk::DescriptorSetLayoutBinding {
@@ -946,6 +937,13 @@ fn create_pipeline<'a>(
             descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
             descriptor_count: 1,
             stage_flags: vk::ShaderStageFlags::RAYGEN_KHR,
+            ..Default::default()
+        },
+        vk::DescriptorSetLayoutBinding {
+            binding: 3,
+            descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
+            descriptor_count: 1,
+            stage_flags: vk::ShaderStageFlags::CLOSEST_HIT_KHR,
             ..Default::default()
         },
     ];
@@ -970,10 +968,10 @@ fn create_pipeline<'a>(
     let mut shader_groups = vec![];
 
     // TODO: Replace with slang api
-    let main_function_name = CString::new("main").unwrap();
+    let main_name = CString::new("main").unwrap();
     let raygen_code = tools::read_shader_code(Path::new("shaders/spv/raygen.slang.spv"))?;
     let miss_code = tools::read_shader_code(Path::new("shaders/spv/miss.slang.spv"))?;
-    let closest_hit_code = tools::read_shader_code(Path::new("shaders/spv/closest_hit.slang.spv"))?;
+    let closest_hit_code = tools::read_shader_code(Path::new("shaders/spv/closest_hit.rchit.spv"))?;
 
     let raygen_module = core::create_shader_module(device, &raygen_code)?;
     let miss_module = core::create_shader_module(device, &miss_code)?;
@@ -985,7 +983,7 @@ fn create_pipeline<'a>(
             vk::PipelineShaderStageCreateInfo::default()
                 .stage(vk::ShaderStageFlags::RAYGEN_KHR)
                 .module(raygen_module.get())
-                .name(&main_function_name),
+                .name(&main_name),
         );
         let group_ci = vk::RayTracingShaderGroupCreateInfoKHR {
             ty: vk::RayTracingShaderGroupTypeKHR::GENERAL,
@@ -1003,7 +1001,7 @@ fn create_pipeline<'a>(
             vk::PipelineShaderStageCreateInfo::default()
                 .stage(vk::ShaderStageFlags::MISS_KHR)
                 .module(miss_module.get())
-                .name(&main_function_name),
+                .name(&main_name),
         );
         let group_ci = vk::RayTracingShaderGroupCreateInfoKHR {
             ty: vk::RayTracingShaderGroupTypeKHR::GENERAL,
@@ -1021,7 +1019,7 @@ fn create_pipeline<'a>(
             vk::PipelineShaderStageCreateInfo::default()
                 .stage(vk::ShaderStageFlags::CLOSEST_HIT_KHR)
                 .module(closest_hit_module.get())
-                .name(&main_function_name),
+                .name(&main_name),
         );
         let group_ci = vk::RayTracingShaderGroupCreateInfoKHR {
             ty: vk::RayTracingShaderGroupTypeKHR::TRIANGLES_HIT_GROUP,
@@ -1171,4 +1169,82 @@ fn create_empty_commands(
     let command_buffers = core::create_command_buffers(device, command_pool.get(), 2)?;
     let commands = [command_buffers[0], command_buffers[1]];
     Ok((command_pool, commands))
+}
+
+fn create_buffer_references(
+    allocator: &vk_mem::Allocator,
+    device: &ash::Device,
+    models: &Vec<primitives::ModelGPU>,
+) -> Result<vulkan::Buffer> {
+    let mut obj_data = vec![];
+    // Retrieve the address of the buffers used by each model so taht we can give them to the shaders
+    for obj in models {
+        obj_data.push(obj.get_addresses(device));
+    }
+    vulkan::Buffer::new_populated(
+        allocator,
+        (obj_data.len() * size_of::<primitives::ModelAddresses>()) as u64,
+        vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+        obj_data.as_ptr(),
+        obj_data.len(),
+    )
+}
+
+fn create_scene(
+    allocator: &vk_mem::Allocator,
+    device: &ash::Device,
+    as_device: &ash::khr::acceleration_structure::Device,
+    command_pool: vk::CommandPool,
+    queue: vk::Queue,
+) -> Result<(
+    Vec<AccelerationStructure>,
+    Vec<vk::AccelerationStructureInstanceKHR>,
+    vulkan::Buffer,
+)> {
+    let mat_red = material::Material::new_basic(Vec3::new(1.0, 0.0, 0.0), 0.);
+    let mat_green = material::Material::new_basic(Vec3::new(0.0, 1.0, 0.0), 0.);
+    let mat_blue = material::Material::new_basic(Vec3::new(0.0, 0.0, 1.0), 0.);
+    let mat_yellow = material::Material::new_basic(Vec3::new(1.0, 1.0, 0.0), 0.);
+    let mat_cyan = material::Material::new_basic(Vec3::new(0.0, 1.0, 1.0), 0.);
+    let mat_magenta = material::Material::new_basic(Vec3::new(1.0, 0.0, 1.0), 0.);
+    let mat_grey = material::Material::new_basic(Vec3::new(0.7, 0.7, 0.7), 0.1);
+    let mat_mirror = material::Material::new_basic(Vec3::new(1.0, 0.4, 0.5), 0.999);
+
+    let mut cube = primitives::ModelCPU::new_cube();
+    let mut plane = primitives::ModelCPU::new_plane();
+    let mut mirror = primitives::ModelCPU::new_cube();
+
+    #[rustfmt::skip]
+    let models = vec![
+        primitives::ModelGPU::new(allocator, &mut cube, &[mat_red, mat_green, mat_blue, mat_yellow, mat_cyan, mat_magenta])?, // TODO: Why can't we use this first slot? the material shows very strange artifacts in the render
+        primitives::ModelGPU::new(allocator, &mut plane, &[mat_grey])?,
+        primitives::ModelGPU::new(allocator, &mut mirror, &[mat_mirror])?,
+        primitives::ModelGPU::new(allocator, &mut cube, &[mat_red, mat_green, mat_blue, mat_yellow, mat_cyan, mat_magenta])?,
+    ];
+
+    // Get a reference to where all the parts of each model are on the GPU
+    let buffer_references = create_buffer_references(allocator, device, &models)?;
+
+    let mut blass = vec![];
+
+    // Create a Bottom Level Acceleration structure for each model
+    for obj in &models {
+        #[rustfmt::skip] blass.push(create_bottom_level_acceleration_structure(device, allocator, as_device, command_pool, queue, obj)?);
+    }
+
+    #[rustfmt::skip] let mirror_back  = cgmath::Matrix4::from_translation(cgmath::Vector3 { x: 0.0, y: 0.0, z: -7.0 }) * cgmath::Matrix4::from_nonuniform_scale(3.0, 5.0, 0.1);
+    #[rustfmt::skip] let mirror_front = cgmath::Matrix4::from_translation(cgmath::Vector3 { x: 0.0, y: 0.0, z:  7.0 }) * cgmath::Matrix4::from_nonuniform_scale(3.0, 5.0, 0.1);
+    #[rustfmt::skip] let floor = cgmath::Matrix4::from_translation(cgmath::Vector3 { x: 0.0, y: 1.0, z: 0.0 }) * cgmath::Matrix4::from_nonuniform_scale(1.0, 1.0, 15.0);
+    #[rustfmt::skip] let left_cube  = cgmath::Matrix4::from_translation(cgmath::Vector3 { x: -1.0, y: -1.0, z: 0.0 });
+    #[rustfmt::skip] let right_cube = cgmath::Matrix4::from_translation(cgmath::Vector3 { x:  1.0, y: -1.0, z: 0.0 });
+
+    let blas_instances: Vec<vk::AccelerationStructureInstanceKHR> = vec![
+        create_blas_instance(as_device, &mut blass, 3, left_cube)?,
+        create_blas_instance(as_device, &mut blass, 3, right_cube)?,
+        create_blas_instance(as_device, &mut blass, 1, floor)?,
+        create_blas_instance(as_device, &mut blass, 2, mirror_back)?,
+        create_blas_instance(as_device, &mut blass, 2, mirror_front)?,
+    ];
+
+    Ok((blass, blas_instances, buffer_references))
 }

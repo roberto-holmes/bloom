@@ -1,10 +1,12 @@
+use anyhow::Result;
+use ash::vk;
 use bytemuck::Zeroable;
 
 #[cfg(not(target_arch = "wasm32"))]
 use rand::rngs::ThreadRng;
 
 use crate::{
-    material::Material, vec::Vec3, MAX_MATERIAL_COUNT, MAX_QUAD_COUNT, MAX_SPHERE_COUNT,
+    material::Material, vec::Vec3, vulkan, MAX_MATERIAL_COUNT, MAX_QUAD_COUNT, MAX_SPHERE_COUNT,
     MAX_TRIANGLE_COUNT,
 };
 
@@ -371,5 +373,178 @@ impl Scene {
     pub fn get_random_material(&self, rng: &mut ThreadRng) -> u32 {
         use rand::Rng;
         (rng.random::<f32>() * (self.last_material_index + 1) as f32) as u32
+    }
+}
+
+pub struct Vertex {
+    pos: Vec3,
+    pad1: u32,
+    normal: Vec3,
+    pad2: u32,
+}
+
+impl Vertex {
+    fn new(pos: Vec3, normal: Vec3) -> Self {
+        Self {
+            pos,
+            pad1: 0,
+            normal,
+            pad2: 0,
+        }
+    }
+}
+
+pub struct ModelCPU {
+    pub vertices: Vec<Vertex>,
+    pub indices: Vec<u32>,
+    pub material_indices: Vec<i32>,
+}
+
+pub struct ModelGPU {
+    pub vertex_count: u32, // Total number of vertices that make up this model
+    pub index_count: u32,
+    pub vertex_buffer: vulkan::Buffer, // Buffer containing all the vertices that make up the object
+    pub index_buffer: vulkan::Buffer,  // How to connect up the vertices into triangles
+    pub mat_index_buffer: vulkan::Buffer, // What material each triangle maps to
+    pub materials_buffer: vulkan::Buffer, // TODO: Make the materials stored by the scene, not each object
+}
+
+pub struct ModelAddresses {
+    pub vertices: vk::DeviceAddress,
+    pub indices: vk::DeviceAddress,
+    pub mat_indices: vk::DeviceAddress,
+    pub materials: vk::DeviceAddress,
+}
+
+impl ModelCPU {
+    pub fn new_cube() -> Self {
+        Self {
+            #[rustfmt::skip]
+            vertices: vec![
+                Vertex::new(Vec3([ 0.5,  0.5,  0.5]), Vec3([ 0.0,  1.0,  0.0])),    // Top
+                Vertex::new(Vec3([-0.5,  0.5,  0.5]), Vec3([ 0.0,  1.0,  0.0])),
+                Vertex::new(Vec3([ 0.5,  0.5, -0.5]), Vec3([ 0.0,  1.0,  0.0])),
+                Vertex::new(Vec3([-0.5,  0.5, -0.5]), Vec3([ 0.0,  1.0,  0.0])),
+                Vertex::new(Vec3([ 0.5, -0.5,  0.5]), Vec3([ 0.0, -1.0,  0.0])),    // Bottom
+                Vertex::new(Vec3([-0.5, -0.5,  0.5]), Vec3([ 0.0, -1.0,  0.0])),
+                Vertex::new(Vec3([ 0.5, -0.5, -0.5]), Vec3([ 0.0, -1.0,  0.0])),
+                Vertex::new(Vec3([-0.5, -0.5, -0.5]), Vec3([ 0.0, -1.0,  0.0])),
+                Vertex::new(Vec3([ 0.5,  0.5,  0.5]), Vec3([ 1.0,  0.0,  0.0])),    // Right
+                Vertex::new(Vec3([ 0.5,  0.5, -0.5]), Vec3([ 1.0,  0.0,  0.0])),
+                Vertex::new(Vec3([ 0.5, -0.5, -0.5]), Vec3([ 1.0,  0.0,  0.0])),
+                Vertex::new(Vec3([ 0.5, -0.5,  0.5]), Vec3([ 1.0,  0.0,  0.0])),
+                Vertex::new(Vec3([-0.5,  0.5,  0.5]), Vec3([-1.0,  0.0,  0.0])),    // Left
+                Vertex::new(Vec3([-0.5,  0.5, -0.5]), Vec3([-1.0,  0.0,  0.0])),
+                Vertex::new(Vec3([-0.5, -0.5, -0.5]), Vec3([-1.0,  0.0,  0.0])),
+                Vertex::new(Vec3([-0.5, -0.5,  0.5]), Vec3([-1.0,  0.0,  0.0])),
+                Vertex::new(Vec3([-0.5,  0.5,  0.5]), Vec3([ 0.0,  0.0,  1.0])),   // Front
+                Vertex::new(Vec3([ 0.5,  0.5,  0.5]), Vec3([ 0.0,  0.0,  1.0])),
+                Vertex::new(Vec3([ 0.5, -0.5,  0.5]), Vec3([ 0.0,  0.0,  1.0])),
+                Vertex::new(Vec3([-0.5, -0.5,  0.5]), Vec3([ 0.0,  0.0,  1.0])),
+                Vertex::new(Vec3([-0.5,  0.5, -0.5]), Vec3([ 0.0,  0.0, -1.0])),   // Back
+                Vertex::new(Vec3([ 0.5,  0.5, -0.5]), Vec3([ 0.0,  0.0, -1.0])),
+                Vertex::new(Vec3([ 0.5, -0.5, -0.5]), Vec3([ 0.0,  0.0, -1.0])),
+                Vertex::new(Vec3([-0.5, -0.5, -0.5]), Vec3([ 0.0,  0.0, -1.0])),
+                ],
+            #[rustfmt::skip]
+            indices: vec![
+                 0,  1,  2,  1,  2,  3, // Top
+                 4,  5,  6,  5,  6,  7, // Bottom
+                 8,  9, 10,  8, 10, 11, // Right
+                12, 13, 14, 12, 14, 15, // Left
+                16, 17, 18, 16, 18, 19, // Front
+                20, 21, 22, 20, 22, 23, // Back
+            ],
+            material_indices: vec![0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5],
+        }
+    }
+    pub fn new_plane() -> Self {
+        Self {
+            #[rustfmt::skip]
+            vertices: vec![
+                Vertex::new(Vec3([ 1.0, 0.0,  1.0]), Vec3([0.0, 1.0, 0.0])),
+                Vertex::new(Vec3([-1.0, 0.0,  1.0]), Vec3([0.0, 1.0, 0.0])),
+                Vertex::new(Vec3([ 1.0, 0.0, -1.0]), Vec3([0.0, 1.0, 0.0])),
+                Vertex::new(Vec3([-1.0, 0.0, -1.0]), Vec3([0.0, 1.0, 0.0])),
+                ],
+            #[rustfmt::skip]
+            indices: vec![
+                 0,  1,  2,  1,  2,  3,
+            ],
+            material_indices: vec![0, 0],
+        }
+    }
+}
+
+impl ModelGPU {
+    pub fn new(
+        allocator: &vk_mem::Allocator,
+        obj: &mut ModelCPU,
+        materials: &[Material],
+    ) -> Result<Self> {
+        let vertex_count = obj.vertices.len() as u32;
+        let index_count = obj.indices.len() as u32;
+
+        let vertex_buffer_size = obj.vertices.len() * size_of::<Vertex>();
+        let index_buffer_size = obj.indices.len() * size_of::<u32>();
+        let mat_index_buffer_size = obj.material_indices.len() * size_of::<i32>();
+        let mat_buffer_size = materials.len() * size_of::<Material>();
+
+        // Make sure material indices never exceed the number of available materials
+        let max_index = materials.len() as i32 - 1;
+        for index in &mut obj.material_indices {
+            *index = std::cmp::min(max_index, *index);
+        }
+
+        // TODO: Add a staging buffer so these buffers can live on the GPU
+        let vertex_buffer = vulkan::Buffer::new_populated(
+            allocator,
+            vertex_buffer_size as vk::DeviceSize,
+            vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
+                | vk::BufferUsageFlags::STORAGE_BUFFER
+                | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR,
+            obj.vertices.as_ptr(),
+            obj.vertices.len(),
+        )?;
+        let index_buffer = vulkan::Buffer::new_populated(
+            allocator,
+            index_buffer_size as vk::DeviceSize,
+            vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
+                | vk::BufferUsageFlags::STORAGE_BUFFER
+                | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR,
+            obj.indices.as_ptr(),
+            obj.indices.len(),
+        )?;
+        let mat_index_buffer = vulkan::Buffer::new_populated(
+            allocator,
+            mat_index_buffer_size as vk::DeviceSize,
+            vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS | vk::BufferUsageFlags::STORAGE_BUFFER,
+            obj.material_indices.as_ptr(),
+            obj.material_indices.len(),
+        )?;
+        let materials_buffer = vulkan::Buffer::new_populated(
+            allocator,
+            mat_buffer_size as vk::DeviceSize,
+            vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS | vk::BufferUsageFlags::STORAGE_BUFFER,
+            materials.as_ptr(),
+            materials.len(),
+        )?;
+
+        Ok(Self {
+            vertex_count,
+            index_count,
+            vertex_buffer,
+            index_buffer,
+            materials_buffer,
+            mat_index_buffer,
+        })
+    }
+    pub fn get_addresses(&self, device: &ash::Device) -> ModelAddresses {
+        ModelAddresses {
+            vertices: self.vertex_buffer.get_device_address(device),
+            indices: self.index_buffer.get_device_address(device),
+            mat_indices: self.mat_index_buffer.get_device_address(device),
+            materials: self.materials_buffer.get_device_address(device),
+        }
     }
 }

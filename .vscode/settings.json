@@ -4,8 +4,8 @@
     "showElapsed": true,
     "commands": [
       {
-        "match": "\\.(frag|vert|comp)$",
-        "cmd": "glslc ${fileDirname}/${fileBasename} -o ${workspaceFolder}/shaders/spv/${fileBasename}.spv"
+        "match": "\\.(frag|vert|comp|rchit)$",
+        "cmd": "glslc ${fileDirname}/${fileBasename} -o ${workspaceFolder}/shaders/spv/${fileBasename}.spv --target-env=vulkan1.3"
       },
       {
         "match": "\\.wgsl$",
@@ -21,5 +21,9 @@
     "ash/**": true,
     "**/.cargo/registry/src/**/*.rs": true,
     "**/lib/rustlib/src/rust/library/**/*.rs": true
-  }
+  },
+  "glsllint.glslangValidatorArgs": [
+    "--target-env",
+    "vulkan1.3"
+  ]
 }
