@@ -84,6 +84,16 @@ struct ObjBuffers {
 	uint64_t materials;
 };
 
+struct CameraUniforms {
+	vec3 origin;
+	float focal_distance;
+	vec3 u;
+	float vfov;
+	vec3 v;
+	float dof_scale;
+	vec3 w;
+};
+
 // clang-format off
 layout(buffer_reference, scalar) buffer Vertices {Vertex v[]; }; // Positions of an object
 layout(buffer_reference, scalar) buffer Indices {uint i[]; }; // Triangle indices
@@ -93,6 +103,14 @@ layout(buffer_reference, scalar) buffer MatIndices {int i[]; }; // Material ID f
 layout(set = 0, binding = 0) uniform accelerationStructureEXT topLevelAS;
 layout(set = 0, binding = 3)    buffer _scene_desc { ObjBuffers i[]; } scene_desc;
 // clang-format on
+
+layout(set = 0, binding = 2) uniform UBO {
+	CameraUniforms camera;
+	uint frame_num;
+	uint width;
+	uint height;
+}
+ubo;
 
 // const float EPSILON = 0.1;
 const float EPSILON = 1e-2;
@@ -119,16 +137,12 @@ void dielectric_scatter(inout uint seed, vec3 normal, vec3 pos, Material mat) {
 	if ((output_ray_direction.x == 0.0 && output_ray_direction.y == 0.0 && output_ray_direction.z == 0.0) || is_reflective) {
 		output_ray_direction = reflect(input_direction, normal);
 		ray.origin = pos + normal * EPSILON;
-		// ray.origin = pos;
 		ray.direction = output_ray_direction;
 	} else {
 		ray.origin = pos;
 		ray.direction = output_ray_direction;
 	}
-	// ray.origin = pos;
-	// ray.direction = reflect(ray.direction, normal);
 	ray.attenuation = mat.albedo;
-	// ray.done = 1;
 }
 
 void reflect_ray(inout uint seed, vec3 normal, vec3 pos, Material mat) {
@@ -139,17 +153,13 @@ void reflect_ray(inout uint seed, vec3 normal, vec3 pos, Material mat) {
 	// Bump the start of the reflected ray a little bit off the surface to
 	// try to minimize self intersections due to floating point errors
 	ray.origin = pos + normal * EPSILON;
-	// ray.origin = pos;
 	ray.direction = reflected;
-	// ray.direction = metallic_reflection;
 	ray.attenuation = mat.albedo;
-	// ray.done = 1;
 }
 
 void main() {
 	// Something unique to this ray and something unique to this timestamp
-	// TODO: Bring in time variable
-	uint seed = init_rng(uvec2(abs(gl_WorldRayDirectionEXT.xy) * 1000), gl_LaunchIDEXT.x, gl_InstanceCustomIndexEXT);
+	uint seed = init_rng(gl_LaunchIDEXT.xy, ubo.width, ubo.frame_num + uint(length(gl_WorldRayDirectionEXT.xy) * 100));
 	// When contructing the TLAS, we stored the model id in InstanceCustomIndexEXT, so the
 	// the instance can quickly have access to the data
 

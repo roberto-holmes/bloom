@@ -936,7 +936,7 @@ fn create_pipeline<'a>(
             binding: 2,
             descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
             descriptor_count: 1,
-            stage_flags: vk::ShaderStageFlags::RAYGEN_KHR,
+            stage_flags: vk::ShaderStageFlags::RAYGEN_KHR | vk::ShaderStageFlags::CLOSEST_HIT_KHR,
             ..Default::default()
         },
         vk::DescriptorSetLayoutBinding {
