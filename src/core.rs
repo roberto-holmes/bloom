@@ -778,7 +778,7 @@ pub fn create_graphics_pipeline(
     set_layout: vk::DescriptorSetLayout,
 ) -> Result<(Destructor<vk::PipelineLayout>, Destructor<vk::Pipeline>)> {
     // let vert_shader_code = read_shader_code(Path::new("shaders/spv/vertex.wgsl.spv"))?;
-    let vert_shader_code = read_shader_code(Path::new("shaders/spv/triangle.vert.spv"))?;
+    let vert_shader_code = read_shader_code(Path::new("shaders/spv/viewport.vert.spv"))?;
     let frag_shader_code = read_shader_code(Path::new("shaders/spv/frag.wgsl.spv"))?;
     // let frag_shader_code = read_shader_code(Path::new("shaders/spv/ray.frag.spv"))?;
 
