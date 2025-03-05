@@ -13,7 +13,7 @@
       },
       {
         "match": "\\.slang$",
-        "cmd": "slangc ${fileDirname}/${fileBasename} -target spirv -o ${workspaceFolder}/shaders/spv/${fileBasename}.spv"
+        "cmd": "slangc -capability SPV_EXT_physical_storage_buffer ${fileDirname}/${fileBasename} -target spirv -o ${workspaceFolder}/shaders/spv/${fileBasename}.spv"
       }
     ]
   },

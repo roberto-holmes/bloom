@@ -55,6 +55,7 @@ struct CameraUniforms {
 struct Uniforms {
     camera: CameraUniforms,
     frame_num: u32,
+    ray_frame_num: u32,
     width: u32,
     height: u32,
 };
@@ -423,49 +424,49 @@ fn get_random_in_unit_disk() -> vec3f {
 @fragment
 fn main(@builtin(position) pos: vec4f) -> @location(0) vec4<f32> {
     // Seed the Random Number Generator
-    init_rng(vec2u(pos.xy), uniforms.width, uniforms.frame_num);
+    // init_rng(vec2u(pos.xy), uniforms.width, uniforms.frame_num);
 
-    let aspect_ratio = f32(uniforms.width) / f32(uniforms.height);
+    // let aspect_ratio = f32(uniforms.width) / f32(uniforms.height);
 
-    let offset = get_random_in_unit_disk().xy;
-    // Add some jitter and normalize the viewport coordinates (0,0 top left; 1,1 bottom right)
-    var uv = (pos.xy + offset) / vec2f(f32(uniforms.width-1u), f32(uniforms.height-1u));
+    // let offset = get_random_in_unit_disk().xy;
+    // // Add some jitter and normalize the viewport coordinates (0,0 top left; 1,1 bottom right)
+    // var uv = (pos.xy + offset) / vec2f(f32(uniforms.width-1u), f32(uniforms.height-1u));
 
-    // Map 'uv' from y-down (normalized) viewport coordinates to camera coordinates
-    // (y-up, x-right, right hand, screen height is 2 units)
-    uv = (2. * uv - vec2(1.)) * vec2(aspect_ratio,  -1.);
+    // // Map 'uv' from y-down (normalized) viewport coordinates to camera coordinates
+    // // (y-up, x-right, right hand, screen height is 2 units)
+    // uv = (2. * uv - vec2(1.)) * vec2(aspect_ratio,  -1.);
 
-    let viewport_scale_factor = 2. * uniforms.camera.focal_distance * tan(uniforms.camera.vfov / 2.);
+    // let viewport_scale_factor = 2. * uniforms.camera.focal_distance * tan(uniforms.camera.vfov / 2.);
 
-    uv *= vec2(viewport_scale_factor);
+    // uv *= vec2(viewport_scale_factor);
 
-    // Compute the world-space ray direction by rotating the camera-space vector into a new basis
-    let camera_rotation = mat3x3(uniforms.camera.u, uniforms.camera.v, uniforms.camera.w);
-    let dof_offset = camera_rotation * get_random_in_unit_disk() * uniforms.camera.dof_scale;
-    let direction = camera_rotation * vec3(uv, uniforms.camera.focal_distance) - dof_offset;
-    let origin = uniforms.camera.origin + dof_offset;
-    var ray = Ray(origin, normalize(direction));
-    var throughput = vec3f(1.);
-    var radiance_sample = vec3(0.);
+    // // Compute the world-space ray direction by rotating the camera-space vector into a new basis
+    // let camera_rotation = mat3x3(uniforms.camera.u, uniforms.camera.v, uniforms.camera.w);
+    // let dof_offset = camera_rotation * get_random_in_unit_disk() * uniforms.camera.dof_scale;
+    // let direction = camera_rotation * vec3(uv, uniforms.camera.focal_distance) - dof_offset;
+    // let origin = uniforms.camera.origin + dof_offset;
+    // var ray = Ray(origin, normalize(direction));
+    // var throughput = vec3f(1.);
+    // var radiance_sample = vec3(0.);
 
-    // Propagate the ray into the spheres and get the final colours
-    var path_length = 0u;
-    while path_length < MAX_PATH_LENGTH {
-        let hit = intersect_scene(ray);
-        if !is_intersection(hit) {
-            // If not intersection was found, return the colour of the sky and terminate the path
-            radiance_sample += throughput * sky_colour(ray);
-            break;
-        }
-        if is_light(hit) {
-            radiance_sample += throughput * hit.material.emission_colour * hit.material.emission_strength;
-        }
+    // // Propagate the ray into the spheres and get the final colours
+    // var path_length = 0u;
+    // while path_length < MAX_PATH_LENGTH {
+    //     let hit = intersect_scene(ray);
+    //     if !is_intersection(hit) {
+    //         // If not intersection was found, return the colour of the sky and terminate the path
+    //         radiance_sample += throughput * sky_colour(ray);
+    //         break;
+    //     }
+    //     if is_light(hit) {
+    //         radiance_sample += throughput * hit.material.emission_colour * hit.material.emission_strength;
+    //     }
 
-        let scattered = scatter(ray, hit);
-        throughput *= scattered.attenuation;
-        ray = scattered.ray;
-        path_length += 1u;
-    }
+    //     let scattered = scatter(ray, hit);
+    //     throughput *= scattered.attenuation;
+    //     ray = scattered.ray;
+    //     path_length += 1u;
+    // }
 
     // return textureLoad(radiance_samples_old, vec2u(pos.xy));
 
@@ -496,5 +497,14 @@ fn main(@builtin(position) pos: vec4f) -> @location(0) vec4<f32> {
     //     return vec4(1.0, 1.0, 0.6, 1.0);
     // }
     // return vec4(pow(radiance_sample, vec3(1. / 2.2)), 1.);
-    return textureLoad(radiance_samples_old, vec2u(pos.xy));
+    var sample = textureLoad(radiance_samples_old, vec2u(pos.xy)).xyz;
+    // if(uniforms.ray_frame_num>1000){
+    //     sample /= 1000;
+    // } else if(uniforms.ray_frame_num>2){
+    //     sample /= f32(uniforms.ray_frame_num);
+    // }
+    // return sample / f32(uniforms.ray_frame_num+1);
+    // return vec4(sample / f32(uniforms.ray_frame_num), 1.0);
+    return vec4(sample, 1.0);
+        // return vec4(f32(uniforms.frame_num)/100, 0.2, 0.6, 1.0);
 }

@@ -424,6 +424,7 @@ impl<'a, T: Bloomable> VulkanApp<'a, T> {
         let compute_instance = instance.get().clone();
 
         let compute_api = Arc::clone(&api);
+        let transfer_api = Arc::clone(&api);
 
         let (transfer_sender, transfer_receiver) = mpsc::channel();
         let (graphic_sender, graphic_receiver) = mpsc::channel();
@@ -502,6 +503,7 @@ impl<'a, T: Bloomable> VulkanApp<'a, T> {
                         transfer_receiver,
                         compute_sender,
                         graphic_sender,
+                        transfer_api,
                     );
                 }) {
                 Ok(v) => Some(v),
@@ -803,8 +805,9 @@ impl<'a, T: Bloomable> VulkanApp<'a, T> {
 
     fn update_uniform_buffers(&mut self, current_image: u32, _delta_time: Duration) {
         let mut api = self.api.lock().unwrap();
-        api.uniform.tick();
+        // api.uniform.tick();
         api.uniform.update(self.swapchain_stuff.extent);
+        // log::info!("Ray frame {}", api.uniform.ray_frame_num);
 
         api.update_camera();
 

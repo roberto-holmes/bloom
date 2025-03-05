@@ -1,5 +1,5 @@
 use std::{
-    sync::{mpsc, Arc, RwLock},
+    sync::{mpsc, Arc, Mutex, RwLock},
     time::Duration,
 };
 
@@ -7,7 +7,7 @@ use anyhow::{anyhow, Result};
 use ash::vk;
 
 use crate::{
-    core, structures, vulkan::Destructor, IDEAL_RADIANCE_IMAGE_SIZE_HEIGHT,
+    api::BloomAPI, core, structures, vulkan::Destructor, IDEAL_RADIANCE_IMAGE_SIZE_HEIGHT,
     IDEAL_RADIANCE_IMAGE_SIZE_WIDTH,
 };
 
@@ -22,6 +22,7 @@ pub fn thread(
     listener: mpsc::Receiver<u8>,
     compute_channel: mpsc::Sender<u64>,
     graphic_channel: mpsc::Sender<u64>,
+    api: Arc<Mutex<BloomAPI>>,
 ) {
     log::trace!("Creating thread");
     let transfer = match Transfer::new(
@@ -61,9 +62,11 @@ pub fn thread(
                     log::trace!("Received new compute frame");
                     // If received from compute, make note of the current compute frame that can be used to copy
                     compute_valid_frame_index = v & !0x80;
+                    api.lock().expect("Failed to unlock API").uniform.tick_ray();
                     continue;
                 }
                 log::trace!("Received new graphic frame");
+                api.lock().expect("Failed to unlock API").uniform.tick();
                 // else begin the copy process and notify compute and graphics of when they can begin doing stuff
                 v
             }

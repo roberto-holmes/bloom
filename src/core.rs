@@ -53,6 +53,7 @@ pub const INDICES: [u16; 6] = [0, 1, 2, 2, 3, 0];
 pub struct UniformBufferObject {
     pub camera: CameraUniforms,
     pub frame_num: u32,
+    pub ray_frame_num: u32, // TODO: Implement in a thread safe way
     pub width: u32,
     pub height: u32,
 }
@@ -62,6 +63,7 @@ impl UniformBufferObject {
         Self {
             camera: CameraUniforms::zeroed(),
             frame_num: 0,
+            ray_frame_num: 0,
             width: 0,
             height: 0,
         }
@@ -74,7 +76,12 @@ impl UniformBufferObject {
     pub fn tick(&mut self) {
         self.frame_num += 1;
     }
+    pub fn tick_ray(&mut self) {
+        log::trace!("Ray frame num is now {}", self.ray_frame_num);
+        self.ray_frame_num += 1;
+    }
     pub fn reset_samples(&mut self) {
+        self.ray_frame_num = 1;
         self.frame_num = 0;
     }
     pub fn update_camera(&mut self, camera: &Camera) {
@@ -491,7 +498,9 @@ pub fn create_logical_device(
         vk::PhysicalDeviceAccelerationStructureFeaturesKHR::default().acceleration_structure(true);
     let mut rt_features =
         vk::PhysicalDeviceRayTracingPipelineFeaturesKHR::default().ray_tracing_pipeline(true);
-    let mut features11 = vk::PhysicalDeviceVulkan11Features::default();
+    let mut features11 = vk::PhysicalDeviceVulkan11Features::default()
+        .variable_pointers(true)
+        .variable_pointers_storage_buffer(true);
     let mut features12 = vk::PhysicalDeviceVulkan12Features::default()
         .timeline_semaphore(true)
         .descriptor_indexing(true)
