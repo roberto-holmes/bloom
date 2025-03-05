@@ -17,7 +17,9 @@
 [[vk::binding(0)]]
 RaytracingAccelerationStructure tlas;
 [[vk::binding(1)]]
-RWTexture2D<float4> image;
+RWTexture2D<float4> read_image;
+[[vk::binding(2)]]
+RWTexture2D<float4> write_image;
 
 struct CameraUniforms {
 	float3 origin;
@@ -28,9 +30,13 @@ struct CameraUniforms {
 	float dof_scale;
 	float3 w;
 }
-[[vk::binding(2)]]
-cbuffer camera {
+[[vk::binding(3)]]
+cbuffer ubo {
 	CameraUniforms camera;
+	uint frame_num;
+	uint ray_frame_num;
+	uint width;
+	uint height;
 };
 
 struct Payload {
@@ -86,5 +92,14 @@ void main() {
 		}
 	}
 	hit_value *= payload.radiance;
-	image[int2(LaunchID.xy)] = float4(hit_value, 0.0);
+
+	// float3 sample = (1.0, 1.0, 1.0);
+	float3 sample = (0.0, 0.0, 0.0);
+
+	// if (frame_num > 0) {
+	// 	sample = read_image[int2(LaunchID.xy)].xyz;
+	// }
+	sample += hit_value;
+	write_image[int2(LaunchID.xy)] = float4(sample, 0.0);
+	// write_image[int2(LaunchID.xy)] = float4(float(frame_num) / 100, 0.0, 0.0, 0.0);
 }

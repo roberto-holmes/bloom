@@ -94,19 +94,19 @@ struct CameraUniforms {
 	vec3 w;
 };
 
-// clang-format off
-layout(buffer_reference, scalar) buffer Vertices {Vertex v[]; }; // Positions of an object
-layout(buffer_reference, scalar) buffer Indices {uint i[]; }; // Triangle indices
-layout(buffer_reference, scalar) buffer Materials {Material m[]; }; // Array of all materials on an object
-layout(buffer_reference, scalar) buffer MatIndices {int i[]; }; // Material ID for each triangle
+layout(buffer_reference, scalar) buffer Vertices { Vertex v[]; };	  // Positions of an object
+layout(buffer_reference, scalar) buffer Indices { uint i[]; };		  // Triangle indices
+layout(buffer_reference, scalar) buffer Materials { Material m[]; };  // Array of all materials on an object
+layout(buffer_reference, scalar) buffer MatIndices { int i[]; };	  // Material ID for each triangle
 
 layout(set = 0, binding = 0) uniform accelerationStructureEXT topLevelAS;
-layout(set = 0, binding = 3)    buffer _scene_desc { ObjBuffers i[]; } scene_desc;
-// clang-format on
+layout(set = 0, binding = 4) buffer _scene_desc { ObjBuffers i[]; }
+scene_desc;
 
-layout(set = 0, binding = 2) uniform UBO {
+layout(set = 0, binding = 3) uniform UBO {
 	CameraUniforms camera;
 	uint frame_num;
+	uint ray_frame_num;
 	uint width;
 	uint height;
 }
@@ -159,7 +159,7 @@ void reflect_ray(inout uint seed, vec3 normal, vec3 pos, Material mat) {
 
 void main() {
 	// Something unique to this ray and something unique to this timestamp
-	uint seed = init_rng(gl_LaunchIDEXT.xy, ubo.width, ubo.frame_num + uint(length(gl_WorldRayDirectionEXT.xy) * 100));
+	uint seed = init_rng(gl_LaunchIDEXT.xy, ubo.width, ubo.ray_frame_num + uint(length(gl_WorldRayDirectionEXT.xy) * 100));
 	// When contructing the TLAS, we stored the model id in InstanceCustomIndexEXT, so the
 	// the instance can quickly have access to the data
 
@@ -202,4 +202,8 @@ void main() {
 		// Reflect
 		reflect_ray(seed, normal, pos, mat);
 	}
+
+	// ray.attenuation =  pos;
+	// ray.attenuation =  materials.m[0].albedo;
+	// ray.done = 1;
 }

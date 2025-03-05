@@ -428,7 +428,10 @@ impl<'a> Image<'a> {
         ));
         Ok(())
     }
-    pub fn resize(&mut self, width: u32, height: u32) -> Result<()> {
+    pub fn resize(&mut self, width: u32, height: u32) -> Result<bool> {
+        if self.is_correct_size(width, height) {
+            return Ok(false);
+        }
         unsafe { self.clean() };
         self.image_create_info.extent = vk::Extent3D {
             width,
@@ -437,7 +440,9 @@ impl<'a> Image<'a> {
         };
         self.create_image()?;
         self.create_view()?;
-        Ok(())
+        self.width = width;
+        self.height = height;
+        Ok(true)
     }
     pub fn view(&self) -> vk::ImageView {
         self.view.as_ref().unwrap().get()
