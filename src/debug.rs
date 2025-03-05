@@ -31,7 +31,7 @@ pub unsafe extern "system" fn vulkan_debug_callback(
 
 pub struct ValidationInfo {
     pub is_enable: bool,
-    pub required_validation_layers: [&'static str; 1],
+    pub required_validation_layers: [&'static str; 2],
 }
 
 #[allow(unused)]

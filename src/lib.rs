@@ -54,7 +54,10 @@ pub const MAX_OBJECT_COUNT: usize = MAX_SPHERE_COUNT + MAX_QUAD_COUNT + MAX_TRIA
 #[cfg(debug_assertions)]
 const VALIDATION: ValidationInfo = ValidationInfo {
     is_enable: true,
-    required_validation_layers: ["VK_LAYER_KHRONOS_validation"],
+    required_validation_layers: [
+        "VK_LAYER_KHRONOS_shader_object",
+        "VK_LAYER_KHRONOS_validation",
+    ],
 };
 
 #[cfg(not(debug_assertions))]

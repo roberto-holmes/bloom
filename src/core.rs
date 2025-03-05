@@ -121,7 +121,8 @@ pub fn create_instance(entry: &ash::Entry, window: &Window) -> Result<vulkan::In
 
     let mut extension_names =
         ash_window::enumerate_required_extensions(window.display_handle()?.as_raw())?.to_vec();
-    extension_names.push(debug_utils::NAME.as_ptr());
+    extension_names.push(ash::ext::debug_utils::NAME.as_ptr());
+    extension_names.push(ash::ext::layer_settings::NAME.as_ptr());
 
     #[cfg(any(target_os = "macos", target_os = "ios"))]
     {
@@ -152,10 +153,16 @@ pub fn create_instance(entry: &ash::Entry, window: &Window) -> Result<vulkan::In
         .enabled_extension_names(&extension_names)
         .flags(create_flags);
 
+    let validation_feature_enables = [vk::ValidationFeatureEnableEXT::DEBUG_PRINTF];
+    let mut validation_features = vk::ValidationFeaturesEXT::default()
+        .enabled_validation_features(&validation_feature_enables);
+
     if VALIDATION.is_enable {
         create_info = create_info.push(&mut debug_utils_create_info);
         create_info.pp_enabled_layer_names = enable_layer_names.as_ptr();
         create_info.enabled_layer_count = enable_layer_names.len() as u32;
+
+        create_info = create_info.push(&mut validation_features);
     }
     Ok(vulkan::Instance::new(entry, create_info)?)
 }
@@ -278,6 +285,7 @@ fn is_device_extension_supported(
         ash::ext::descriptor_indexing::NAME,
         ash::khr::spirv_1_4::NAME,
         ash::khr::shader_float_controls::NAME,
+        ash::khr::shader_non_semantic_info::NAME,
         #[cfg(any(target_os = "macos", target_os = "ios"))]
         ash::khr::portability_subset::NAME,
     ];
@@ -490,6 +498,7 @@ pub fn create_logical_device(
         ash::ext::descriptor_indexing::NAME.as_ptr(),
         ash::khr::spirv_1_4::NAME.as_ptr(),
         ash::khr::shader_float_controls::NAME.as_ptr(),
+        ash::khr::shader_non_semantic_info::NAME.as_ptr(),
         #[cfg(any(target_os = "macos", target_os = "ios"))]
         ash::khr::portability_subset::NAME.as_ptr(),
     ];
