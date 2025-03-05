@@ -48,6 +48,12 @@ struct Payload {
 	float3 ray_dir;
 };
 
+// if (ubo.ray_frame_num == 10) {
+// printf("%f\n", aspect_ratio);
+// printf("%v2f : %v2u = %v2f\n", pixelCenter, LaunchSize.xy, uv_in);
+// printf("%v3f\n", sample);
+// }
+
 [shader("raygeneration")]
 void main() {
 	uint3 LaunchID = DispatchRaysIndex();
