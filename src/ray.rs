@@ -1275,9 +1275,9 @@ fn create_scene(
 
     #[rustfmt::skip] let mirror_back  = cgmath::Matrix4::from_translation(cgmath::Vector3 { x: 0.0, y: 0.0, z: -7.0 }) * cgmath::Matrix4::from_nonuniform_scale(3.0, 5.0, 0.1);
     #[rustfmt::skip] let mirror_front = cgmath::Matrix4::from_translation(cgmath::Vector3 { x: 0.0, y: 0.0, z:  7.0 }) * cgmath::Matrix4::from_nonuniform_scale(3.0, 5.0, 0.1);
-    #[rustfmt::skip] let floor = cgmath::Matrix4::from_translation(cgmath::Vector3 { x: 0.0, y: 1.0, z: 0.0 }) * cgmath::Matrix4::from_nonuniform_scale(1.0, 1.0, 15.0);
-    #[rustfmt::skip] let left_cube  = cgmath::Matrix4::from_translation(cgmath::Vector3 { x: -1.0, y: -1.0, z: 0.0 });
-    #[rustfmt::skip] let right_cube = cgmath::Matrix4::from_translation(cgmath::Vector3 { x:  1.0, y: -1.0, z: 0.0 });
+    #[rustfmt::skip] let floor = cgmath::Matrix4::from_translation(cgmath::Vector3 { x: 0.0, y: -1.0, z: 0.0 }) * cgmath::Matrix4::from_nonuniform_scale(1.0, 1.0, 15.0);
+    #[rustfmt::skip] let left_cube  = cgmath::Matrix4::from_translation(cgmath::Vector3 { x: -1.0, y: 1.0, z: 0.0 });
+    #[rustfmt::skip] let right_cube = cgmath::Matrix4::from_translation(cgmath::Vector3 { x:  1.0, y: 1.0, z: 0.0 });
 
     let blas_instances: Vec<vk::AccelerationStructureInstanceKHR> = vec![
         create_blas_instance(as_device, &mut blass, 3, left_cube)?,

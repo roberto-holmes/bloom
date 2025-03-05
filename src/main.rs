@@ -97,7 +97,7 @@ impl Bloomable for Demo {
                 self.mouse_state.update_position(position);
                 let (mut dx, mut dy) = self.mouse_state.get_pos_delta();
                 dx *= -0.01;
-                dy *= -0.01;
+                dy *= 0.01;
 
                 if self.mouse_state.left_pressed {
                     api.camera.orbit(dx, dy);
@@ -106,7 +106,7 @@ impl Bloomable for Demo {
                     api.camera.pan(dx, dy);
                     api.uniform.reset_samples();
                 } else if self.mouse_state.right_pressed {
-                    api.camera.zoom(dy);
+                    api.camera.zoom(-dy);
                     api.uniform.reset_samples();
                 }
             }

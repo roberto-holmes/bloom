@@ -5,6 +5,7 @@ struct Rng {
 }
 
 static Rng rng_obj;
+static const float TAU = 6.283185307;
 
 public void init_rng(uint2 pixel, uint width, uint frame_num) {
 	// Seed the PRNG using the scalar index of the pixel and the current frame count.
@@ -44,4 +45,10 @@ public float rand_f32() {
 
 public float3 generate_random_unit_vector() {
 	return normalize(float3(rand_f32() * 2. - 1., rand_f32() * 2. - 1., rand_f32() * 2. - 1.));
+}
+
+public float3 get_random_in_unit_disk() {
+	let r = rand_f32() * 2. - 1.;
+	let theta = rand_f32() * TAU;
+	return float3(r * cos(theta), r * sin(theta), 0.);
 }
