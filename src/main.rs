@@ -3,11 +3,11 @@ use std::sync::{Arc, Mutex, Weak};
 use bloom;
 use bloom::api::BloomAPI;
 use bloom::api::Bloomable;
-use bloom::api::DOF_SCALE;
-use bloom::material;
-use bloom::primitives;
-use bloom::select;
-use bloom::vec::Vec3;
+// use bloom::api::DOF_SCALE;
+// use bloom::material;
+// use bloom::primitives;
+// use bloom::select;
+// use bloom::vec::Vec3;
 use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 
@@ -38,55 +38,6 @@ impl Bloomable for Demo {
         self.api = api_in;
         let binding = self.get_api();
         let mut api = binding.lock().unwrap();
-        api.scene = primitives::Scene::new();
-        api.scene
-            .add_material(material::Material::new_basic(Vec3::new(0.5, 0.5, 0.5), 0.));
-        api.scene.add_sphere(primitives::Sphere::new(
-            Vec3::new(0., -1000., -1.),
-            1000.,
-            1,
-        ));
-
-        api.scene
-            .add_sphere(primitives::Sphere::new(Vec3::new(2., 1., -2.), 1.0, 0));
-        let mut current_material_index = api
-            .scene
-            .add_material(material::Material::new_clear(Vec3::new(1., 1., 1.)));
-        api.scene.add_sphere(primitives::Sphere::new(
-            Vec3::new(-2., 1., 0.),
-            1.0,
-            current_material_index,
-        ));
-        current_material_index = api.scene.add_material(material::Material::new(
-            Vec3::new(0.9, 0.0, 0.3),
-            0.,
-            1.,
-            0.67,
-            1.,
-            0.1,
-            Vec3::new(0.9, 0.0, 0.3),
-        ));
-        api.scene.add_sphere(primitives::Sphere::new(
-            Vec3::new(0., 3., 0.),
-            0.5,
-            current_material_index,
-        ));
-        current_material_index = api.scene.add_material(material::Material::new(
-            Vec3::new(1.0, 1.0, 1.0),
-            0.,
-            1.,
-            0.67,
-            1.,
-            1.,
-            Vec3::new(1.0, 1.0, 1.0),
-        ));
-        api.scene.add_sphere(primitives::Sphere::new(
-            Vec3::new(0., 3., -1.5),
-            0.5,
-            current_material_index,
-        ));
-        api.scene.add_quad(primitives::Quad::default());
-        api.scene.add_triangle(primitives::Triangle::default());
     }
     fn resize(&mut self, _width: u32, _height: u32) {}
     fn input(&mut self, event: winit::event::WindowEvent) {
@@ -113,23 +64,23 @@ impl Bloomable for Demo {
             WindowEvent::MouseInput { state, button, .. } => {
                 self.mouse_state.update_button(button, state);
 
-                if button == MouseButton::Left
-                    && !state.is_pressed()
-                    && self.mouse_state.get_click_delta() < 5.0
-                {
-                    let (hit_object, dist_to_object) = select::get_selected_object(
-                        &self.mouse_state.current_position,
-                        &api.uniform,
-                        &api.scene.get_sphere_arr(),
-                    );
-                    if hit_object == usize::MAX {
-                        api.camera.uniforms.dof_scale = 0.;
-                    } else {
-                        api.camera.uniforms.focal_distance = dist_to_object;
-                        api.camera.uniforms.dof_scale = DOF_SCALE;
-                    }
-                    api.uniform.reset_samples();
-                }
+                // if button == MouseButton::Left
+                //     && !state.is_pressed()
+                //     && self.mouse_state.get_click_delta() < 5.0
+                // {
+                //     let (hit_object, dist_to_object) = select::get_selected_object(
+                //         &self.mouse_state.current_position,
+                //         &api.uniform,
+                //         &api.scene.get_sphere_arr(),
+                //     );
+                //     if hit_object == usize::MAX {
+                //         api.camera.uniforms.dof_scale = 0.;
+                //     } else {
+                //         api.camera.uniforms.focal_distance = dist_to_object;
+                //         api.camera.uniforms.dof_scale = DOF_SCALE;
+                //     }
+                //     api.uniform.reset_samples();
+                // }
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let delta = match delta {

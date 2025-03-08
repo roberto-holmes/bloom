@@ -1,5 +1,5 @@
 pub mod api;
-mod bvh;
+// mod bvh;
 mod camera;
 mod compute;
 mod core;
@@ -7,7 +7,7 @@ mod debug;
 pub mod material;
 pub mod primitives;
 mod ray;
-pub mod select;
+// pub mod select;
 mod structures;
 mod tools;
 mod transfer;
@@ -37,13 +37,15 @@ use winit::{
     window::{Window, WindowId},
 };
 
-const WINDOW_WIDTH: u32 = 800;
-const WINDOW_HEIGHT: u32 = 600;
+const WINDOW_WIDTH: u32 = 1920;
+const WINDOW_HEIGHT: u32 = 1080;
+// const WINDOW_WIDTH: u32 = 400;
+// const WINDOW_HEIGHT: u32 = 300;
 const MAX_FRAMES_IN_FLIGHT: usize = 2;
 // const IDEAL_RADIANCE_IMAGE_SIZE_WIDTH: u32 = 5120;
-const IDEAL_RADIANCE_IMAGE_SIZE_WIDTH: u32 = 800;
+const IDEAL_RADIANCE_IMAGE_SIZE_WIDTH: u32 = WINDOW_WIDTH;
 // const IDEAL_RADIANCE_IMAGE_SIZE_HEIGHT: u32 = 2160;
-const IDEAL_RADIANCE_IMAGE_SIZE_HEIGHT: u32 = 600;
+const IDEAL_RADIANCE_IMAGE_SIZE_HEIGHT: u32 = WINDOW_HEIGHT;
 
 pub const MAX_MATERIAL_COUNT: usize = 10;
 pub const MAX_SPHERE_COUNT: usize = 20;
@@ -209,19 +211,6 @@ struct VulkanApp<'a, T: Bloomable> {
     uniform_buffers_memory: Vec<Destructor<vk::DeviceMemory>>,
     uniform_buffers_mapped: Vec<*mut core::UniformBufferObject>,
 
-    material_buffers: Vec<Destructor<vk::Buffer>>,
-    material_buffers_memory: Vec<Destructor<vk::DeviceMemory>>,
-    material_buffers_mapped: Vec<*mut material::Material>,
-
-    bvh_buffer: Destructor<vk::Buffer>,
-    bvh_buffer_memory: Destructor<vk::DeviceMemory>,
-    sphere_buffer: Destructor<vk::Buffer>,
-    sphere_buffer_memory: Destructor<vk::DeviceMemory>,
-    quad_buffer: Destructor<vk::Buffer>,
-    quad_buffer_memory: Destructor<vk::DeviceMemory>,
-    triangle_buffer: Destructor<vk::Buffer>,
-    triangle_buffer_memory: Destructor<vk::DeviceMemory>,
-
     graphic_images: [vulkan::Image<'a>; 2],
 
     depth_image_view: Destructor<vk::ImageView>,
@@ -249,7 +238,6 @@ impl<'a, T: Bloomable> VulkanApp<'a, T> {
     pub fn new(window: &Window, mut user_app: T) -> Result<Self> {
         let api = Arc::new(Mutex::new(BloomAPI::new()));
         user_app.init(Arc::downgrade(&api));
-        let bvh = vec![bvh::create_bvh(&mut api.lock().unwrap().scene)];
 
         log::debug!("Initialising vulkan application");
         let entry = unsafe { Entry::load()? };
@@ -300,13 +288,6 @@ impl<'a, T: Bloomable> VulkanApp<'a, T> {
 
         let (uniform_buffers, uniform_buffers_memory, uniform_buffers_mapped) =
             create_uniform_buffer::<UniformBufferObject>(device.get(), mem_properties, 1)?;
-
-        let (material_buffers, material_buffers_memory, material_buffers_mapped) =
-            create_uniform_buffer::<material::Material>(
-                device.get(),
-                mem_properties,
-                MAX_MATERIAL_COUNT as u64,
-            )?;
 
         let (depth_image, depth_image_memory, depth_image_view) = create_depth_resources(
             device.get(),
@@ -366,47 +347,12 @@ impl<'a, T: Bloomable> VulkanApp<'a, T> {
         for i in 0..compute_images.len() {
             raw_compute_images[i] = compute_images[i].get();
         }
-        let (bvh_buffer, bvh_buffer_memory) = create_storage_buffer(
-            device.get(),
-            mem_properties,
-            command_pool.get(),
-            graphics_queue,
-            &bvh,
-        )?;
 
-        let (sphere_buffer, sphere_buffer_memory) = create_storage_buffer(
-            device.get(),
-            mem_properties,
-            command_pool.get(),
-            graphics_queue,
-            &api.lock().unwrap().scene.get_sphere_arr().to_vec(),
-        )?;
-
-        let (quad_buffer, quad_buffer_memory) = create_storage_buffer(
-            device.get(),
-            mem_properties,
-            command_pool.get(),
-            graphics_queue,
-            &api.lock().unwrap().scene.get_quad_arr().to_vec(),
-        )?;
-
-        let (triangle_buffer, triangle_buffer_memory) = create_storage_buffer(
-            device.get(),
-            mem_properties,
-            command_pool.get(),
-            graphics_queue,
-            &api.lock().unwrap().scene.get_triangle_arr().to_vec(),
-        )?;
         let descriptor_sets = create_descriptor_sets(
             device.get(),
             descriptor_pool.get(),
             set_layout.get(),
             &uniform_buffers,
-            &material_buffers,
-            bvh_buffer.get(),
-            sphere_buffer.get(),
-            quad_buffer.get(),
-            triangle_buffer.get(),
             &raw_graphic_image_views,
         )?;
 
@@ -564,19 +510,6 @@ impl<'a, T: Bloomable> VulkanApp<'a, T> {
             uniform_buffers,
             uniform_buffers_memory,
             uniform_buffers_mapped,
-
-            material_buffers,
-            material_buffers_memory,
-            material_buffers_mapped,
-
-            bvh_buffer,
-            bvh_buffer_memory,
-            sphere_buffer,
-            sphere_buffer_memory,
-            quad_buffer,
-            quad_buffer_memory,
-            triangle_buffer,
-            triangle_buffer_memory,
 
             graphic_images,
 
@@ -815,13 +748,10 @@ impl<'a, T: Bloomable> VulkanApp<'a, T> {
         api.update_camera();
 
         let ubos = [api.uniform.clone()];
-        let mats = api.scene.get_material_arr();
 
         unsafe {
             self.uniform_buffers_mapped[current_image as usize]
                 .copy_from_nonoverlapping(ubos.as_ptr(), ubos.len());
-            self.material_buffers_mapped[current_image as usize]
-                .copy_from_nonoverlapping(mats.as_ptr(), mats.len());
         };
     }
 

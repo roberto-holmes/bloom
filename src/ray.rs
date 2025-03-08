@@ -9,6 +9,7 @@ use vk_mem::{self};
 
 use crate::api::BloomAPI;
 use crate::core::UniformBufferObject;
+use crate::primitives::Addressable;
 use crate::vec::Vec3;
 use crate::vulkan::Destructor;
 use crate::{core, material, primitives, structures, tools, vulkan, MAX_FRAMES_IN_FLIGHT};
@@ -69,7 +70,10 @@ pub fn thread(
         api,
     ) {
         Ok(v) => v,
-        Err(e) => panic!("Failed to create ray tracing object: {}", e),
+        Err(e) => {
+            log::error!("Failed to create ray tracing object: {}", e);
+            return;
+        }
     };
 
     log::trace!("Ray tracing object has been constructed");
@@ -177,7 +181,7 @@ pub fn thread(
 struct Ray<'a> {
     device: ash::Device,
     rt_device: ash::khr::ray_tracing_pipeline::Device,
-    as_device: ash::khr::acceleration_structure::Device,
+    _as_device: ash::khr::acceleration_structure::Device,
 
     ray_tracing_pipeline_properties: vk::PhysicalDeviceRayTracingPipelinePropertiesKHR<'a>,
     raygen_shader_binding_table: vulkan::Buffer,
@@ -191,19 +195,26 @@ struct Ray<'a> {
     uniform_buffers: [vulkan::Buffer; 2],
 
     queue: vk::Queue,
-    descriptor_set_layout: Destructor<vk::DescriptorSetLayout>,
+    _descriptor_set_layout: Destructor<vk::DescriptorSetLayout>,
     pipeline_layout: Destructor<vk::PipelineLayout>,
     pipeline: Destructor<vk::Pipeline>,
-    command_pool: Destructor<vk::CommandPool>,
+    _command_pool: Destructor<vk::CommandPool>,
     commands: [vk::CommandBuffer; 2],
-    descriptor_pool: Destructor<vk::DescriptorPool>,
+    _descriptor_pool: Destructor<vk::DescriptorPool>,
     descriptor_sets: [vk::DescriptorSet; 2],
 
-    buffer_references: vulkan::Buffer,
-    blass: Vec<AccelerationStructure>,
-    top_level_as: AccelerationStructure,
+    _spheres: Vec<primitives::Sphere>,
+    _models: Vec<primitives::Model>,
 
-    allocator: vk_mem::Allocator,
+    _spheres_buffer: vulkan::Buffer,
+    _materials_buffer: vulkan::Buffer,
+    _aabbs_buffers: Vec<vulkan::Buffer>,
+
+    _buffer_references: vulkan::Buffer,
+    _blass: Vec<AccelerationStructure>,
+    _top_level_as: AccelerationStructure,
+
+    _allocator: vk_mem::Allocator,
 
     api: Arc<Mutex<BloomAPI>>,
 }
@@ -240,8 +251,34 @@ impl<'a> Ray<'a> {
             )?,
         ];
 
-        let (blass, blas_instances, buffer_references) =
-            create_scene(&allocator, &device, &as_device, command_pool.get(), queue)?;
+        let mut blass = vec![];
+        let mut blas_instances = vec![];
+        let mut primitive_addresses = vec![];
+
+        let (spheres, spheres_buffer, materials_buffer, aabbs_buffers) = create_spheres(
+            &allocator,
+            &device,
+            &as_device,
+            command_pool.get(),
+            queue,
+            &mut blass,
+            &mut blas_instances,
+            &mut primitive_addresses,
+        )?;
+
+        let models = create_cubes(
+            &allocator,
+            &device,
+            &as_device,
+            command_pool.get(),
+            queue,
+            &mut blass,
+            &mut blas_instances,
+            &mut primitive_addresses,
+        )?;
+
+        // Get a reference to where all the parts of each model are on the GPU
+        let buffer_references = create_buffer_references(&allocator, &primitive_addresses)?;
 
         let top_level_as = create_top_level_acceleration_structure(
             &device,
@@ -274,6 +311,7 @@ impl<'a> Ray<'a> {
             &images,
             &uniform_buffers,
             &buffer_references,
+            &materials_buffer,
         )?;
 
         log::trace!("Building command buffers");
@@ -286,9 +324,9 @@ impl<'a> Ray<'a> {
             descriptor_sets,
             commands,
             &ray_tracing_pipeline_properties,
-            raygen_shader_binding_table.get(),
-            miss_shader_binding_table.get(),
-            hit_shader_binding_table.get(),
+            &raygen_shader_binding_table,
+            &miss_shader_binding_table,
+            &hit_shader_binding_table,
             pipeline.get(),
             pipeline_layout.get(),
         )?;
@@ -302,28 +340,33 @@ impl<'a> Ray<'a> {
 
         Ok(Self {
             device,
-            allocator,
+            _allocator: allocator,
             semaphore,
             images,
             queue,
-            descriptor_set_layout,
+            _descriptor_set_layout: descriptor_set_layout,
             pipeline_layout,
             pipeline,
-            command_pool,
+            _command_pool: command_pool,
             commands,
-            descriptor_pool,
+            _descriptor_pool: descriptor_pool,
             descriptor_sets,
             rt_device,
-            as_device,
+            _as_device: as_device,
             ray_tracing_pipeline_properties,
             raygen_shader_binding_table,
             miss_shader_binding_table,
             hit_shader_binding_table,
             api,
             uniform_buffers,
-            top_level_as,
-            buffer_references,
-            blass,
+            _top_level_as: top_level_as,
+            _buffer_references: buffer_references,
+            _blass: blass,
+            _spheres_buffer: spheres_buffer,
+            _materials_buffer: materials_buffer,
+            _aabbs_buffers: aabbs_buffers,
+            _spheres: spheres,
+            _models: models,
         })
     }
     pub fn need_resize(&self, width: u32, height: u32, frame_index: usize) -> bool {
@@ -339,9 +382,9 @@ impl<'a> Ray<'a> {
             self.descriptor_sets,
             self.commands,
             &self.ray_tracing_pipeline_properties,
-            self.raygen_shader_binding_table.get(),
-            self.miss_shader_binding_table.get(),
-            self.hit_shader_binding_table.get(),
+            &self.raygen_shader_binding_table,
+            &self.miss_shader_binding_table,
+            &self.hit_shader_binding_table,
             self.pipeline.get(),
             self.pipeline_layout.get(),
         )?;
@@ -481,7 +524,11 @@ fn create_bottom_level_acceleration_structure(
     as_device: &ash::khr::acceleration_structure::Device,
     command_pool: vk::CommandPool,
     queue: vk::Queue,
-    obj: &primitives::ModelGPU,
+    geometry_type: vk::GeometryTypeKHR,
+    // Either Model (triangles) or AABB buffer and number of primitives
+    obj: Option<&primitives::Model>,
+    aabb: Option<&vulkan::Buffer>,
+    prim_count: Option<u32>,
 ) -> Result<AccelerationStructure> {
     #[rustfmt::skip]
     let transform_matrix = vk::TransformMatrixKHR { matrix: [
@@ -500,44 +547,75 @@ fn create_bottom_level_acceleration_structure(
         1,
     )?;
 
-    let mut vertex_buffer_device_address = vk::DeviceOrHostAddressConstKHR::default();
-    let mut index_buffer_device_address = vk::DeviceOrHostAddressConstKHR::default();
-    let mut transform_buffer_device_address = vk::DeviceOrHostAddressConstKHR::default();
-
-    vertex_buffer_device_address.device_address =
-        get_buffer_device_address(device, obj.vertex_buffer.get());
-    index_buffer_device_address.device_address =
-        get_buffer_device_address(device, obj.index_buffer.get());
-    transform_buffer_device_address.device_address =
-        get_buffer_device_address(device, transform_buffer.get());
-
     // Build
     let mut as_geometries = [vk::AccelerationStructureGeometryKHR::default()
         .flags(vk::GeometryFlagsKHR::OPAQUE)
-        .geometry_type(vk::GeometryTypeKHR::TRIANGLES)];
-    as_geometries[0].geometry.triangles =
-        vk::AccelerationStructureGeometryTrianglesDataKHR::default()
-            .vertex_format(vk::Format::R32G32B32_SFLOAT)
-            .vertex_data(vertex_buffer_device_address)
-            .max_vertex(obj.vertex_count)
-            .vertex_stride(size_of::<primitives::Vertex>() as u64)
-            .index_type(vk::IndexType::UINT32)
-            .index_data(index_buffer_device_address)
-            .transform_data(transform_buffer_device_address);
+        .geometry_type(geometry_type)];
 
+    match geometry_type {
+        vk::GeometryTypeKHR::TRIANGLES => {
+            assert!(obj.is_some());
+            let obj = obj.unwrap();
+
+            let vertex_buffer_device_address = vk::DeviceOrHostAddressConstKHR {
+                device_address: obj.primitive_data.vertices,
+            };
+            let index_buffer_device_address = vk::DeviceOrHostAddressConstKHR {
+                device_address: obj.primitive_data.indices,
+            };
+            let transform_buffer_device_address = vk::DeviceOrHostAddressConstKHR {
+                device_address: get_buffer_device_address(device, transform_buffer.get()),
+            };
+
+            as_geometries[0].geometry.triangles =
+                vk::AccelerationStructureGeometryTrianglesDataKHR::default()
+                    .vertex_format(vk::Format::R32G32B32_SFLOAT)
+                    .vertex_data(vertex_buffer_device_address)
+                    .max_vertex(obj.vertices.len() as u32)
+                    .vertex_stride(size_of::<primitives::Vertex>() as u64)
+                    .index_type(vk::IndexType::UINT32)
+                    .index_data(index_buffer_device_address)
+                    .transform_data(transform_buffer_device_address);
+        }
+        vk::GeometryTypeKHR::AABBS => {
+            assert!(aabb.is_some());
+            assert!(prim_count.is_some());
+            let aabb = aabb.unwrap();
+            as_geometries[0].geometry.aabbs =
+                vk::AccelerationStructureGeometryAabbsDataKHR::default()
+                    .data(vk::DeviceOrHostAddressConstKHR {
+                        device_address: aabb.get_device_address(device),
+                    })
+                    .stride(size_of::<primitives::AABB>() as u64);
+        }
+        _ => {
+            return Err(anyhow!(
+                "Trying to construct a BLAS from unsupported primitive {:?}",
+                geometry_type
+            ))
+        }
+    }
     let as_build_geometry_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
         .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
         .flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE)
         .geometries(&as_geometries);
 
-    let num_triangles = [obj.index_count / 3];
+    let num_prim = if let Some(o) = obj {
+        [o.indices.len() as u32 / 3] // Number of triangle
+    } else if let Some(v) = prim_count {
+        [v] // Number of primitives in AABB
+    } else {
+        return Err(anyhow!(
+            "Trying to construct a BLAS without an object or a count of primitives"
+        ));
+    };
     let mut as_build_sizes_info = vk::AccelerationStructureBuildSizesInfoKHR::default();
 
     unsafe {
         as_device.get_acceleration_structure_build_sizes(
             vk::AccelerationStructureBuildTypeKHR::DEVICE,
             &as_build_geometry_info,
-            &num_triangles,
+            &num_prim,
             &mut as_build_sizes_info,
         );
     }
@@ -571,7 +649,7 @@ fn create_bottom_level_acceleration_structure(
     as_build_geometry_infos[0].scratch_data.device_address = scratch_buffer.device_address;
 
     let as_build_range_infos =
-        [vk::AccelerationStructureBuildRangeInfoKHR::default().primitive_count(num_triangles[0])];
+        [vk::AccelerationStructureBuildRangeInfoKHR::default().primitive_count(num_prim[0])];
 
     // Build the acceleration structure on the device via a one-time command buffer submission
     // Some implementations may support acceleration structure building on the host (VkPhysicalDeviceAccelerationStructureFeaturesKHR->accelerationStructureHostCommands), but we prefer device builds
@@ -602,6 +680,7 @@ fn create_top_level_acceleration_structure(
     queue: vk::Queue,
     command_pool: vk::CommandPool,
 ) -> Result<AccelerationStructure> {
+    log::debug!("Making a TLAS with {} instances", blas_instances.len());
     let instances_buffer = vulkan::Buffer::new_populated(
         allocator,
         (blas_instances.len() * size_of::<vk::AccelerationStructureInstanceKHR>()) as u64,
@@ -705,6 +784,7 @@ fn create_blas_instance(
     blass: &mut Vec<AccelerationStructure>,
     blas_id: usize,
     transform: cgmath::Matrix4<f32>,
+    object_type: primitives::ObjectType,
 ) -> Result<vk::AccelerationStructureInstanceKHR> {
     #[rustfmt::skip]
     let transform_matrix = vk::TransformMatrixKHR {matrix:[
@@ -725,7 +805,11 @@ fn create_blas_instance(
         transform: transform_matrix,
         instance_custom_index_and_mask: vk::Packed24_8::new(blas_id as u32, 0xff),
         instance_shader_binding_table_record_offset_and_flags: vk::Packed24_8::new(
-            0,
+            if object_type == primitives::ObjectType::Triangle {
+                0
+            } else {
+                1
+            },
             vk::GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE.as_raw() as u8,
         ),
         acceleration_structure_reference: vk::AccelerationStructureReferenceKHR {
@@ -745,37 +829,34 @@ fn create_shader_binding_tables(
     ray_tracing_pipeline_properties: &vk::PhysicalDeviceRayTracingPipelinePropertiesKHR,
     shader_groups: &Vec<vk::RayTracingShaderGroupCreateInfoKHR>,
 ) -> Result<(vulkan::Buffer, vulkan::Buffer, vulkan::Buffer)> {
-    // let handle_size = ray_tracing_pipeline_properties.shader_group_handle_size as u64;
-    let handle_size = ray_tracing_pipeline_properties.shader_group_base_alignment as u64; // TODO: Potentially revisit. This should be using the line above but it fails
-    let handle_size_aligned = aligned_size(
-        ray_tracing_pipeline_properties.shader_group_handle_size,
-        ray_tracing_pipeline_properties.shader_group_handle_alignment,
-    );
+    let handle_size = ray_tracing_pipeline_properties.shader_group_handle_size;
+    let base_size = ray_tracing_pipeline_properties.shader_group_base_alignment as u64;
+
     let group_count = shader_groups.len() as u32;
-    let sbt_size = (group_count * handle_size_aligned) as usize;
+    let sbt_size = (group_count * handle_size) as usize;
     let sbt_buffer_usage_flags = vk::BufferUsageFlags::SHADER_BINDING_TABLE_KHR
         | vk::BufferUsageFlags::TRANSFER_SRC
         | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS;
 
     // Raygen
     // Create binding table buffers for each shader type
-    let raygen_shader_binding_table = vulkan::Buffer::new_generic(
+    let mut raygen_shader_binding_table = vulkan::Buffer::new_generic(
         allocator,
-        handle_size,
+        base_size,
         vk_mem::MemoryUsage::Auto,
         vk_mem::AllocationCreateFlags::HOST_ACCESS_SEQUENTIAL_WRITE,
         sbt_buffer_usage_flags,
     )?;
-    let miss_shader_binding_table = vulkan::Buffer::new_generic(
+    let mut miss_shader_binding_table = vulkan::Buffer::new_generic(
         allocator,
-        handle_size,
+        base_size,
         vk_mem::MemoryUsage::Auto,
         vk_mem::AllocationCreateFlags::HOST_ACCESS_SEQUENTIAL_WRITE,
         sbt_buffer_usage_flags,
     )?;
-    let hit_shader_binding_table = vulkan::Buffer::new_generic(
+    let mut hit_shader_binding_table = vulkan::Buffer::new_generic(
         allocator,
-        handle_size,
+        base_size,
         vk_mem::MemoryUsage::Auto,
         vk_mem::AllocationCreateFlags::HOST_ACCESS_SEQUENTIAL_WRITE,
         sbt_buffer_usage_flags,
@@ -791,16 +872,14 @@ fn create_shader_binding_tables(
         raygen_shader_binding_table
             .populate(shader_handle_storage.as_ptr(), handle_size as usize)?;
         miss_shader_binding_table.populate(
-            shader_handle_storage
-                .as_ptr()
-                .offset(handle_size_aligned as isize),
+            shader_handle_storage.as_ptr().offset(handle_size as isize),
             handle_size as usize,
         )?;
         hit_shader_binding_table.populate(
             shader_handle_storage
                 .as_ptr()
-                .offset((handle_size_aligned * 2) as isize),
-            handle_size as usize,
+                .offset((handle_size * 2) as isize),
+            handle_size as usize * 2,
         )?;
     }
     Ok((
@@ -817,6 +896,7 @@ fn create_descriptor_sets(
     storage_images: &[vulkan::Image; 2],
     ubo: &[vulkan::Buffer; 2],
     scene: &vulkan::Buffer,
+    materials: &vulkan::Buffer,
 ) -> Result<(Destructor<vk::DescriptorPool>, [vk::DescriptorSet; 2])> {
     let pool_sizes = vec![
         vk::DescriptorPoolSize {
@@ -833,6 +913,10 @@ fn create_descriptor_sets(
         },
         vk::DescriptorPoolSize {
             ty: vk::DescriptorType::UNIFORM_BUFFER,
+            descriptor_count: MAX_FRAMES_IN_FLIGHT as u32,
+        },
+        vk::DescriptorPoolSize {
+            ty: vk::DescriptorType::STORAGE_BUFFER,
             descriptor_count: MAX_FRAMES_IN_FLIGHT as u32,
         },
         vk::DescriptorPoolSize {
@@ -875,6 +959,7 @@ fn create_descriptor_sets(
 
         let buffer_descriptor = [ubo[i].create_descriptor()];
         let scene_descriptor = [scene.create_descriptor()];
+        let material_descriptor = [materials.create_descriptor()];
 
         let descriptor_writes = [
             vk::WriteDescriptorSet {
@@ -917,6 +1002,14 @@ fn create_descriptor_sets(
                 ..Default::default()
             }
             .buffer_info(&scene_descriptor),
+            vk::WriteDescriptorSet {
+                dst_set: descriptor_set,
+                dst_binding: 5,
+                descriptor_count: 1,
+                descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
+                ..Default::default()
+            }
+            .buffer_info(&material_descriptor),
         ];
         unsafe { device.update_descriptor_sets(&descriptor_writes, &[]) };
     }
@@ -955,14 +1048,27 @@ fn create_pipeline<'a>(
             ..Default::default()
         },
         vk::DescriptorSetLayoutBinding {
+            // UBO
             binding: 3,
             descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
             descriptor_count: 1,
-            stage_flags: vk::ShaderStageFlags::RAYGEN_KHR | vk::ShaderStageFlags::CLOSEST_HIT_KHR,
+            stage_flags: vk::ShaderStageFlags::RAYGEN_KHR
+                | vk::ShaderStageFlags::INTERSECTION_KHR
+                | vk::ShaderStageFlags::CLOSEST_HIT_KHR,
             ..Default::default()
         },
         vk::DescriptorSetLayoutBinding {
+            // Scene
             binding: 4,
+            descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
+            descriptor_count: 1,
+            stage_flags: vk::ShaderStageFlags::INTERSECTION_KHR
+                | vk::ShaderStageFlags::CLOSEST_HIT_KHR,
+            ..Default::default()
+        },
+        vk::DescriptorSetLayoutBinding {
+            // Materials
+            binding: 5,
             descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
             descriptor_count: 1,
             stage_flags: vk::ShaderStageFlags::CLOSEST_HIT_KHR,
@@ -993,13 +1099,19 @@ fn create_pipeline<'a>(
     let main_name = CString::new("main").unwrap();
     let raygen_code = tools::read_shader_code(Path::new("shaders/spv/raygen.slang.spv"))?;
     let miss_code = tools::read_shader_code(Path::new("shaders/spv/miss.slang.spv"))?;
-    // let closest_hit_code = tools::read_shader_code(Path::new("shaders/spv/closest_hit.rchit.spv"))?;
-    let closest_hit_code = tools::read_shader_code(Path::new("shaders/spv/closest_hit.slang.spv"))?;
+    let intersection_code =
+        tools::read_shader_code(Path::new("shaders/spv/intersection.slang.spv"))?;
+    let closest_hit_code =
+        tools::read_shader_code(Path::new("shaders/spv/closest_hit_triangle.slang.spv"))?;
+    let sphere_closest_hit_code =
+        tools::read_shader_code(Path::new("shaders/spv/closest_hit_generic.slang.spv"))?;
 
     let raygen_module = core::create_shader_module(device, &raygen_code)?;
     let miss_module = core::create_shader_module(device, &miss_code)?;
+    let intersection_module = core::create_shader_module(device, &intersection_code)?;
     let closest_hit_module = core::create_shader_module(device, &closest_hit_code)?;
-
+    let sphere_closest_hit_module = core::create_shader_module(device, &sphere_closest_hit_code)?;
+    log::trace!("All Shader modules created");
     {
         // Ray generation group
         shader_stages.push(
@@ -1054,6 +1166,30 @@ fn create_pipeline<'a>(
         };
         shader_groups.push(group_ci);
     }
+    {
+        // Procedural hit group
+        shader_stages.push(
+            vk::PipelineShaderStageCreateInfo::default()
+                .stage(vk::ShaderStageFlags::CLOSEST_HIT_KHR)
+                .module(sphere_closest_hit_module.get())
+                .name(&main_name),
+        );
+        shader_stages.push(
+            vk::PipelineShaderStageCreateInfo::default()
+                .stage(vk::ShaderStageFlags::INTERSECTION_KHR)
+                .module(intersection_module.get())
+                .name(&main_name),
+        );
+        let group_ci = vk::RayTracingShaderGroupCreateInfoKHR {
+            ty: vk::RayTracingShaderGroupTypeKHR::PROCEDURAL_HIT_GROUP,
+            general_shader: vk::SHADER_UNUSED_KHR,
+            closest_hit_shader: shader_stages.len() as u32 - 2,
+            any_hit_shader: vk::SHADER_UNUSED_KHR,
+            intersection_shader: shader_stages.len() as u32 - 1,
+            ..Default::default()
+        };
+        shader_groups.push(group_ci);
+    }
 
     let ray_tracing_pipeline_create_infos = [vk::RayTracingPipelineCreateInfoKHR::default()
         .stages(shader_stages.as_slice())
@@ -1061,6 +1197,7 @@ fn create_pipeline<'a>(
         .max_pipeline_ray_recursion_depth(1)
         .layout(pipeline_layout.get())];
 
+    log::trace!("Building pipeline {:#?}", rt_device.device());
     let pipeline = unsafe {
         rt_device.create_ray_tracing_pipelines(
             vk::DeferredOperationKHR::null(),
@@ -1069,7 +1206,7 @@ fn create_pipeline<'a>(
             None,
         )
     };
-
+    log::trace!("Pipeline created - checking");
     match pipeline {
         Ok(v) => Ok((
             descriptor_set_layout,
@@ -1090,9 +1227,9 @@ fn build_command_buffers(
     descriptor_sets: [vk::DescriptorSet; 2],
     command_buffers: [vk::CommandBuffer; 2],
     ray_tracing_pipeline_properties: &vk::PhysicalDeviceRayTracingPipelinePropertiesKHR,
-    raygen_shader_binding_table: vk::Buffer,
-    miss_shader_binding_table: vk::Buffer,
-    hit_shader_binding_table: vk::Buffer,
+    raygen_shader_binding_table: &vulkan::Buffer,
+    miss_shader_binding_table: &vulkan::Buffer,
+    hit_shader_binding_table: &vulkan::Buffer,
     pipeline: vk::Pipeline,
     pipeline_layout: vk::PipelineLayout,
 ) -> Result<()> {
@@ -1139,25 +1276,29 @@ fn build_command_buffers(
     for (i, &command_buffer) in command_buffers.iter().enumerate() {
         unsafe {
             device.begin_command_buffer(command_buffer, &begin_info)?;
-            let handle_size_aligned = aligned_size(
+            let single_handle_size_aligned = aligned_size(
+                ray_tracing_pipeline_properties.shader_group_handle_size,
+                ray_tracing_pipeline_properties.shader_group_handle_alignment,
+            ) as u64;
+            let base_handle_size_aligned = aligned_size(
                 ray_tracing_pipeline_properties.shader_group_handle_size,
                 ray_tracing_pipeline_properties.shader_group_base_alignment,
             ) as u64;
 
             let raygen_shader_sbt_entry = vk::StridedDeviceAddressRegionKHR {
-                device_address: get_buffer_device_address(device, raygen_shader_binding_table),
-                stride: handle_size_aligned,
-                size: handle_size_aligned,
+                device_address: raygen_shader_binding_table.get_device_address(device),
+                stride: base_handle_size_aligned,
+                size: base_handle_size_aligned,
             };
             let miss_shader_sbt_entry = vk::StridedDeviceAddressRegionKHR {
-                device_address: get_buffer_device_address(device, miss_shader_binding_table),
-                stride: handle_size_aligned,
-                size: handle_size_aligned,
+                device_address: miss_shader_binding_table.get_device_address(device),
+                stride: single_handle_size_aligned,
+                size: base_handle_size_aligned,
             };
             let hit_shader_sbt_entry = vk::StridedDeviceAddressRegionKHR {
-                device_address: get_buffer_device_address(device, hit_shader_binding_table),
-                stride: handle_size_aligned,
-                size: handle_size_aligned,
+                device_address: hit_shader_binding_table.get_device_address(device),
+                stride: single_handle_size_aligned,
+                size: base_handle_size_aligned,
             };
 
             let callable_shader_sbt_entry = vk::StridedDeviceAddressRegionKHR::default();
@@ -1214,78 +1355,169 @@ fn create_empty_commands(
 
 fn create_buffer_references(
     allocator: &vk_mem::Allocator,
-    device: &ash::Device,
-    models: &Vec<primitives::ModelGPU>,
+    data: &Vec<primitives::PrimitiveAddresses>,
 ) -> Result<vulkan::Buffer> {
-    let mut obj_data = vec![];
-    // Retrieve the address of the buffers used by each model so taht we can give them to the shaders
-    for obj in models {
-        obj_data.push(obj.get_addresses(device));
-    }
     vulkan::Buffer::new_populated(
         allocator,
-        (obj_data.len() * size_of::<primitives::ModelAddresses>()) as u64,
+        (data.len() * size_of::<primitives::PrimitiveAddresses>()) as u64,
         vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-        obj_data.as_ptr(),
-        obj_data.len(),
+        data.as_ptr(),
+        data.len(),
     )
 }
 
-fn create_scene(
+fn create_spheres(
     allocator: &vk_mem::Allocator,
     device: &ash::Device,
     as_device: &ash::khr::acceleration_structure::Device,
     command_pool: vk::CommandPool,
     queue: vk::Queue,
+    blass: &mut Vec<AccelerationStructure>,
+    blas_instances: &mut Vec<vk::AccelerationStructureInstanceKHR>,
+    primitive_addresses: &mut Vec<primitives::PrimitiveAddresses>,
 ) -> Result<(
-    Vec<AccelerationStructure>,
-    Vec<vk::AccelerationStructureInstanceKHR>,
-    vulkan::Buffer,
+    Vec<primitives::Sphere>,
+    vulkan::Buffer,      // Spheres
+    vulkan::Buffer,      // Materials
+    Vec<vulkan::Buffer>, // AABBs
 )> {
-    let mat_red = material::Material::new_basic(Vec3::new(1.0, 0.0, 0.0), 0.);
-    let mat_green = material::Material::new_basic(Vec3::new(0.0, 1.0, 0.0), 0.);
-    let mat_blue = material::Material::new_basic(Vec3::new(0.0, 0.0, 1.0), 0.);
-    let mat_yellow = material::Material::new_basic(Vec3::new(1.0, 1.0, 0.0), 0.);
-    let mat_cyan = material::Material::new_basic(Vec3::new(0.0, 1.0, 1.0), 0.);
-    let mat_magenta = material::Material::new_basic(Vec3::new(1.0, 0.0, 1.0), 0.);
-    let mat_grey = material::Material::new_basic(Vec3::new(0.7, 0.7, 0.7), 0.1);
-    let mat_mirror = material::Material::new_basic(Vec3::new(1.0, 0.4, 0.5), 0.999);
+    let initial_blass_size = blass.len();
 
-    let mut cube = primitives::ModelCPU::new_cube();
-    let mut plane = primitives::ModelCPU::new_plane();
-    let mut mirror = primitives::ModelCPU::new_cube();
+    let spheres = vec![
+        primitives::Sphere::new(allocator, Vec3::new(-1., 1.0, 1.), 1.0, 0)?,
+        primitives::Sphere::new(allocator, Vec3::new(1., 1.0, -1.), 1.0, 7)?,
+    ];
+
+    let mut aabbs = Vec::with_capacity(spheres.len());
+    for s in &spheres {
+        log::debug!("Adding primitive address");
+        aabbs.push(primitives::AABB::new(s));
+        primitive_addresses.push(s.get_addresses(device));
+    }
+
+    let materials = vec![
+        material::Material::new_basic(Vec3::new(1.0, 0.0, 0.0), 0.),
+        material::Material::new_basic(Vec3::new(0.0, 1.0, 0.0), 0.),
+        material::Material::new_basic(Vec3::new(0.0, 0.0, 1.0), 0.),
+        material::Material::new_basic(Vec3::new(1.0, 1.0, 0.0), 0.),
+        material::Material::new_basic(Vec3::new(0.0, 1.0, 1.0), 0.),
+        material::Material::new_basic(Vec3::new(1.0, 0.0, 1.0), 0.),
+        material::Material::new_basic(Vec3::new(0.7, 0.7, 0.7), 0.1),
+        material::Material::new_basic(Vec3::new(1.0, 0.4, 0.5), 1.0),
+    ];
+
+    let spheres_buffer = vulkan::Buffer::new_populated(
+        allocator,
+        (spheres.len() * size_of::<primitives::Sphere>()) as vk::DeviceSize,
+        vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS | vk::BufferUsageFlags::STORAGE_BUFFER,
+        spheres.as_ptr(),
+        spheres.len(),
+    )?;
+
+    let material_buffer = vulkan::Buffer::new_populated(
+        allocator,
+        (materials.len() * size_of::<material::Material>()) as vk::DeviceSize,
+        vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS | vk::BufferUsageFlags::STORAGE_BUFFER,
+        materials.as_ptr(),
+        materials.len(),
+    )?;
+
+    let mut aabbs_buffers = Vec::with_capacity(spheres.len());
+    // Create a Bottom Level Acceleration structure for each model
+    for (i, a) in aabbs.iter().enumerate() {
+        aabbs_buffers.push(vulkan::Buffer::new_populated(
+            allocator,
+            size_of::<primitives::AABB>() as vk::DeviceSize,
+            vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
+                | vk::BufferUsageFlags::STORAGE_BUFFER
+                | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR,
+            a,
+            1,
+        )?);
+        blass.push(create_bottom_level_acceleration_structure(
+            device,
+            allocator,
+            as_device,
+            command_pool,
+            queue,
+            vk::GeometryTypeKHR::AABBS,
+            None,
+            Some(&aabbs_buffers[i]),
+            Some(1),
+        )?);
+    }
+
+    #[rustfmt::skip] let identity  = cgmath::Matrix4::from_translation(cgmath::Vector3 { x: 0.0, y: 0.0, z: 0.0 });
+
+    blas_instances.push(create_blas_instance(
+        as_device,
+        blass,
+        initial_blass_size,
+        identity,
+        primitives::ObjectType::Sphere,
+    )?);
+    blas_instances.push(create_blas_instance(
+        as_device,
+        blass,
+        initial_blass_size + 1,
+        identity,
+        primitives::ObjectType::Sphere,
+    )?);
+
+    Ok((spheres, spheres_buffer, material_buffer, aabbs_buffers))
+}
+
+fn create_cubes(
+    allocator: &vk_mem::Allocator,
+    device: &ash::Device,
+    as_device: &ash::khr::acceleration_structure::Device,
+    command_pool: vk::CommandPool,
+    queue: vk::Queue,
+    blass: &mut Vec<AccelerationStructure>,
+    blas_instances: &mut Vec<vk::AccelerationStructureInstanceKHR>,
+    primitive_addresses: &mut Vec<primitives::PrimitiveAddresses>,
+) -> Result<Vec<primitives::Model>> {
+    let initial_blass_size = blass.len();
 
     #[rustfmt::skip]
     let models = vec![
-        primitives::ModelGPU::new(allocator, &mut cube, &[mat_red, mat_green, mat_blue, mat_yellow, mat_cyan, mat_magenta])?, // TODO: Why can't we use this first slot? the material shows very strange artifacts in the render
-        primitives::ModelGPU::new(allocator, &mut plane, &[mat_grey])?,
-        primitives::ModelGPU::new(allocator, &mut mirror, &[mat_mirror])?,
-        primitives::ModelGPU::new(allocator, &mut cube, &[mat_red, mat_green, mat_blue, mat_yellow, mat_cyan, mat_magenta])?,
+        primitives::Model::new_mirror(allocator, device)?,
+        primitives::Model::new_plane(allocator, device)?,
+        primitives::Model::new_cube(allocator, device)?,
     ];
 
-    // Get a reference to where all the parts of each model are on the GPU
-    let buffer_references = create_buffer_references(allocator, device, &models)?;
+    primitive_addresses.reserve(primitive_addresses.len() + models.len());
 
-    let mut blass = vec![];
+    for m in &models {
+        primitive_addresses.push(m.get_addresses(device));
+    }
 
     // Create a Bottom Level Acceleration structure for each model
     for obj in &models {
-        #[rustfmt::skip] blass.push(create_bottom_level_acceleration_structure(device, allocator, as_device, command_pool, queue, obj)?);
+        blass.push(create_bottom_level_acceleration_structure(
+            device,
+            allocator,
+            as_device,
+            command_pool,
+            queue,
+            vk::GeometryTypeKHR::TRIANGLES,
+            Some(obj),
+            None,
+            None,
+        )?);
     }
 
     #[rustfmt::skip] let mirror_back  = cgmath::Matrix4::from_translation(cgmath::Vector3 { x: 0.0, y: 0.0, z: -7.0 }) * cgmath::Matrix4::from_nonuniform_scale(3.0, 5.0, 0.1);
     #[rustfmt::skip] let mirror_front = cgmath::Matrix4::from_translation(cgmath::Vector3 { x: 0.0, y: 0.0, z:  7.0 }) * cgmath::Matrix4::from_nonuniform_scale(3.0, 5.0, 0.1);
     #[rustfmt::skip] let floor = cgmath::Matrix4::from_translation(cgmath::Vector3 { x: 0.0, y: -1.0, z: 0.0 }) * cgmath::Matrix4::from_nonuniform_scale(1.0, 1.0, 15.0);
-    #[rustfmt::skip] let left_cube  = cgmath::Matrix4::from_translation(cgmath::Vector3 { x: -1.0, y: 1.0, z: 0.0 });
-    #[rustfmt::skip] let right_cube = cgmath::Matrix4::from_translation(cgmath::Vector3 { x:  1.0, y: 1.0, z: 0.0 });
+    #[rustfmt::skip] let left_cube  = cgmath::Matrix4::from_translation(cgmath::Vector3 { x: -2.0, y: 1.0, z: 0.0 });
+    #[rustfmt::skip] let right_cube = cgmath::Matrix4::from_translation(cgmath::Vector3 { x:  2.0, y: 1.0, z: 0.0 });
 
-    let blas_instances: Vec<vk::AccelerationStructureInstanceKHR> = vec![
-        create_blas_instance(as_device, &mut blass, 3, left_cube)?,
-        create_blas_instance(as_device, &mut blass, 3, right_cube)?,
-        create_blas_instance(as_device, &mut blass, 1, floor)?,
-        create_blas_instance(as_device, &mut blass, 2, mirror_back)?,
-        create_blas_instance(as_device, &mut blass, 2, mirror_front)?,
-    ];
+    #[rustfmt::skip] blas_instances.push(create_blas_instance(as_device, blass, initial_blass_size + 2, left_cube, primitives::ObjectType::Triangle)?);
+    #[rustfmt::skip] blas_instances.push(create_blas_instance(as_device, blass, initial_blass_size + 2, right_cube, primitives::ObjectType::Triangle)?);
+    #[rustfmt::skip] blas_instances.push(create_blas_instance(as_device, blass, initial_blass_size + 1, floor, primitives::ObjectType::Triangle)?);
+    #[rustfmt::skip] blas_instances.push(create_blas_instance(as_device, blass, initial_blass_size + 0, mirror_back, primitives::ObjectType::Triangle)?);
+    #[rustfmt::skip] blas_instances.push(create_blas_instance(as_device, blass, initial_blass_size + 0, mirror_front, primitives::ObjectType::Triangle)?);
 
-    Ok((blass, blas_instances, buffer_references))
+    Ok(models)
 }

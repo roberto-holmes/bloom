@@ -5,16 +5,14 @@ use crate::structures::{
 use crate::tools::read_shader_code;
 use crate::vulkan::Destructor;
 use crate::{
-    bvh, material, primitives, vulkan, IDEAL_RADIANCE_IMAGE_SIZE_HEIGHT,
-    IDEAL_RADIANCE_IMAGE_SIZE_WIDTH, MAX_FRAMES_IN_FLIGHT, MAX_MATERIAL_COUNT, MAX_OBJECT_COUNT,
-    MAX_QUAD_COUNT, MAX_SPHERE_COUNT, MAX_TRIANGLE_COUNT,
-};
-use crate::{
     debug::{check_validation_layer_support, populate_debug_messenger_create_info},
     tools, VALIDATION,
 };
+use crate::{
+    vulkan, IDEAL_RADIANCE_IMAGE_SIZE_HEIGHT, IDEAL_RADIANCE_IMAGE_SIZE_WIDTH, MAX_FRAMES_IN_FLIGHT,
+};
 use anyhow::{anyhow, Context, Result};
-use ash::{ext::debug_utils, vk};
+use ash::vk;
 use bytemuck::{Pod, Zeroable};
 use image;
 use memoffset::offset_of;
@@ -668,11 +666,6 @@ pub fn create_descriptor_sets(
     pool: vk::DescriptorPool,
     set_layout: vk::DescriptorSetLayout,
     uniforms_buffers: &Vec<Destructor<vk::Buffer>>,
-    material_buffers: &Vec<Destructor<vk::Buffer>>,
-    bvh_buffer: vk::Buffer,
-    spheres_buffer: vk::Buffer,
-    quads_buffer: vk::Buffer,
-    triangles_buffer: vk::Buffer,
     radiance_image_views: &[vk::ImageView],
 ) -> Result<Vec<vk::DescriptorSet>> {
     let mut layouts: Vec<vk::DescriptorSetLayout> = vec![];
@@ -692,31 +685,6 @@ pub fn create_descriptor_sets(
             .buffer(uniforms_buffers[i].get())
             .offset(0)
             .range(std::mem::size_of::<UniformBufferObject>() as u64)];
-
-        let material_buffer_info = [vk::DescriptorBufferInfo::default()
-            .buffer(material_buffers[i].get())
-            .offset(0)
-            .range((std::mem::size_of::<material::Material>() * MAX_MATERIAL_COUNT) as u64)];
-
-        let bvh_buffer_info = [vk::DescriptorBufferInfo::default()
-            .buffer(bvh_buffer)
-            .offset(0)
-            .range((std::mem::size_of::<bvh::AABB>() * MAX_OBJECT_COUNT) as u64)];
-
-        let sphere_buffer_info = [vk::DescriptorBufferInfo::default()
-            .buffer(spheres_buffer)
-            .offset(0)
-            .range((std::mem::size_of::<primitives::Sphere>() * MAX_SPHERE_COUNT) as u64)];
-
-        let quad_buffer_info = [vk::DescriptorBufferInfo::default()
-            .buffer(quads_buffer)
-            .offset(0)
-            .range((std::mem::size_of::<primitives::Quad>() * MAX_QUAD_COUNT) as u64)];
-
-        let triangle_buffer_info = [vk::DescriptorBufferInfo::default()
-            .buffer(triangles_buffer)
-            .offset(0)
-            .range((std::mem::size_of::<primitives::Triangle>() * MAX_TRIANGLE_COUNT) as u64)];
 
         // Swap radiance image views around each frame
         let image_info = [vk::DescriptorImageInfo::default()
@@ -738,41 +706,6 @@ pub fn create_descriptor_sets(
                 .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                 .descriptor_count(1)
                 .buffer_info(&buffer_info),
-            vk::WriteDescriptorSet::default()
-                .dst_set(descriptor_set)
-                .dst_binding(2)
-                .dst_array_element(0)
-                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                .descriptor_count(1)
-                .buffer_info(&material_buffer_info),
-            vk::WriteDescriptorSet::default()
-                .dst_set(descriptor_set)
-                .dst_binding(3)
-                .dst_array_element(0)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(1)
-                .buffer_info(&bvh_buffer_info),
-            vk::WriteDescriptorSet::default()
-                .dst_set(descriptor_set)
-                .dst_binding(4)
-                .dst_array_element(0)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(1)
-                .buffer_info(&sphere_buffer_info),
-            vk::WriteDescriptorSet::default()
-                .dst_set(descriptor_set)
-                .dst_binding(5)
-                .dst_array_element(0)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(1)
-                .buffer_info(&quad_buffer_info),
-            vk::WriteDescriptorSet::default()
-                .dst_set(descriptor_set)
-                .dst_binding(6)
-                .dst_array_element(0)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(1)
-                .buffer_info(&triangle_buffer_info),
         ];
 
         unsafe { device.update_descriptor_sets(&descriptor_writes, &[]) };
