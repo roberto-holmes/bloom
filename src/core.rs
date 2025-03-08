@@ -1048,56 +1048,6 @@ pub fn create_uniform_buffer<T>(
     ))
 }
 
-pub fn create_storage_buffer<T>(
-    device: &ash::Device,
-    mem_properties: vk::PhysicalDeviceMemoryProperties,
-    command_pool: vk::CommandPool,
-    submit_queue: vk::Queue,
-    data_in: &Vec<T>,
-) -> Result<(Destructor<vk::Buffer>, Destructor<vk::DeviceMemory>)> {
-    let buffer_size = (std::mem::size_of::<T>() * data_in.len()) as u64;
-
-    let (staging_buffer, staging_buffer_memory) = create_buffer(
-        device,
-        mem_properties,
-        buffer_size,
-        vk::BufferUsageFlags::TRANSFER_SRC,
-        vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
-    )?;
-
-    unsafe {
-        let data_ptr = device
-            .map_memory(
-                staging_buffer_memory.get(),
-                0,
-                buffer_size,
-                vk::MemoryMapFlags::empty(),
-            )
-            .context("Failed to map memory for the image texture buffer")?
-            as *mut T;
-
-        data_ptr.copy_from_nonoverlapping(data_in.as_ptr(), data_in.len());
-
-        device.unmap_memory(staging_buffer_memory.get());
-    }
-
-    let (buffer, buffer_memory) = create_buffer(
-        device,
-        mem_properties,
-        buffer_size,
-        vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::STORAGE_BUFFER,
-        vk::MemoryPropertyFlags::DEVICE_LOCAL,
-    )?;
-
-    // Copy data from staging buffer to our actual one
-    let command_buffer = begin_single_time_commands(device, command_pool)?;
-    let regions = [vk::BufferCopy::default().size(buffer_size)];
-    unsafe { device.cmd_copy_buffer(command_buffer, staging_buffer.get(), buffer.get(), &regions) };
-    end_single_time_command(device, command_pool, submit_queue, command_buffer)?;
-
-    Ok((buffer, buffer_memory))
-}
-
 pub fn create_descriptor_pool(device: &ash::Device) -> Result<Destructor<vk::DescriptorPool>> {
     let pool_sizes = [
         vk::DescriptorPoolSize::default()
