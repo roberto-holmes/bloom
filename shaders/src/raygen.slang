@@ -7,41 +7,8 @@ RaytracingAccelerationStructure tlas;
 RWTexture2D<float4> read_image;
 [[vk::binding(2)]]
 RWTexture2D<float4> write_image;
-
-// struct CameraUniforms {
-// 	float3 origin;
-// 	float focal_distance;
-// 	float3 u;
-// 	float vfov;
-// 	float3 v;
-// 	float dof_scale;
-// 	float3 w;
-// }
-
-// struct UBO {
-// 	CameraUniforms camera;
-// 	uint frame_num;
-// 	uint ray_frame_num;
-// 	uint width;
-// 	uint height;
-// }
-
 [[vk::binding(3)]]
 ConstantBuffer<UBO> ubo;
-// struct Payload {
-// 	[[vk::location(0)]]
-// 	float3 radiance;
-// 	float3 attenuation;
-// 	int done;
-// 	float3 ray_origin;
-// 	float3 ray_dir;
-// };
-
-// if (ubo.ray_frame_num == 10) {
-// printf("%f\n", aspect_ratio);
-// printf("%v2f : %v2u = %v2f\n", pixelCenter, LaunchSize.xy, uv_in);
-// printf("%v3f\n", sample);
-// }
 
 [shader("raygeneration")]
 void main() {
@@ -69,11 +36,9 @@ void main() {
 	Payload payload;
 	payload.origin = ubo.camera.origin + dof_offset;
 	payload.direction = normalize(direction);
-	payload.attenuation = float3(1.0);
-	payload.radiance = float3(0.0);
-	payload.done = 0;
 
-	float3 hit_value = 1.0;
+	float3 sample = 0.0;
+	float3 throughput = 1.0;
 
 	for (int depth = 0; depth < 64; depth++) {
 		RayDesc rayDesc;
@@ -83,22 +48,23 @@ void main() {
 		rayDesc.TMax = 10000.0;
 
 		TraceRay(tlas, RAY_FLAG_FORCE_OPAQUE, 0xff, 0, 0, 0, rayDesc, payload);
-		hit_value *= payload.attenuation;
+		throughput *= payload.attenuation;
+
+		if (payload.is_light) {
+			sample += throughput * payload.radiance;
+			payload.is_light = false;
+		}
 
 		if (payload.done == 1 || length(payload.attenuation) < 0.1) {
 			// if (payload.done == 1) {
 			break;
 		}
 	}
-	hit_value *= payload.radiance;
-
-	// float3 sample = (1.0, 1.0, 1.0);
-	float3 sample = (0.0, 0.0, 0.0);
+	sample += throughput * payload.radiance;
 
 	// if (frame_num > 0) {
-	// 	sample = read_image[int2(LaunchID.xy)].xyz;
+	// 	sample += read_image[int2(LaunchID.xy)].xyz;
 	// }
-	sample += hit_value;
 	write_image[int2(LaunchID.xy)] = float4(sample, 0.0);
 	// write_image[int2(LaunchID.xy)] = float4(float(frame_num) / 100, 0.0, 0.0, 0.0);
 }

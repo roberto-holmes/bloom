@@ -52,4 +52,9 @@ public void scatter(inout Payload ray, float3 pos, float3 normal, Material mater
 		// Reflect
 		reflect_ray(ray, normal, pos, material);
 	}
+
+	if (material.emissivity > rand_f32()) {
+		ray.is_light = true;
+		ray.radiance = material.emission_colour * material.emission_strength;
+	}
 }
