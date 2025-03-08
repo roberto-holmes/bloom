@@ -113,9 +113,9 @@ pub fn create_instance(entry: &ash::Entry, window: &Window) -> Result<vulkan::In
         _ => {}
     };
     let app_info = vk::ApplicationInfo::default()
-        .application_name(c"Bloom")
+        .application_name(c"Dev")
         .application_version(vk::make_api_version(0, 0, 1, 0))
-        .engine_name(c"No engine")
+        .engine_name(c"Bloom")
         .engine_version(0)
         .api_version(vk::make_api_version(0, 1, 3, 0)); // Specify that we want Vulkan version 1.3+
 
