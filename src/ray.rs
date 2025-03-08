@@ -1384,8 +1384,8 @@ fn create_spheres(
     let initial_blass_size = blass.len();
 
     let spheres = vec![
-        primitives::Sphere::new(allocator, Vec3::new(-1., 1.0, 1.), 1.0, 0)?,
-        primitives::Sphere::new(allocator, Vec3::new(1., 1.0, -1.), 1.0, 7)?,
+        primitives::Sphere::new(allocator, Vec3::new(-1., 1.0, 1.), 1.0, 8)?,
+        primitives::Sphere::new(allocator, Vec3::new(1., 1.0, -1.), 1.0, 9)?,
     ];
 
     let mut aabbs = Vec::with_capacity(spheres.len());
@@ -1404,6 +1404,8 @@ fn create_spheres(
         material::Material::new_basic(Vec3::new(1.0, 0.0, 1.0), 0.),
         material::Material::new_basic(Vec3::new(0.7, 0.7, 0.7), 0.1),
         material::Material::new_basic(Vec3::new(1.0, 0.4, 0.5), 1.0),
+        material::Material::new_clear(Vec3::new(0.5, 0.2, 1.0)),
+        material::Material::new_emissive(Vec3::new(0.9, 0.3, 0.1), 1.0),
     ];
 
     let spheres_buffer = vulkan::Buffer::new_populated(

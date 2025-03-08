@@ -16,6 +16,16 @@ public struct Payload {
 	public int done;
 	public float3 origin;
 	public float3 direction;
+	public bool is_light;
+
+	public __init() {
+		radiance = float3(0.0);
+		attenuation = float3(1.0);
+		done = false;
+		origin = float3(0.0);
+		direction = float3(0.0);
+		is_light = false;
+	}
 };
 
 public struct Material {
