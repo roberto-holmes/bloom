@@ -65,7 +65,7 @@ const VALIDATION: ValidationInfo = ValidationInfo {
 #[cfg(not(debug_assertions))]
 const VALIDATION: ValidationInfo = ValidationInfo {
     is_enable: false,
-    required_validation_layers: [""],
+    required_validation_layers: ["", ""],
 };
 
 pub fn run<T: Bloomable>(user_app: T) {
