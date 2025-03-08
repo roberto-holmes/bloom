@@ -146,6 +146,7 @@ pub struct Buffer {
     allocation: vk_mem::Allocation,
     allocation_info: vk_mem::AllocationInfo,
     size: vk::DeviceSize,
+    type_name: &'static str,
 }
 
 impl Buffer {
@@ -230,9 +231,10 @@ impl Buffer {
             allocation,
             size,
             allocation_info,
+            type_name: "generic",
         })
     }
-    pub fn populate<T>(&self, data: *const T, size: usize) -> Result<()> {
+    pub fn populate<T>(&mut self, data: *const T, size: usize) -> Result<()> {
         unsafe {
             let mut mapped_data: *mut ::std::os::raw::c_void = ::std::ptr::null_mut();
             vk_mem::ffi::vmaMapMemory(self.allocator, self.allocation.0, &mut mapped_data)
@@ -242,9 +244,10 @@ impl Buffer {
 
             vk_mem::ffi::vmaUnmapMemory(self.allocator, self.allocation.0);
         }
+        self.type_name = std::any::type_name::<T>();
         Ok(())
     }
-    pub fn populate_mapped<T>(&self, data: *const T, size: usize) -> Result<()> {
+    pub fn populate_mapped<T>(&mut self, data: *const T, size: usize) -> Result<()> {
         unsafe {
             if self.allocation_info.mapped_data.is_null() {
                 return Err(anyhow::anyhow!(
@@ -253,6 +256,7 @@ impl Buffer {
             }
             (self.allocation_info.mapped_data as *mut T).copy_from_nonoverlapping(data, size);
         }
+        self.type_name = std::any::type_name::<T>();
         Ok(())
     }
     pub fn new_populated<T>(
@@ -262,13 +266,14 @@ impl Buffer {
         data: *const T,
         data_size: usize,
     ) -> Result<Self> {
-        let buffer = Self::new_generic(
+        let mut buffer = Self::new_generic(
             allocator,
             size,
             vk_mem::MemoryUsage::Auto,
             vk_mem::AllocationCreateFlags::HOST_ACCESS_SEQUENTIAL_WRITE,
             usage,
         )?;
+        buffer.type_name = std::any::type_name::<T>();
         buffer.populate(data, data_size)?;
         Ok(buffer)
     }
@@ -290,7 +295,10 @@ impl Buffer {
 
 impl Drop for Buffer {
     fn drop(&mut self) {
-        log::trace!("Destroying VMA allocated buffer");
+        log::trace!(
+            "Destroying VMA allocated buffer for {} object",
+            self.type_name
+        );
         unsafe {
             vk_mem::ffi::vmaDestroyBuffer(self.allocator, self.buffer, self.allocation.0);
         }
