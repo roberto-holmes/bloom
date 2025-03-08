@@ -1,4 +1,5 @@
 __import rng;
+__import structs;
 
 [[vk::binding(0)]]
 RaytracingAccelerationStructure tlas;
@@ -7,34 +8,34 @@ RWTexture2D<float4> read_image;
 [[vk::binding(2)]]
 RWTexture2D<float4> write_image;
 
-struct CameraUniforms {
-	float3 origin;
-	float focal_distance;
-	float3 u;
-	float vfov;
-	float3 v;
-	float dof_scale;
-	float3 w;
-}
+// struct CameraUniforms {
+// 	float3 origin;
+// 	float focal_distance;
+// 	float3 u;
+// 	float vfov;
+// 	float3 v;
+// 	float dof_scale;
+// 	float3 w;
+// }
 
-struct UBO {
-	CameraUniforms camera;
-	uint frame_num;
-	uint ray_frame_num;
-	uint width;
-	uint height;
-}
+// struct UBO {
+// 	CameraUniforms camera;
+// 	uint frame_num;
+// 	uint ray_frame_num;
+// 	uint width;
+// 	uint height;
+// }
 
 [[vk::binding(3)]]
 ConstantBuffer<UBO> ubo;
-struct Payload {
-	[[vk::location(0)]]
-	float3 radiance;
-	float3 attenuation;
-	int done;
-	float3 ray_origin;
-	float3 ray_dir;
-};
+// struct Payload {
+// 	[[vk::location(0)]]
+// 	float3 radiance;
+// 	float3 attenuation;
+// 	int done;
+// 	float3 ray_origin;
+// 	float3 ray_dir;
+// };
 
 // if (ubo.ray_frame_num == 10) {
 // printf("%f\n", aspect_ratio);
@@ -66,8 +67,8 @@ void main() {
 	let direction = mul(camera_rotation, float3(uv, ubo.camera.focal_distance)) - dof_offset;
 
 	Payload payload;
-	payload.ray_origin = ubo.camera.origin + dof_offset;
-	payload.ray_dir = normalize(direction);
+	payload.origin = ubo.camera.origin + dof_offset;
+	payload.direction = normalize(direction);
 	payload.attenuation = float3(1.0);
 	payload.radiance = float3(0.0);
 	payload.done = 0;
@@ -76,8 +77,8 @@ void main() {
 
 	for (int depth = 0; depth < 64; depth++) {
 		RayDesc rayDesc;
-		rayDesc.Direction = payload.ray_dir;
-		rayDesc.Origin = payload.ray_origin;
+		rayDesc.Direction = payload.direction;
+		rayDesc.Origin = payload.origin;
 		rayDesc.TMin = 0.001;
 		rayDesc.TMax = 10000.0;
 

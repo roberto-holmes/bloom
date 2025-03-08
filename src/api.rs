@@ -5,7 +5,7 @@ use winit::event::WindowEvent;
 use crate::{
     camera::Camera,
     core::{self, UniformBufferObject},
-    primitives::Scene,
+    // primitives::Scene,
     vec::Vec3,
 };
 
@@ -23,7 +23,7 @@ pub trait Bloomable {
 
 pub struct BloomAPI {
     // Needs to include a way to modify all of the buffers
-    pub scene: Scene, // TODO: not make this public so we know when it has changed and don't have to update every frame
+    // pub scene: Scene, // TODO: not make this public so we know when it has changed and don't have to update every frame
     pub camera: Camera,
     pub uniform: core::UniformBufferObject,
 }
@@ -39,7 +39,7 @@ impl BloomAPI {
             DOF_SCALE,
         );
         Self {
-            scene: Scene::new(),
+            // scene: Scene::new(),
             camera,
             uniform: UniformBufferObject::new(),
         }
