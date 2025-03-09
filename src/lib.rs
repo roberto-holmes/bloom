@@ -177,7 +177,7 @@ struct VulkanApp<'a, T: Bloomable> {
     api: Arc<Mutex<BloomAPI>>,
     user_app_initialised: bool,
 
-    should_compute_die: Arc<RwLock<bool>>,
+    should_ray_die: Arc<RwLock<bool>>,
     should_transfer_die: Arc<RwLock<bool>>,
     ray_tracing_thread: Option<JoinHandle<()>>,
     transfer_thread: Option<JoinHandle<()>>,
@@ -363,9 +363,9 @@ impl<'a, T: Bloomable> VulkanApp<'a, T> {
         )?;
 
         let should_transfer_die = Arc::new(RwLock::new(false));
-        let should_compute_die = Arc::new(RwLock::new(false));
+        let should_ray_die = Arc::new(RwLock::new(false));
         let transfer_mutex = Arc::clone(&should_transfer_die);
-        let compute_mutex = Arc::clone(&should_compute_die);
+        let compute_mutex = Arc::clone(&should_ray_die);
 
         let compute_device = device.get().clone();
         let transfer_device = device.get().clone();
@@ -486,7 +486,7 @@ impl<'a, T: Bloomable> VulkanApp<'a, T> {
 
             transfer_sender,
             graphic_receiver,
-            should_compute_die,
+            should_ray_die,
             should_transfer_die,
             ray_tracing_thread,
             transfer_thread,
@@ -955,12 +955,12 @@ impl<'a, T: Bloomable> Drop for VulkanApp<'a, T> {
             log::debug!("Wating for transfer to finish");
             t.join().unwrap();
         }
-        match self.should_compute_die.write() {
+        match self.should_ray_die.write() {
             Ok(mut m) => *m = true,
-            Err(e) => log::error!("Failed to write to transfer death mutex: {e}"),
+            Err(e) => log::error!("Failed to write to ray death mutex: {e}"),
         }
         if let Some(t) = self.ray_tracing_thread.take() {
-            log::debug!("Wating for compute to finish");
+            log::debug!("Wating for ray to finish");
             t.join().unwrap();
         }
 

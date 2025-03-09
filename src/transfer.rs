@@ -185,6 +185,17 @@ impl Transfer {
     }
 }
 
+impl Drop for Transfer {
+    fn drop(&mut self) {
+        unsafe {
+            match self.device.queue_wait_idle(self.queue) {
+                Err(e) => log::error!("Transfer failed to wait for its queue to finish: {e}"),
+                _ => {}
+            }
+        }
+    }
+}
+
 fn create_commands(
     device: &ash::Device,
     queue_family_indices: structures::QueueFamilyIndices,

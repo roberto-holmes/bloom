@@ -434,6 +434,17 @@ impl<'a> Ray<'a> {
     }
 }
 
+impl<'a> Drop for Ray<'a> {
+    fn drop(&mut self) {
+        unsafe {
+            match self.device.queue_wait_idle(self.queue) {
+                Err(e) => log::error!("Ray failed to wait for its queue to finish: {e}"),
+                _ => {}
+            }
+        }
+    }
+}
+
 struct ScratchBuffer {
     pub device_address: vk::DeviceAddress,
     pub _buffer: vulkan::Buffer,
