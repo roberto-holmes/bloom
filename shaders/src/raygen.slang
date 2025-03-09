@@ -20,7 +20,7 @@ void main() {
 	float3 sample = 0.0;
 	int sample_count = 0;
 
-	for (sample_count = 0; sample_count < 10; sample_count++) {
+	for (sample_count = 0; sample_count < 16; sample_count++) {
 		init_rng(DispatchRaysIndex().xy, ubo.width, ubo.ray_frame_num + DispatchRaysIndex().x + sample_count);
 		// Start the rays from the center of each pixel with a random offset to perform antialiasing
 		const float2 pixelCenter = float2(LaunchID.xy) + float2(0.5, 0.5) + get_random_in_unit_disk().xy;
@@ -43,7 +43,7 @@ void main() {
 
 		float3 throughput = 1.0;
 
-		for (int depth = 0; depth < 8; depth++) {
+		for (int depth = 0; depth < 16; depth++) {
 			RayDesc rayDesc;
 			rayDesc.Direction = payload.direction;
 			rayDesc.Origin = payload.origin;

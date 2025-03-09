@@ -13,10 +13,14 @@ void main() {
 
 	if (object_type == ObjectType::Sphere) {
 		let s = (Sphere*)o.primitive;
-		let t = hitSphere(s);
+		let t = hit_sphere(s);
 		if (t > 0.0) {
 			ReportHit(t, object_type, nullptr);
 		}
+	} else if (object_type == ObjectType::Lentil) {
+		let l = (Lentil*)o.primitive;
+		let t = hit_lentil(l);
+		ReportHit(t, object_type, nullptr);
 	} else {
 		// Hit an unimplemented object
 		ReportHit(1000.0, object_type, nullptr);
@@ -24,8 +28,10 @@ void main() {
 }
 
 // Ray-Sphere intersection
-float hitSphere(const Sphere* sphere) {
-	let v = WorldRayOrigin() - sphere.center;
+float hit_sphere(const Sphere* sphere) {
+	let center = mul(ObjectToWorld(), float4(0.0, 0.0, 0.0, 1.0));
+
+	let v = WorldRayOrigin() - center;
 	let a = dot(WorldRayDirection(), WorldRayDirection());
 	let b = dot(v, WorldRayDirection());
 	let c = dot(v, v) - sphere.radius * sphere.radius;
@@ -44,11 +50,46 @@ float hitSphere(const Sphere* sphere) {
 	let mb = -b;
 	let t1 = (mb - sqrt_d) * recip_a;
 	let t2 = (mb + sqrt_d) * recip_a;
-	let t = t1 > 1e-2 ? t1 : t2;
-	if (t <= 1e-2) {
+	let t = t1 > EPSILON ? t1 : t2;
+	if (t <= EPSILON) {
 		// Check if the solution is for time = 0
 		return -1.0;
 	} else {
 		return t;
+	}
+}
+
+float hit_lentil(const Lentil* lentil) {
+	float3 center = mul(ObjectToWorld(), float4(0.0, 0.0, 0.0, 1.0));
+	float3 axis = normalize(mul(ObjectToWorld(), float4(1.0, 0.0, 0.0, 0.0)));
+
+	let a = dot(cross(WorldRayDirection(), axis), cross(WorldRayDirection(), axis));
+	let b = dot(cross(WorldRayDirection(), axis), cross(WorldRayOrigin() - center, axis));
+	let c = dot(cross(WorldRayOrigin() - center, axis), cross(WorldRayOrigin() - center, axis)) - lentil.radius * lentil.radius;
+
+	// Find roots for the quadratic
+	let d = b * b - a * c;
+
+	// If no roots are found, the ray does not intersect with the cylinder
+	if (d < 0.0) {
+		return -1.0;
+	}
+
+	// If there is a real solution, find the time at which it takes place
+	let sqrt_d = sqrt(d);
+	let recip_a = 1. / a;
+	let mb = -b;
+	let t1 = (mb - sqrt_d) * recip_a;
+	let t2 = (mb + sqrt_d) * recip_a;
+
+	let pos1 = WorldRayOrigin() + WorldRayDirection() * t1 - center;
+	let pos2 = WorldRayOrigin() + WorldRayDirection() * t2 - center;
+
+	if (t1 > EPSILON && abs(dot(pos1, axis)) < lentil.length) {
+		return t1;
+	} else if (t2 > EPSILON && abs(dot(pos2, axis)) < lentil.length) {
+		return t2;
+	} else {
+		return -1.0;
 	}
 }

@@ -246,3 +246,15 @@ impl Into<Vector3<f32>> for Vec3 {
         }
     }
 }
+
+impl From<cgmath::Vector3<f32>> for Vec3 {
+    fn from(v: cgmath::Vector3<f32>) -> Self {
+        Self([v.x, v.y, v.z])
+    }
+}
+
+impl From<cgmath::Vector4<f32>> for Vec3 {
+    fn from(v: cgmath::Vector4<f32>) -> Self {
+        Self([v.x, v.y, v.z])
+    }
+}

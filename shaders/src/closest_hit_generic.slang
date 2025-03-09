@@ -27,12 +27,26 @@ void main(inout Payload ray) {
 	if (HitKind() == ObjectType::Sphere) {
 		let sphere = (Sphere*)scene[InstanceID()].primitive;
 		mat = materials[sphere.material];
+		let center = mul(ObjectToWorld(), float4(0.0, 0.0, 0.0, 1.0));
 
 		// Get position on surface
 		let pos = point_on_ray(RayTCurrent());
 
 		// Get normal
-		let normal = (pos - sphere.center) / sphere.radius;
+		let normal = (pos - center) / sphere.radius;
+
+		scatter(ray, pos, normal, mat);
+	} else if (HitKind() == ObjectType::Lentil) {
+		let lentil = (Lentil*)scene[InstanceID()].primitive;
+		mat = materials[lentil.material];
+		float3 center = mul(ObjectToWorld(), float4(0.0, 0.0, 0.0, 1.0));
+		float3 axis = normalize(mul(ObjectToWorld(), float4(1.0, 0.0, 0.0, 0.0)));
+
+		// Get position on surface
+		let pos = point_on_ray(RayTCurrent());
+
+		// Get normal
+		let normal = -normalize(cross(cross((pos - center), axis), axis));
 
 		scatter(ray, pos, normal, mat);
 	} else {

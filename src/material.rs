@@ -5,7 +5,7 @@ use crate::vec::Vec3;
 pub struct Material {
     albedo: Vec3,
     alpha: f32,             // 0.0 = Transparent (Dielectric), 1.0 = Opaque
-    refraction_index: f32,  // Relative from air into material (glass is ~1.0/1.5)
+    refractive_index: f32,  // Relative from air into material (glass is ~1.0/1.5)
     smoothness: f32,        // 0.0 = Matte (Lambertian), 1.0 = Mirror (Specular)
     emissivity: f32,        // 0.0 = No emission, 1.0 = every ray will add light to the scene
     emission_strength: f32, // > 0
@@ -27,7 +27,7 @@ impl Material {
             albedo,
             smoothness,
             alpha,
-            refraction_index,
+            refractive_index: refraction_index,
             emissivity,
             emission_strength,
             emitted_colour,
@@ -85,7 +85,7 @@ impl Default for Material {
             albedo: Vec3::new(1.0, 1.0, 1.0),
             smoothness: 0.0,
             alpha: 1.0,
-            refraction_index: 1. / 1.5,
+            refractive_index: 1.4,
             emissivity: 0.0,
             emission_strength: 0.0,
             emitted_colour: Vec3::new(1., 1., 1.),

@@ -1,8 +1,11 @@
 module structs;
 
+public const static float EPSILON = 1e-2;
+
 public enum ObjectType {
 	Triangle,
-	Sphere
+	Sphere,
+	Lentil,
 }
 
 public struct Attributes {
@@ -17,6 +20,7 @@ public struct Payload {
 	public float3 origin;
 	public float3 direction;
 	public bool is_light;
+	public float refractive_index;
 
 	public __init() {
 		radiance = float3(0.0);
@@ -25,13 +29,14 @@ public struct Payload {
 		origin = float3(0.0);
 		direction = float3(0.0);
 		is_light = false;
+		refractive_index = 1.0;
 	}
 };
 
 public struct Material {
 	public float3 albedo;
 	public float alpha;
-	public float refraction_index;
+	public float refractive_index;
 	public float smoothness;
 	public float emissivity;
 	public float emission_strength;
@@ -41,7 +46,7 @@ public struct Material {
 	public __init() {
 		albedo = float3(0.5, 0.5, 0.5);
 		alpha = 1.0;
-		refraction_index = 1.0;
+		refractive_index = 1.0;
 		smoothness = 0.0;
 		emissivity = 0.0;
 		emission_strength = 0.0;
@@ -66,8 +71,19 @@ public struct Mesh {
 
 public struct Sphere {
 	public uint object_type;
-	public float3 center;
 	public float radius;
+	public uint material;
+	public uint is_selected;
+}
+
+public struct Lentil {
+	public uint object_type;
+	public float radius;
+	public float length;
+	public float curvature_a;
+	public float curvature_b;
+	public float kappa_a;
+	public float kappa_b;
 	public uint material;
 	public uint is_selected;
 }
