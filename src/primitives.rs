@@ -186,7 +186,7 @@ impl Model {
             16, 17, 18, 16, 18, 19, // Front
             20, 21, 22, 20, 22, 23, // Back
             ];
-        let material_indices = vec![0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5];
+        let material_indices = vec![8, 8, 8, 8, 2, 2, 3, 3, 4, 4, 5, 5];
 
         let (vertex_buffer, index_buffer, mat_index_buffer, primitive_data, main_buffer) =
             Model::allocate(allocator, device, &vertices, &indices, &material_indices)?;
@@ -366,6 +366,20 @@ impl Addressable for Model {
     fn get_addresses(&self, device: &ash::Device) -> PrimitiveAddresses {
         PrimitiveAddresses {
             primitive: self.get_device_address(device),
+        }
+    }
+}
+
+pub struct Scene {
+    pub models: Vec<Model>,
+    pub spheres: Vec<Sphere>,
+}
+
+impl Default for Scene {
+    fn default() -> Self {
+        Self {
+            models: vec![],
+            spheres: vec![],
         }
     }
 }

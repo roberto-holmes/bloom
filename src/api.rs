@@ -5,7 +5,7 @@ use winit::event::WindowEvent;
 use crate::{
     camera::Camera,
     core::{self, UniformBufferObject},
-    // primitives::Scene,
+    primitives,
     vec::Vec3,
 };
 
@@ -23,9 +23,10 @@ pub trait Bloomable {
 
 pub struct BloomAPI {
     // Needs to include a way to modify all of the buffers
-    // pub scene: Scene, // TODO: not make this public so we know when it has changed and don't have to update every frame
+    // pub scene: Scene,
     pub camera: Camera,
     pub uniform: core::UniformBufferObject,
+    // scene: primitives::Scene, // TODO: How do we tell when it has changed so we can rebuild/update buffers
 }
 
 impl BloomAPI {
@@ -42,9 +43,24 @@ impl BloomAPI {
             // scene: Scene::new(),
             camera,
             uniform: UniformBufferObject::new(),
+            // scene: primitives::Scene::default(),
         }
     }
     pub(crate) fn update_camera(&mut self) {
         self.uniform.update_camera(&self.camera);
     }
+    //  TODO: Figure out how we expose the Sphere object without needing to provide an allocator
+    //// Adds a sphere to the scene and returns the index of the new sphere
+    // pub fn add_sphere(&mut self, sphere: primitives::Sphere) -> usize {
+    //     self.scene.spheres.push(sphere);
+    //     self.scene.spheres.len() - 1
+    // }
+    //// Adds a sphere to the scene and returns the index of the new sphere
+    // pub fn batch_add_spheres(&mut self, sphere: [primitives::Sphere]) -> usize {
+    //     self.scene.spheres.push(sphere);
+    //     self.scene.spheres.len() - 1
+    // }
+    // pub fn remove_sphere(&mut self, spheres: usize) -> primitives::Sphere {}
+    // pub fn batch_remove_spheres(&mut self, spheres: &[usize]) -> [primitives::Sphere] {}
+    // pub fn move_sphere(&mut self, sphere: usize, dest: Vec3) {}
 }
