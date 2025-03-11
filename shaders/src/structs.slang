@@ -1,11 +1,13 @@
 module structs;
 
-public const static float EPSILON = 1e-2;
-
 public enum ObjectType {
 	Triangle,
 	Sphere,
 	Lentil,
+}
+
+public struct CustomAttributes {
+	public uint hit_type;
 }
 
 public struct Attributes {

@@ -1,6 +1,7 @@
 module scatter;
 __import rng;
 __import structs;
+__import helpers;
 
 bool is_reflective_schlick(float cosine, float refractive_index) {
 	float r0 = (1. - refractive_index) / (1. + refractive_index);
