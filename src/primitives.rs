@@ -2,10 +2,33 @@ pub mod lentil;
 pub mod model;
 pub mod sphere;
 
+use anyhow::Result;
 use ash::vk;
 
-#[cfg(not(target_arch = "wasm32"))]
 use crate::vec::Vec3;
+
+pub enum Primitive {
+    Model(model::Model),
+    Sphere(sphere::Sphere),
+    Lentil(lentil::Lentil),
+}
+
+impl Addressable for Primitive {
+    fn get_addresses(&self, device: &ash::Device) -> Result<PrimitiveAddresses> {
+        match self {
+            Primitive::Model(v) => v.get_addresses(device),
+            Primitive::Sphere(v) => v.get_addresses(device),
+            Primitive::Lentil(v) => v.get_addresses(device),
+        }
+    }
+    fn free(&mut self) {
+        match self {
+            Primitive::Model(v) => v.free(),
+            Primitive::Sphere(v) => v.free(),
+            Primitive::Lentil(v) => v.free(),
+        };
+    }
+}
 
 pub trait Extrema {
     fn get_extrema(&self) -> (Vec3, Vec3);
@@ -17,9 +40,15 @@ pub struct PrimitiveAddresses {
 }
 
 pub trait Addressable {
-    fn get_addresses(&self, device: &ash::Device) -> PrimitiveAddresses;
+    fn get_addresses(&self, device: &ash::Device) -> Result<PrimitiveAddresses>;
+    fn free(&mut self);
 }
 
+pub(crate) trait Objectionable {
+    fn allocate(&mut self, allocator: &vk_mem::Allocator, device: &ash::Device) -> Result<()>;
+}
+
+#[repr(u64)]
 #[derive(Clone, Copy, PartialEq)]
 pub enum ObjectType {
     Triangle = 0,

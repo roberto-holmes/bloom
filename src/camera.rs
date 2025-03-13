@@ -2,7 +2,10 @@ use std::f32::consts::{FRAC_PI_2, PI};
 
 use bytemuck::{Pod, Zeroable};
 
-use crate::vec::Vec3;
+use crate::{
+    api::{DOF_SCALE, FOCAL_DISTANCE, VFOV_DEG},
+    vec::Vec3,
+};
 
 #[derive(Debug, Copy, Clone, Pod, Zeroable)]
 #[repr(C)]
@@ -114,6 +117,19 @@ impl Camera {
             focal_distance,
             vfov_deg,
             dof_scale,
+        )
+    }
+}
+
+impl Default for Camera {
+    fn default() -> Self {
+        Camera::look_at(
+            Vec3::new(9., 6., 9.),
+            Vec3::new(0., 0., 0.),
+            Vec3::new(0., 1., 0.),
+            FOCAL_DISTANCE,
+            VFOV_DEG,
+            DOF_SCALE,
         )
     }
 }

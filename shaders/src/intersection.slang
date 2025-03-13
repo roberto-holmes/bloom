@@ -12,7 +12,7 @@ void main() {
 	CustomAttributes att;
 	att.hit_type = 0;
 
-	uint object_type = *(uint*)o.primitive;	 // The first word of a primitive should be its object type
+	let object_type = (uint) * (uint64_t*)o.primitive;	// The first word of a primitive should be its object type
 
 	if (object_type == ObjectType::Sphere) {
 		let s = (Sphere*)o.primitive;

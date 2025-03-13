@@ -17,7 +17,6 @@ StructuredBuffer<Material> materials;
 void main(inout Payload ray, in CustomAttributes att) {
 	init_rng(DispatchRaysIndex().xy, ubo.width, ubo.ray_frame_num + uint(length(WorldRayDirection()) * 100));
 	// Get the primitive type from RayTCurrent (The second value from the ReportHit function)
-	uint object_type = *(uint*)scene[InstanceID()].primitive;
 
 	Material mat;
 

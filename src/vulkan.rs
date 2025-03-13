@@ -140,6 +140,7 @@ impl Drop for Swapchain {
     }
 }
 
+#[derive(Debug)]
 pub struct Buffer {
     allocator: vk_mem::ffi::VmaAllocator,
     buffer: vk::Buffer,
@@ -304,6 +305,8 @@ impl Drop for Buffer {
         }
     }
 }
+
+unsafe impl Send for Buffer {}
 
 pub struct Image<'a> {
     device: vk::Device,

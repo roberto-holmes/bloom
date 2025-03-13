@@ -1,19 +1,21 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use ash::vk;
 
 use crate::{vec::Vec3, vulkan};
 
-use super::{Addressable, ObjectType, PrimitiveAddresses};
+use super::{Addressable, ObjectType, Objectionable, PrimitiveAddresses};
 
 #[repr(C)]
+// #[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(Debug)]
 pub struct MeshData {
-    pub object_type: u32,
+    pub object_type: u64,
     pub vertices: vk::DeviceAddress,
     pub indices: vk::DeviceAddress,
     pub material_indices: vk::DeviceAddress,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Hash)]
 pub struct Vertex {
     _pos: Vec3,
     _pad1: u32,
@@ -32,23 +34,32 @@ impl Vertex {
     }
 }
 
+#[derive(Debug)]
 pub struct Model {
     pub vertices: Vec<Vertex>,
     pub indices: Vec<u32>,
     pub material_indices: Vec<u32>,
-    // pub vertex_count: u32, // Total number of vertices that make up this model
-    // pub index_count: u32,
-    // pub mesh: Mesh,
-    pub vertex_buffer: vulkan::Buffer, // Buffer containing all the vertices that make up the object
-    pub index_buffer: vulkan::Buffer,  // How to connect up the vertices into triangles
-    pub mat_index_buffer: vulkan::Buffer, // What material each triangle maps to
-    // pub materials_buffer: vulkan::Buffer, // TODO: Make the materials stored by the scene, not each object
-    pub primitive_data: MeshData,
-    main_buffer: vulkan::Buffer,
+    pub vertex_buffer: Option<vulkan::Buffer>, // Buffer containing all the vertices that make up the object
+    pub index_buffer: Option<vulkan::Buffer>,  // How to connect up the vertices into triangles
+    pub mat_index_buffer: Option<vulkan::Buffer>, // What material each triangle maps to
+    pub primitive_data: Option<MeshData>,
+    main_buffer: Option<vulkan::Buffer>,
 }
 
 impl Model {
-    pub fn new_cube(allocator: &vk_mem::Allocator, device: &ash::Device) -> Result<Self> {
+    pub fn new(vertices: Vec<Vertex>, indices: Vec<u32>, material_indices: Vec<u32>) -> Self {
+        Self {
+            vertices,
+            indices,
+            material_indices,
+            vertex_buffer: None,
+            index_buffer: None,
+            mat_index_buffer: None,
+            primitive_data: None,
+            main_buffer: None,
+        }
+    }
+    pub fn new_cube() -> Result<Self> {
         #[rustfmt::skip]
         let vertices = vec![
             Vertex::new(Vec3([ 0.5,  0.5,  0.5]), Vec3([ 0.0,  1.0,  0.0])),    // Top
@@ -85,23 +96,22 @@ impl Model {
             16, 17, 18, 16, 18, 19, // Front
             20, 21, 22, 20, 22, 23, // Back
             ];
+        // let material_indices = vec![0; 12];
+        // let material_indices = vec![0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5];
         let material_indices = vec![8, 8, 8, 8, 2, 2, 3, 3, 4, 4, 5, 5];
-
-        let (vertex_buffer, index_buffer, mat_index_buffer, primitive_data, main_buffer) =
-            Model::allocate(allocator, device, &vertices, &indices, &material_indices)?;
 
         Ok(Self {
             vertices,
             indices,
             material_indices,
-            primitive_data,
-            main_buffer,
-            vertex_buffer,
-            index_buffer,
-            mat_index_buffer,
+            primitive_data: None,
+            main_buffer: None,
+            vertex_buffer: None,
+            index_buffer: None,
+            mat_index_buffer: None,
         })
     }
-    pub fn new_mirror(allocator: &vk_mem::Allocator, device: &ash::Device) -> Result<Self> {
+    pub fn new_mirror() -> Result<Self> {
         #[rustfmt::skip]
         let vertices = vec![
             Vertex::new(Vec3([ 0.5,  0.5,  0.5]), Vec3([ 0.0,  1.0,  0.0])),    // Top
@@ -140,21 +150,18 @@ impl Model {
             ];
         let material_indices = vec![7; 12];
 
-        let (vertex_buffer, index_buffer, mat_index_buffer, primitive_data, main_buffer) =
-            Model::allocate(allocator, device, &vertices, &indices, &material_indices)?;
-
         Ok(Self {
             vertices,
             indices,
             material_indices,
-            primitive_data,
-            main_buffer,
-            vertex_buffer,
-            index_buffer,
-            mat_index_buffer,
+            primitive_data: None,
+            main_buffer: None,
+            vertex_buffer: None,
+            index_buffer: None,
+            mat_index_buffer: None,
         })
     }
-    pub fn new_plane(allocator: &vk_mem::Allocator, device: &ash::Device) -> Result<Self> {
+    pub fn new_plane() -> Result<Self> {
         #[rustfmt::skip]
        let vertices= vec![
             Vertex::new(Vec3([ 1.0, 0.0,  1.0]), Vec3([0.0, 1.0, 0.0])),
@@ -168,36 +175,32 @@ impl Model {
         ];
         let material_indices = vec![6, 6];
 
-        let (vertex_buffer, index_buffer, mat_index_buffer, primitive_data, main_buffer) =
-            Model::allocate(allocator, device, &vertices, &indices, &material_indices)?;
-
         Ok(Self {
             vertices,
             indices,
             material_indices,
-            primitive_data,
-            main_buffer,
-            vertex_buffer,
-            index_buffer,
-            mat_index_buffer,
+            primitive_data: None,
+            main_buffer: None,
+            vertex_buffer: None,
+            index_buffer: None,
+            mat_index_buffer: None,
         })
     }
-    fn allocate(
-        allocator: &vk_mem::Allocator,
-        device: &ash::Device,
-        vertices: &Vec<Vertex>,
-        indices: &Vec<u32>,
-        material_indices: &Vec<u32>,
-    ) -> Result<(
-        vulkan::Buffer, // Vertices
-        vulkan::Buffer, // Indices
-        vulkan::Buffer, // Material Indices
-        MeshData,
-        vulkan::Buffer,
-    )> {
-        let vertex_buffer_size = vertices.len() * size_of::<Vertex>();
-        let index_buffer_size = indices.len() * size_of::<u32>();
-        let mat_index_buffer_size = material_indices.len() * size_of::<i32>();
+    pub fn get_device_address(&self, device: &ash::Device) -> Result<vk::DeviceAddress> {
+        match &self.main_buffer {
+            Some(v) => Ok(v.get_device_address(device)),
+            None => Err(anyhow!(
+                "Tried to get address of a model that hadn't been allocated"
+            )),
+        }
+    }
+}
+
+impl Objectionable for Model {
+    fn allocate(&mut self, allocator: &vk_mem::Allocator, device: &ash::Device) -> Result<()> {
+        let vertex_buffer_size = self.vertices.len() * size_of::<Vertex>();
+        let index_buffer_size = self.indices.len() * size_of::<u32>();
+        let mat_index_buffer_size = self.material_indices.len() * size_of::<i32>();
 
         // let max_material_index = 1;
         // TODO: Make sure material indices never exceed the number of available materials?
@@ -206,65 +209,75 @@ impl Model {
         // }
 
         // TODO: Add a staging buffer so these buffers can live on the GPU
-        let vertex_buffer = vulkan::Buffer::new_populated(
+        self.vertex_buffer = Some(vulkan::Buffer::new_populated(
             allocator,
             vertex_buffer_size as vk::DeviceSize,
             vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
                 | vk::BufferUsageFlags::STORAGE_BUFFER
                 | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR,
-            vertices.as_ptr(),
-            vertices.len(),
-        )?;
-        let index_buffer = vulkan::Buffer::new_populated(
+            self.vertices.as_ptr(),
+            self.vertices.len(),
+        )?);
+        self.index_buffer = Some(vulkan::Buffer::new_populated(
             allocator,
             index_buffer_size as vk::DeviceSize,
             vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
                 | vk::BufferUsageFlags::STORAGE_BUFFER
                 | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR,
-            indices.as_ptr(),
-            indices.len(),
-        )?;
-        let mat_index_buffer = vulkan::Buffer::new_populated(
+            self.indices.as_ptr(),
+            self.indices.len(),
+        )?);
+        // log::debug!("Cube materials: {:?}", self.material_indices);
+        self.mat_index_buffer = Some(vulkan::Buffer::new_populated(
             allocator,
             mat_index_buffer_size as vk::DeviceSize,
             vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS | vk::BufferUsageFlags::STORAGE_BUFFER,
-            material_indices.as_ptr(),
-            material_indices.len(),
-        )?;
+            self.material_indices.as_ptr(),
+            self.material_indices.len(),
+        )?);
 
-        let object_type = ObjectType::Triangle as u32;
-        let addresses = MeshData {
-            object_type,
-            vertices: vertex_buffer.get_device_address(device),
-            indices: index_buffer.get_device_address(device),
-            material_indices: mat_index_buffer.get_device_address(device),
-        };
+        self.primitive_data = Some(MeshData {
+            object_type: ObjectType::Triangle as _,
+            vertices: self
+                .vertex_buffer
+                .as_ref()
+                .unwrap()
+                .get_device_address(device),
+            indices: self
+                .index_buffer
+                .as_ref()
+                .unwrap()
+                .get_device_address(device),
+            material_indices: self
+                .mat_index_buffer
+                .as_ref()
+                .unwrap()
+                .get_device_address(device),
+        });
 
-        let main_buffer = vulkan::Buffer::new_populated(
+        self.main_buffer = Some(vulkan::Buffer::new_populated(
             allocator,
             size_of::<MeshData>() as u64,
             vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-            &addresses,
+            self.primitive_data.as_ref().unwrap(),
             1,
-        )?;
+        )?);
 
-        Ok((
-            vertex_buffer,
-            index_buffer,
-            mat_index_buffer,
-            addresses,
-            main_buffer,
-        ))
-    }
-    pub fn get_device_address(&self, device: &ash::Device) -> vk::DeviceAddress {
-        self.main_buffer.get_device_address(device)
+        Ok(())
     }
 }
 
 impl Addressable for Model {
-    fn get_addresses(&self, device: &ash::Device) -> PrimitiveAddresses {
-        PrimitiveAddresses {
-            primitive: self.get_device_address(device),
-        }
+    fn get_addresses(&self, device: &ash::Device) -> Result<PrimitiveAddresses> {
+        Ok(PrimitiveAddresses {
+            primitive: self.get_device_address(device)?,
+        })
+    }
+    fn free(&mut self) {
+        self.vertex_buffer = None;
+        self.index_buffer = None;
+        self.mat_index_buffer = None;
+        self.primitive_data = None;
+        self.main_buffer = None;
     }
 }

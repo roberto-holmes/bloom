@@ -1,14 +1,15 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use ash::vk;
+use cgmath::Matrix;
 
 use crate::{vec::Vec3, vulkan};
 
-use super::{Addressable, Extrema, ObjectType, PrimitiveAddresses};
+use super::{Addressable, Extrema, ObjectType, Objectionable, PrimitiveAddresses};
 
 #[repr(C)]
 /// Describe a cylindrical aspherical lens with two lens surface profiles
 pub struct LentilData {
-    pub object_type: u32,
+    pub object_type: u64,
     // pub center: Vec3,
     pub radius: f32,
     pub length: f32, // Direction and magnitude of longitudinal axis
@@ -23,7 +24,7 @@ pub struct LentilData {
 impl LentilData {
     fn new(radius: f32, length: f32, material: u32, is_selected: bool) -> Self {
         Self {
-            object_type: ObjectType::Lentil as u32,
+            object_type: ObjectType::Lentil as _,
             radius,
             length,
             curvature_a: 1.5,
@@ -37,70 +38,55 @@ impl LentilData {
 }
 
 pub struct Lentil {
-    pub transformation: cgmath::Matrix4<f32>,
     data: LentilData,
-    data_buffer: vulkan::Buffer,
+    data_buffer: Option<vulkan::Buffer>,
 }
 
 impl Lentil {
-    pub fn new(
-        allocator: &vk_mem::Allocator,
-        radius: f32,
-        length: f32,
-        transformation: cgmath::Matrix4<f32>,
-        material: u32,
-    ) -> Result<Self> {
+    pub fn new(radius: f32, length: f32, material: u32) -> Result<Self> {
         let data = LentilData::new(radius, length, material, false);
         // TODO: Check that the given values are valid (r is less than r_max)
-        let data_buffer = vulkan::Buffer::new_populated(
-            allocator,
-            size_of::<LentilData>() as u64,
-            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-            &data,
-            1,
-        )?;
 
         Ok(Self {
-            transformation,
             data,
-            data_buffer,
+            data_buffer: None,
         })
     }
 }
 
 impl Extrema for Lentil {
     fn get_extrema(&self) -> (Vec3, Vec3) {
-        // let center = Vec3::from(
-        //     self.transformation
-        //         * cgmath::Vector4 {
-        //             x: 0.0,
-        //             y: 0.0,
-        //             z: 0.0,
-        //             w: 1.0,
-        //         },
-        // );
-        // let axial = Vec3::from(
-        //     self.transformation
-        //         * cgmath::Vector4 {
-        //             x: self.data.length,
-        //             y: 0.0,
-        //             z: 0.0,
-        //             w: 1.0,
-        //         },
-        // );
-        let axial = Vec3([self.data.length, 0.0, 0.0]);
-        let negative = -axial;
-        let min = axial.min_extrema(&negative) - Vec3::all(self.data.radius);
-        let max = axial.max_extrema(&negative) + Vec3::all(self.data.radius);
+        // An AABB that can fit the lentil in any orientation
+        let min = Vec3::all(-self.data.length) - Vec3::all(self.data.radius);
+        let max = Vec3::all(self.data.length) + Vec3::all(self.data.radius);
         // TODO: Account for lenses that stick out
         (min, max)
     }
 }
 
 impl Addressable for Lentil {
-    fn get_addresses(&self, device: &ash::Device) -> PrimitiveAddresses {
-        PrimitiveAddresses {
-            primitive: self.data_buffer.get_device_address(device),
+    fn get_addresses(&self, device: &ash::Device) -> Result<PrimitiveAddresses> {
+        match &self.data_buffer {
+            Some(b) => Ok(PrimitiveAddresses {
+                primitive: b.get_device_address(device),
+            }),
+            None => Err(anyhow!("Lentil does not have a buffer allocated")),
         }
+    }
+    fn free(&mut self) {
+        self.data_buffer = None;
+    }
+}
+
+impl Objectionable for Lentil {
+    fn allocate(&mut self, allocator: &vk_mem::Allocator, _device: &ash::Device) -> Result<()> {
+        self.data_buffer = Some(vulkan::Buffer::new_populated(
+            allocator,
+            size_of::<LentilData>() as u64,
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+            &self.data,
+            1,
+        )?);
+        Ok(())
     }
 }

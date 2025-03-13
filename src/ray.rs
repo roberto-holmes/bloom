@@ -1,21 +1,20 @@
+use std::collections::HashMap;
 use std::ffi::CString;
 use std::path::Path;
 use std::sync::{mpsc, Arc, Mutex, RwLock};
 
 use anyhow::{anyhow, Result};
 use ash::{vk, RawPtr};
-use cgmath::{self, SquareMatrix};
 use vk_mem::{self};
 
 use crate::api::BloomAPI;
 use crate::core::UniformBufferObject;
-use crate::primitives::Addressable;
-use crate::vec::Vec3;
+use crate::primitives::{Addressable, Extrema, ObjectType, Objectionable, Primitive, AABB};
 use crate::vulkan::Destructor;
 use crate::{core, material, primitives, structures, tools, vulkan, MAX_FRAMES_IN_FLIGHT};
 
 pub fn thread(
-    device: ash::Device,
+        device: ash::Device,
 
     instance: ash::Instance,
     physical_device: vk::PhysicalDevice,
@@ -203,15 +202,9 @@ struct Ray<'a> {
     _descriptor_pool: Destructor<vk::DescriptorPool>,
     descriptor_sets: [vk::DescriptorSet; 2],
 
-    _spheres: Vec<primitives::sphere::Sphere>,
-    _models: Vec<primitives::model::Model>,
-    _lentils: Vec<primitives::lentil::Lentil>,
-
-    _lentils_buffer: vulkan::Buffer,
-    _spheres_buffer: vulkan::Buffer,
+    obj_id_location_map:    HashMap<u64, usize>,
     _materials_buffer: vulkan::Buffer,
-    _sphere_aabbs_buffers: Vec<vulkan::Buffer>,
-    _lentil_aabbs_buffers: Vec<vulkan::Buffer>,
+    _aabbs_buffers: Vec<vulkan::Buffer>,
 
     _buffer_references: vulkan::Buffer,
     _blass: Vec<AccelerationStructure>,
@@ -254,44 +247,42 @@ impl<'a> Ray<'a> {
             )?,
         ];
 
-        let mut blass = vec![];
-        let mut blas_instances = vec![];
-        let mut primitive_addresses = vec![];
 
-        let materials_buffer = create_materials(&allocator)?;
+        let materials_buffer = create_materials(&allocator, &api)?;
 
-        let (lentils, lentils_buffer, lentil_aabbs_buffers) = create_lentils(
+
+            let (obj_id_location_map,
+            blass, blas_instances, primitive_addresses,
+             aabbs_buffers) = create_blas(
             &allocator,
             &device,
             &as_device,
             command_pool.get(),
             queue,
-            &mut blass,
-            &mut blas_instances,
-            &mut primitive_addresses,
+            &api
         )?;
 
-        let (spheres, spheres_buffer, sphere_aabbs_buffers) = create_spheres(
-            &allocator,
-            &device,
-            &as_device,
-            command_pool.get(),
-            queue,
-            &mut blass,
-            &mut blas_instances,
-            &mut primitive_addresses,
-        )?;
+        // let (spheres, spheres_buffer, sphere_aabbs_buffers) = create_spheres(
+        //     &allocator,
+        //     &device,
+        //     &as_device,
+        //     command_pool.get(),
+        //     queue,
+        //     &mut blass,
+        //     &mut blas_instances,
+        //     &mut primitive_addresses,
+        // )?;
 
-        let models = create_cubes(
-            &allocator,
-            &device,
-            &as_device,
-            command_pool.get(),
-            queue,
-            &mut blass,
-            &mut blas_instances,
-            &mut primitive_addresses,
-        )?;
+        // let models = create_cubes(
+        //     &allocator,
+        //     &device,
+        //     &as_device,
+        //     command_pool.get(),
+        //     queue,
+        //     &mut blass,
+        //     &mut blas_instances,
+        //     &mut primitive_addresses,
+        // )?;
 
         // Get a reference to where all the parts of each model are on the GPU
         let buffer_references = create_buffer_references(&allocator, &primitive_addresses)?;
@@ -378,14 +369,9 @@ impl<'a> Ray<'a> {
             _top_level_as: top_level_as,
             _buffer_references: buffer_references,
             _blass: blass,
-            _spheres_buffer: spheres_buffer,
             _materials_buffer: materials_buffer,
-            _sphere_aabbs_buffers: sphere_aabbs_buffers,
-            _lentil_aabbs_buffers: lentil_aabbs_buffers,
-            _spheres: spheres,
-            _models: models,
-            _lentils: lentils,
-            _lentils_buffer: lentils_buffer,
+            _aabbs_buffers: aabbs_buffers,
+            obj_id_location_map,
         })
     }
     pub fn need_resize(&self, width: u32, height: u32, frame_index: usize) -> bool {
@@ -455,6 +441,11 @@ impl<'a> Ray<'a> {
 
 impl<'a> Drop for Ray<'a> {
     fn drop(&mut self) {
+        if let Ok(api) = &mut self.api.lock(){
+for obj in api.scene.primitives.iter_mut(){
+obj.1.free();
+}
+        }
         unsafe {
             match self.device.queue_wait_idle(self.queue) {
                 Err(e) => log::error!("Ray failed to wait for its queue to finish: {e}"),
@@ -588,10 +579,10 @@ fn create_bottom_level_acceleration_structure(
             let obj = obj.unwrap();
 
             let vertex_buffer_device_address = vk::DeviceOrHostAddressConstKHR {
-                device_address: obj.primitive_data.vertices,
+                device_address: obj.primitive_data.as_ref().unwrap().vertices,
             };
             let index_buffer_device_address = vk::DeviceOrHostAddressConstKHR {
-                device_address: obj.primitive_data.indices,
+                device_address: obj.primitive_data.as_ref().unwrap().indices,
             };
             let transform_buffer_device_address = vk::DeviceOrHostAddressConstKHR {
                 device_address: get_buffer_device_address(device, transform_buffer.get()),
@@ -1387,6 +1378,7 @@ fn create_buffer_references(
     allocator: &vk_mem::Allocator,
     data: &Vec<primitives::PrimitiveAddresses>,
 ) -> Result<vulkan::Buffer> {
+    log::trace!("Creating buffer references");
     vulkan::Buffer::new_populated(
         allocator,
         (data.len() * size_of::<primitives::PrimitiveAddresses>()) as u64,
@@ -1396,264 +1388,365 @@ fn create_buffer_references(
     )
 }
 
-fn create_materials(allocator: &vk_mem::Allocator) -> Result<vulkan::Buffer> {
-    let materials = vec![
-        material::Material::new_basic(Vec3::new(1.0, 0.0, 0.0), 0.),
-        material::Material::new_basic(Vec3::new(0.0, 1.0, 0.0), 0.),
-        material::Material::new_basic(Vec3::new(0.0, 0.0, 1.0), 0.),
-        material::Material::new_basic(Vec3::new(1.0, 1.0, 0.0), 0.),
-        material::Material::new_basic(Vec3::new(0.0, 1.0, 1.0), 0.),
-        material::Material::new_basic(Vec3::new(1.0, 0.0, 1.0), 0.),
-        material::Material::new_basic(Vec3::new(0.7, 0.7, 0.7), 0.1),
-        material::Material::new_basic(Vec3::new(1.0, 1.0, 0.9), 1.0),
-        material::Material::new_clear(Vec3::new(0.9, 1.0, 1.0)),
-        material::Material::new_emissive(Vec3::new(0.9, 0.3, 0.1), 1.0),
-    ];
+fn create_materials(allocator: &vk_mem::Allocator, api: &Arc<Mutex<BloomAPI>>) -> Result<vulkan::Buffer> {
+    log::trace!("Creating materials");
 
-    let material_buffer = vulkan::Buffer::new_populated(
-        allocator,
-        (materials.len() * size_of::<material::Material>()) as vk::DeviceSize,
-        vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS | vk::BufferUsageFlags::STORAGE_BUFFER,
-        materials.as_ptr(),
-        materials.len(),
-    )?;
+    let  materials =& api
+    .lock()
+    .expect("Failed to lock api mutex when generating AABBs")
+    .scene.materials;
+        
+        let material_buffer = vulkan::Buffer::new_populated(
+            allocator,
+            (materials.len() * size_of::<material::Material>()) as vk::DeviceSize,
+            vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS | vk::BufferUsageFlags::STORAGE_BUFFER,
+            materials.as_ptr(),
+            materials.len(),
+        )?;
+        log::trace!("Materials created");
     Ok(material_buffer)
 }
 
-fn create_spheres(
+// fn create_spheres(
+//     allocator: &vk_mem::Allocator,
+//     device: &ash::Device,
+//     as_device: &ash::khr::acceleration_structure::Device,
+//     command_pool: vk::CommandPool,
+//     queue: vk::Queue,
+//     blass: &mut Vec<AccelerationStructure>,
+//     blas_instances: &mut Vec<vk::AccelerationStructureInstanceKHR>,
+//     primitive_addresses: &mut Vec<primitives::PrimitiveAddresses>,
+// ) -> Result<(
+//     Vec<primitives::sphere::Sphere>,
+//     vulkan::Buffer,      // Spheres
+//     Vec<vulkan::Buffer>, // AABBs
+// )> {
+//     let initial_blass_size = blass.len();
+
+//     let spheres: Vec<primitives::sphere::Sphere> = vec![
+//         primitives::sphere::Sphere::new(
+//             allocator,
+//             1.0,
+//             cgmath::Matrix4::from_translation(cgmath::Vector3 {
+//                 x: -1.0,
+//                 y: 5.0,
+//                 z: 3.0,
+//             }),
+//             8,
+//         )?,
+//         primitives::sphere::Sphere::new(
+//             allocator,
+//             1.0,
+//             cgmath::Matrix4::from_translation(cgmath::Vector3 {
+//                 x: 1.0,
+//                 y: 5.0,
+//                 z: -3.0,
+//             }),
+//             9,
+//         )?,
+//     ];
+
+//     let mut aabbs = Vec::with_capacity(spheres.len());
+//     for s in &spheres {
+//         log::debug!("Adding primitive address");
+//         aabbs.push(primitives::AABB::new(s));
+//         primitive_addresses.push(s.get_addresses(device));
+//     }
+
+//     let spheres_buffer = vulkan::Buffer::new_populated(
+//         allocator,
+//         (spheres.len() * size_of::<primitives::sphere::Sphere>()) as vk::DeviceSize,
+//         vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS | vk::BufferUsageFlags::STORAGE_BUFFER,
+//         spheres.as_ptr(),
+//         spheres.len(),
+//     )?;
+
+//     let mut aabbs_buffers = Vec::with_capacity(spheres.len());
+//     // Create a Bottom Level Acceleration structure for each model
+//     for (i, a) in aabbs.iter().enumerate() {
+//         aabbs_buffers.push(vulkan::Buffer::new_populated(
+//             allocator,
+//             size_of::<primitives::AABB>() as vk::DeviceSize,
+//             vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
+//                 | vk::BufferUsageFlags::STORAGE_BUFFER
+//                 | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR,
+//             a,
+//             1,
+//         )?);
+//         blass.push(create_bottom_level_acceleration_structure(
+//             device,
+//             allocator,
+//             as_device,
+//             command_pool,
+//             queue,
+//             vk::GeometryTypeKHR::AABBS,
+//             None,
+//             Some(&aabbs_buffers[i]),
+//             Some(1),
+//         )?);
+//         blas_instances.push(create_blas_instance(
+//             as_device,
+//             blass,
+//             initial_blass_size + i,
+//             spheres[i].transformation,
+//             primitives::ObjectType::Sphere,
+//         )?);
+//     }
+
+//     Ok((spheres, spheres_buffer, aabbs_buffers))
+// }
+
+fn add_aabb<T: Addressable + Extrema>(
     allocator: &vk_mem::Allocator,
     device: &ash::Device,
     as_device: &ash::khr::acceleration_structure::Device,
     command_pool: vk::CommandPool,
     queue: vk::Queue,
     blass: &mut Vec<AccelerationStructure>,
-    blas_instances: &mut Vec<vk::AccelerationStructureInstanceKHR>,
     primitive_addresses: &mut Vec<primitives::PrimitiveAddresses>,
+    aabbs: &mut Vec<AABB>,
+    aabbs_buffers: &mut Vec<vulkan::Buffer>,
+    obj_id: u64,
+    obj: &T,
+    obj_location: &mut HashMap<u64, usize>,
+) -> Result<()> {
+    aabbs.push(primitives::AABB::new(obj));
+    primitive_addresses.push(obj.get_addresses(device)?);
+    aabbs_buffers.push(vulkan::Buffer::new_populated(
+        allocator,
+        size_of::<primitives::AABB>() as vk::DeviceSize,
+        vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
+            | vk::BufferUsageFlags::STORAGE_BUFFER
+            | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR,
+        aabbs.last().unwrap(),
+        1,
+    )?);
+    obj_location.insert(obj_id, blass.len());
+    blass.push(create_bottom_level_acceleration_structure(
+        device,
+        allocator,
+        as_device,
+        command_pool,
+        queue,
+        vk::GeometryTypeKHR::AABBS,
+        None,
+        Some(&aabbs_buffers.last().unwrap()),
+        Some(1),
+    )?);
+    Ok(())
+}
+
+fn create_blas(
+    allocator: &vk_mem::Allocator,
+    device: &ash::Device,
+    as_device: &ash::khr::acceleration_structure::Device,
+    command_pool: vk::CommandPool,
+    queue: vk::Queue,
+    api: &Arc<Mutex<BloomAPI>>,
 ) -> Result<(
-    Vec<primitives::sphere::Sphere>,
-    vulkan::Buffer,      // Spheres
+    HashMap<u64, usize>,
+    Vec<AccelerationStructure>,
+    Vec<vk::AccelerationStructureInstanceKHR>,
+    Vec<primitives::PrimitiveAddresses>,
     Vec<vulkan::Buffer>, // AABBs
 )> {
-    let initial_blass_size = blass.len();
+    log::trace!("Creating BLASs and objects");
+    // #[rustfmt::skip]
+    // let transformation = cgmath::Matrix4::from_translation(cgmath::Vector3 {
+    //     x: 2.0,
+    //     y: 0.0,
+    //     z: -3.0,
+    // }) * cgmath::Matrix4::new(
+    //     0.9182397, 0.3893702,-0.0722967, 0.0,
+    //    -0.1784285, 0.5697361, 0.8022245, 0.0,
+    //    -0.3535523,-0.7237346, 0.5926290 , 0.0,
+    //     0.0      , 0.0      , 0.0      , 1.0,
+    // );
 
-    let spheres = vec![
-        primitives::sphere::Sphere::new(
-            allocator,
-            1.0,
-            cgmath::Matrix4::from_translation(cgmath::Vector3 {
-                x: -1.0,
-                y: 1.0,
-                z: 3.0,
-            }),
-            8,
-        )?,
-        primitives::sphere::Sphere::new(
-            allocator,
-            1.0,
-            cgmath::Matrix4::from_translation(cgmath::Vector3 {
-                x: 1.0,
-                y: 1.0,
-                z: -3.0,
-            }),
-            9,
-        )?,
-    ];
+    // let lentils = vec![
+    //     primitives::lentil::Lentil::new(
+    //         allocator,
+    //         1.0,
+    //         1.0,
+    //         cgmath::Matrix4::identity(),
+    //         // cgmath::Matrix4::from_translation(cgmath::Vector3 {
+    //         //     x: 2.0,
+    //         //     y: 0.0,
+    //         //     z: 1.0,
+    //         // }),
+    //         8,
+    //     )?,
+    //     primitives::lentil::Lentil::new(allocator, 1.0, 0.5, transformation, 7)?,
+    // ];
+    
+    let mut blass = vec![];
+    let mut blas_instances = vec![];
+    let mut primitive_addresses = vec![];
 
-    let mut aabbs = Vec::with_capacity(spheres.len());
-    for s in &spheres {
-        log::debug!("Adding primitive address");
-        aabbs.push(primitives::AABB::new(s));
-        primitive_addresses.push(s.get_addresses(device));
+    let mut aabbs = vec![];
+    let mut aabbs_buffers = vec![];
+
+    // Map the IDs of objects to their position in the blass vector
+    let mut obj_location_map: HashMap<u64, usize> = HashMap::new();
+
+    let  scene =&mut api
+        .lock()
+        .expect("Failed to lock api mutex when generating AABBs")
+        .scene;
+
+        // Create objects that the instances will refer to
+    for obj in scene.primitives.iter_mut() {
+        match obj.1 {
+            primitives::Primitive::Model(o) => {
+                obj_location_map.insert(*obj.0, blass.len());
+                o.allocate(allocator, device)?;
+                log::debug!("Main: {:#02x?}", o.get_addresses(device)?);
+                log::debug!("Cube: {:#02x?}", o.primitive_data);
+                primitive_addresses.push(o.get_addresses(device)?);
+                blass.push(create_bottom_level_acceleration_structure(
+                    device,
+                    allocator,
+                    as_device,
+                    command_pool,
+                    queue,
+                    vk::GeometryTypeKHR::TRIANGLES,
+                    Some(o),
+                    None,
+                    None,
+                )?);
+            }
+            primitives::Primitive::Lentil(o) => {
+                obj_location_map.insert(*obj.0, blass.len());
+                o.allocate(allocator, device)?;
+                add_aabb(
+                    allocator,
+                    device,
+                    as_device,
+                    command_pool,
+                    queue,
+                    &mut blass,
+                    &mut primitive_addresses,
+                    &mut aabbs,
+                    &mut aabbs_buffers,
+                    *obj.0,
+                    o,
+                    &mut obj_location_map,
+                )?;
+            }
+            primitives::Primitive::Sphere(o) => {
+                obj_location_map.insert(*obj.0, blass.len());
+                o.allocate(allocator, device)?;
+                add_aabb(
+                    allocator,
+                    device,
+                    as_device,
+                    command_pool,
+                    queue,
+                    &mut blass,
+                    &mut primitive_addresses,
+                    &mut aabbs,
+                    &mut aabbs_buffers,
+                    *obj.0,
+                    o,
+                    &mut obj_location_map,
+                )?;
+            }
+        }
     }
 
-    let spheres_buffer = vulkan::Buffer::new_populated(
-        allocator,
-        (spheres.len() * size_of::<primitives::sphere::Sphere>()) as vk::DeviceSize,
-        vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS | vk::BufferUsageFlags::STORAGE_BUFFER,
-        spheres.as_ptr(),
-        spheres.len(),
-    )?;
-
-    let mut aabbs_buffers = Vec::with_capacity(spheres.len());
-    // Create a Bottom Level Acceleration structure for each model
-    for (i, a) in aabbs.iter().enumerate() {
-        aabbs_buffers.push(vulkan::Buffer::new_populated(
-            allocator,
-            size_of::<primitives::AABB>() as vk::DeviceSize,
-            vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
-                | vk::BufferUsageFlags::STORAGE_BUFFER
-                | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR,
-            a,
-            1,
-        )?);
-        blass.push(create_bottom_level_acceleration_structure(
-            device,
-            allocator,
-            as_device,
-            command_pool,
-            queue,
-            vk::GeometryTypeKHR::AABBS,
-            None,
-            Some(&aabbs_buffers[i]),
-            Some(1),
-        )?);
+    // Create the instances of objects
+    for instance in scene.instances.iter() {
+        let location_in_blas = match obj_location_map.get(&instance.1 .0) {
+            Some(v) => *v,
+            None => {
+                return Err(anyhow!(
+                    "Failed to find object {} in the blas",
+                    instance.1 .0
+                ))
+            }
+        };
+        let object_type = match scene.primitives.get(&instance.1 .0) {
+            Some(o) => match &o {
+                &Primitive::Model(_) => ObjectType::Triangle,
+                &Primitive::Sphere(_) => ObjectType::Sphere,
+                &Primitive::Lentil(_) => ObjectType::Lentil,
+            },
+            None => {
+                return Err(anyhow!(
+                    "Failed to find object {} in the scene's primitives",
+                    instance.1 .0
+                ))
+            }
+        };
+        // Create a Bottom Level Acceleration structure for each model
         blas_instances.push(create_blas_instance(
             as_device,
-            blass,
-            initial_blass_size + i,
-            spheres[i].transformation,
-            primitives::ObjectType::Sphere,
+           &mut blass,
+            location_in_blas,
+            instance.1 .1,
+            object_type,
         )?);
     }
 
-    Ok((spheres, spheres_buffer, aabbs_buffers))
+    Ok((
+        obj_location_map,
+         blass ,
+         blas_instances ,
+         primitive_addresses ,
+         aabbs_buffers))
 }
 
-fn create_lentils(
-    allocator: &vk_mem::Allocator,
-    device: &ash::Device,
-    as_device: &ash::khr::acceleration_structure::Device,
-    command_pool: vk::CommandPool,
-    queue: vk::Queue,
-    blass: &mut Vec<AccelerationStructure>,
-    blas_instances: &mut Vec<vk::AccelerationStructureInstanceKHR>,
-    primitive_addresses: &mut Vec<primitives::PrimitiveAddresses>,
-) -> Result<(
-    Vec<primitives::lentil::Lentil>,
-    vulkan::Buffer,      // Lentils
-    Vec<vulkan::Buffer>, // AABBs
-)> {
-    let initial_blass_size = blass.len();
+// fn create_cubes(
+//     allocator: &vk_mem::Allocator,
+//     device: &ash::Device,
+//     as_device: &ash::khr::acceleration_structure::Device,
+//     command_pool: vk::CommandPool,
+//     queue: vk::Queue,
+//     blass: &mut Vec<AccelerationStructure>,
+//     blas_instances: &mut Vec<vk::AccelerationStructureInstanceKHR>,
+//     primitive_addresses: &mut Vec<primitives::PrimitiveAddresses>,
+// ) -> Result<Vec<primitives::model::Model>> {
+//     let initial_blass_size = blass.len();
 
-    #[rustfmt::skip]
-    let transformation = cgmath::Matrix4::from_translation(cgmath::Vector3 {
-        x: 2.0,
-        y: 0.0,
-        z: -3.0,
-    }) * cgmath::Matrix4::new(
-        0.9182397, 0.3893702,-0.0722967, 0.0,
-       -0.1784285, 0.5697361, 0.8022245, 0.0,
-       -0.3535523,-0.7237346, 0.5926290 , 0.0,
-        0.0      , 0.0      , 0.0      , 1.0,
-    );
+//     #[rustfmt::skip]
+//     let models = vec![
+//         primitives::model::Model::new_mirror(allocator, device)?,
+//         primitives::model::Model::new_plane(allocator, device)?,
+//         primitives::model::Model::new_cube(allocator, device)?,
+//     ];
 
-    let lentils = vec![
-        primitives::lentil::Lentil::new(
-            allocator,
-            1.0,
-            1.0,
-            cgmath::Matrix4::identity(),
-            // cgmath::Matrix4::from_translation(cgmath::Vector3 {
-            //     x: 2.0,
-            //     y: 0.0,
-            //     z: 1.0,
-            // }),
-            8,
-        )?,
-        primitives::lentil::Lentil::new(allocator, 1.0, 0.5, transformation, 7)?,
-    ];
+//     primitive_addresses.reserve(primitive_addresses.len() + models.len());
 
-    let mut aabbs = Vec::with_capacity(lentils.len());
-    for s in &lentils {
-        log::debug!("Adding primitive address");
-        aabbs.push(primitives::AABB::new(s));
-        primitive_addresses.push(s.get_addresses(device));
-    }
+//     for m in &models {
+//         primitive_addresses.push(m.get_addresses(device));
+//     }
 
-    let lentils_buffer = vulkan::Buffer::new_populated(
-        allocator,
-        (lentils.len() * size_of::<primitives::sphere::Sphere>()) as vk::DeviceSize,
-        vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS | vk::BufferUsageFlags::STORAGE_BUFFER,
-        lentils.as_ptr(),
-        lentils.len(),
-    )?;
+//     // Create a Bottom Level Acceleration structure for each model
+//     for obj in &models {
+//         blass.push(create_bottom_level_acceleration_structure(
+//             device,
+//             allocator,
+//             as_device,
+//             command_pool,
+//             queue,
+//             vk::GeometryTypeKHR::TRIANGLES,
+//             Some(obj),
+//             None,
+//             None,
+//         )?);
+//     }
 
-    let mut aabbs_buffers = Vec::with_capacity(lentils.len());
-    // Create a Bottom Level Acceleration structure for each model
-    for (i, a) in aabbs.iter().enumerate() {
-        aabbs_buffers.push(vulkan::Buffer::new_populated(
-            allocator,
-            size_of::<primitives::AABB>() as vk::DeviceSize,
-            vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
-                | vk::BufferUsageFlags::STORAGE_BUFFER
-                | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR,
-            a,
-            1,
-        )?);
-        blass.push(create_bottom_level_acceleration_structure(
-            device,
-            allocator,
-            as_device,
-            command_pool,
-            queue,
-            vk::GeometryTypeKHR::AABBS,
-            None,
-            Some(&aabbs_buffers[i]),
-            Some(1),
-        )?);
-        blas_instances.push(create_blas_instance(
-            as_device,
-            blass,
-            initial_blass_size + i,
-            lentils[i].transformation,
-            primitives::ObjectType::Lentil,
-        )?);
-    }
+//     #[rustfmt::skip] let mirror_back  = cgmath::Matrix4::from_translation(cgmath::Vector3 { x: 0.0, y: 0.0, z: -7.0 }) * cgmath::Matrix4::from_nonuniform_scale(3.0, 5.0, 0.1);
+//     #[rustfmt::skip] let mirror_front = cgmath::Matrix4::from_translation(cgmath::Vector3 { x: 0.0, y: 0.0, z:  7.0 }) * cgmath::Matrix4::from_nonuniform_scale(3.0, 5.0, 0.1);
+//     #[rustfmt::skip] let floor = cgmath::Matrix4::from_translation(cgmath::Vector3 { x: 0.0, y: -1.0, z: 0.0 }) * cgmath::Matrix4::from_nonuniform_scale(1.0, 1.0, 15.0);
+//     #[rustfmt::skip] let left_cube  = cgmath::Matrix4::from_translation(cgmath::Vector3 { x: -4.0, y: 1.0, z: -2.0 });
+//     #[rustfmt::skip] let right_cube = cgmath::Matrix4::from_translation(cgmath::Vector3 { x:  4.0, y: 1.0, z: -2.0 });
 
-    Ok((lentils, lentils_buffer, aabbs_buffers))
-}
+//     #[rustfmt::skip] blas_instances.push(create_blas_instance(as_device, blass, initial_blass_size + 2, left_cube, primitives::ObjectType::Triangle)?);
+//     #[rustfmt::skip] blas_instances.push(create_blas_instance(as_device, blass, initial_blass_size + 2, right_cube, primitives::ObjectType::Triangle)?);
+//     #[rustfmt::skip] blas_instances.push(create_blas_instance(as_device, blass, initial_blass_size + 1, floor, primitives::ObjectType::Triangle)?);
+//     #[rustfmt::skip] blas_instances.push(create_blas_instance(as_device, blass, initial_blass_size + 0, mirror_back, primitives::ObjectType::Triangle)?);
+//     #[rustfmt::skip] blas_instances.push(create_blas_instance(as_device, blass, initial_blass_size + 0, mirror_front, primitives::ObjectType::Triangle)?);
 
-fn create_cubes(
-    allocator: &vk_mem::Allocator,
-    device: &ash::Device,
-    as_device: &ash::khr::acceleration_structure::Device,
-    command_pool: vk::CommandPool,
-    queue: vk::Queue,
-    blass: &mut Vec<AccelerationStructure>,
-    blas_instances: &mut Vec<vk::AccelerationStructureInstanceKHR>,
-    primitive_addresses: &mut Vec<primitives::PrimitiveAddresses>,
-) -> Result<Vec<primitives::model::Model>> {
-    let initial_blass_size = blass.len();
-
-    #[rustfmt::skip]
-    let models = vec![
-        primitives::model::Model::new_mirror(allocator, device)?,
-        primitives::model::Model::new_plane(allocator, device)?,
-        primitives::model::Model::new_cube(allocator, device)?,
-    ];
-
-    primitive_addresses.reserve(primitive_addresses.len() + models.len());
-
-    for m in &models {
-        primitive_addresses.push(m.get_addresses(device));
-    }
-
-    // Create a Bottom Level Acceleration structure for each model
-    for obj in &models {
-        blass.push(create_bottom_level_acceleration_structure(
-            device,
-            allocator,
-            as_device,
-            command_pool,
-            queue,
-            vk::GeometryTypeKHR::TRIANGLES,
-            Some(obj),
-            None,
-            None,
-        )?);
-    }
-
-    #[rustfmt::skip] let mirror_back  = cgmath::Matrix4::from_translation(cgmath::Vector3 { x: 0.0, y: 0.0, z: -7.0 }) * cgmath::Matrix4::from_nonuniform_scale(3.0, 5.0, 0.1);
-    #[rustfmt::skip] let mirror_front = cgmath::Matrix4::from_translation(cgmath::Vector3 { x: 0.0, y: 0.0, z:  7.0 }) * cgmath::Matrix4::from_nonuniform_scale(3.0, 5.0, 0.1);
-    #[rustfmt::skip] let floor = cgmath::Matrix4::from_translation(cgmath::Vector3 { x: 0.0, y: -1.0, z: 0.0 }) * cgmath::Matrix4::from_nonuniform_scale(1.0, 1.0, 15.0);
-    #[rustfmt::skip] let left_cube  = cgmath::Matrix4::from_translation(cgmath::Vector3 { x: -4.0, y: 1.0, z: -2.0 });
-    #[rustfmt::skip] let right_cube = cgmath::Matrix4::from_translation(cgmath::Vector3 { x:  4.0, y: 1.0, z: -2.0 });
-
-    #[rustfmt::skip] blas_instances.push(create_blas_instance(as_device, blass, initial_blass_size + 2, left_cube, primitives::ObjectType::Triangle)?);
-    #[rustfmt::skip] blas_instances.push(create_blas_instance(as_device, blass, initial_blass_size + 2, right_cube, primitives::ObjectType::Triangle)?);
-    #[rustfmt::skip] blas_instances.push(create_blas_instance(as_device, blass, initial_blass_size + 1, floor, primitives::ObjectType::Triangle)?);
-    #[rustfmt::skip] blas_instances.push(create_blas_instance(as_device, blass, initial_blass_size + 0, mirror_back, primitives::ObjectType::Triangle)?);
-    #[rustfmt::skip] blas_instances.push(create_blas_instance(as_device, blass, initial_blass_size + 0, mirror_front, primitives::ObjectType::Triangle)?);
-
-    Ok(models)
-}
+//     Ok(models)
+// }

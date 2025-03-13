@@ -65,21 +65,21 @@ public struct Vertex {
 }
 
 public struct Mesh {
-	public uint object_type;
+	public uint64_t object_type;
 	public Vertex* vertices;
 	public uint* indices;
 	public uint* material_indices;
 }
 
 public struct Sphere {
-	public uint object_type;
+	public uint64_t object_type;
 	public float radius;
 	public uint material;
 	public uint is_selected;
 }
 
 public struct Lentil {
-	public uint object_type;
+	public uint64_t object_type;
 	public float radius;
 	public float length;
 	public float curvature_a;
