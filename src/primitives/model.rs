@@ -6,7 +6,6 @@ use crate::{vec::Vec3, vulkan};
 use super::{Addressable, ObjectType, Objectionable, PrimitiveAddresses};
 
 #[repr(C)]
-// #[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 #[derive(Debug)]
 pub struct MeshData {
     pub object_type: u64,
@@ -15,7 +14,7 @@ pub struct MeshData {
     pub material_indices: vk::DeviceAddress,
 }
 
-#[derive(Debug, Hash)]
+#[derive(Debug)]
 pub struct Vertex {
     _pos: Vec3,
     _pad1: u32,
@@ -59,7 +58,7 @@ impl Model {
             main_buffer: None,
         }
     }
-    pub fn new_cube() -> Result<Self> {
+    pub fn new_cube(material: u32) -> Result<Self> {
         #[rustfmt::skip]
         let vertices = vec![
             Vertex::new(Vec3([ 0.5,  0.5,  0.5]), Vec3([ 0.0,  1.0,  0.0])),    // Top
@@ -96,9 +95,7 @@ impl Model {
             16, 17, 18, 16, 18, 19, // Front
             20, 21, 22, 20, 22, 23, // Back
             ];
-        // let material_indices = vec![0; 12];
-        // let material_indices = vec![0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5];
-        let material_indices = vec![8, 8, 8, 8, 2, 2, 3, 3, 4, 4, 5, 5];
+        let material_indices = vec![material; 12];
 
         Ok(Self {
             vertices,
@@ -111,7 +108,7 @@ impl Model {
             mat_index_buffer: None,
         })
     }
-    pub fn new_mirror() -> Result<Self> {
+    pub fn new_mirror(material: u32) -> Result<Self> {
         #[rustfmt::skip]
         let vertices = vec![
             Vertex::new(Vec3([ 0.5,  0.5,  0.5]), Vec3([ 0.0,  1.0,  0.0])),    // Top
@@ -148,7 +145,7 @@ impl Model {
             16, 17, 18, 16, 18, 19, // Front
             20, 21, 22, 20, 22, 23, // Back
             ];
-        let material_indices = vec![7; 12];
+        let material_indices = vec![material; 12];
 
         Ok(Self {
             vertices,
@@ -161,7 +158,7 @@ impl Model {
             mat_index_buffer: None,
         })
     }
-    pub fn new_plane() -> Result<Self> {
+    pub fn new_plane(material: u32) -> Result<Self> {
         #[rustfmt::skip]
        let vertices= vec![
             Vertex::new(Vec3([ 1.0, 0.0,  1.0]), Vec3([0.0, 1.0, 0.0])),
@@ -173,7 +170,7 @@ impl Model {
        let indices= vec![
              0,  1,  2,  1,  2,  3,
         ];
-        let material_indices = vec![6, 6];
+        let material_indices = vec![material; 2];
 
         Ok(Self {
             vertices,

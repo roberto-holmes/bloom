@@ -11,11 +11,6 @@ use bloom::primitives::Primitive;
 use bloom::vec::Vec3;
 use cgmath::Matrix4;
 use cgmath::SquareMatrix;
-// use bloom::api::DOF_SCALE;
-// use bloom::material;
-// use bloom::primitives;
-// use bloom::select;
-// use bloom::vec::Vec3;
 use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 
@@ -47,47 +42,62 @@ impl Bloomable for Demo {
         let binding = self.get_api();
         let mut api = binding.lock().unwrap();
 
-        let materials = vec![
-            material::Material::new_basic(Vec3::new(1.0, 0.0, 0.0), 0.),
-            material::Material::new_basic(Vec3::new(0.0, 1.0, 0.0), 0.),
-            material::Material::new_basic(Vec3::new(0.0, 1.0, 1.0), 0.),
-            material::Material::new_basic(Vec3::new(1.0, 1.0, 0.0), 0.),
-            material::Material::new_basic(Vec3::new(0.0, 1.0, 1.0), 0.),
-            material::Material::new_basic(Vec3::new(1.0, 0.0, 1.0), 0.),
-            material::Material::new_basic(Vec3::new(0.7, 0.7, 0.7), 0.1),
-            material::Material::new_basic(Vec3::new(1.0, 1.0, 0.9), 1.0),
-            material::Material::new_clear(Vec3::new(0.9, 1.0, 1.0)),
-            material::Material::new_emissive(Vec3::new(0.9, 0.3, 0.1), 1.0),
-        ];
-        let material_ids = api.scene.add_materials(&materials);
+        let scene = &mut api.scene;
 
-        let cube = Model::new_cube().unwrap();
-        let cube_id = api.scene.add_obj(Primitive::Model(cube));
-        let cube_instance_id = api.scene.add_instance(cube_id, Matrix4::<f32>::identity());
+        let red = scene.add_material(material::Material::new_basic(Vec3::new(1.0, 0.0, 0.0), 0.));
+        let grey = scene.add_material(material::Material::new_basic(Vec3::new(0.7, 0.7, 0.7), 0.1));
+        let glass = scene.add_material(material::Material::new_clear(Vec3::new(0.9, 1.0, 1.0)));
+        let mirror =
+            scene.add_material(material::Material::new_basic(Vec3::new(1.0, 1.0, 0.9), 1.0));
+        let light = scene.add_material(material::Material::new_emissive(
+            Vec3::new(0.9, 0.3, 0.1),
+            1.0,
+        ));
 
-        let cube_id2: u64 = api
-            .scene
-            .add_obj(Primitive::Model(Model::new_cube().unwrap()));
-        let _ = api.scene.add_instance(
-            cube_id2,
+        let cube = Model::new_cube(red).unwrap();
+        let cube_id = scene.add_obj(Primitive::Model(cube));
+
+        let plane_id = scene.add_obj(Primitive::Model(Model::new_plane(grey).unwrap()));
+        let mirror_id = scene.add_obj(Primitive::Model(Model::new_mirror(mirror).unwrap()));
+
+        let cube_instance_id = scene.add_instance(cube_id, Matrix4::<f32>::identity());
+
+        let _ = scene.add_instance(
+            cube_id,
             Matrix4::from_translation(cgmath::Vector3 {
                 x: 2.0,
                 y: 0.0,
                 z: -1.0,
             }),
         );
-        let _ = api.scene.add_instance(
-            cube_id2,
+        let _ = scene.add_instance(
+            plane_id,
             Matrix4::from_translation(cgmath::Vector3 {
-                x: -2.0,
+                x: 0.0,
+                y: -1.0,
+                z: 0.0,
+            }) * cgmath::Matrix4::from_nonuniform_scale(1.0, 1.0, 15.0),
+        );
+        let _ = scene.add_instance(
+            mirror_id,
+            Matrix4::from_translation(cgmath::Vector3 {
+                x: 0.0,
                 y: 0.0,
-                z: -1.0,
-            }),
+                z: -7.0,
+            }) * cgmath::Matrix4::from_nonuniform_scale(3.0, 5.0, 0.1),
+        );
+        let _ = scene.add_instance(
+            mirror_id,
+            Matrix4::from_translation(cgmath::Vector3 {
+                x: 0.0,
+                y: 0.0,
+                z: 7.0,
+            }) * cgmath::Matrix4::from_nonuniform_scale(3.0, 5.0, 0.1),
         );
 
-        let sphere = Sphere::new(1.0, 2).unwrap();
-        let sphere_id = api.scene.add_obj(Primitive::Sphere(sphere));
-        let sphere_instance_id = api.scene.add_instance(
+        let sphere = Sphere::new(1.0, light).unwrap();
+        let sphere_id = scene.add_obj(Primitive::Sphere(sphere));
+        let _ = scene.add_instance(
             sphere_id,
             Matrix4::from_translation(cgmath::Vector3 {
                 x: -1.0,
@@ -96,9 +106,9 @@ impl Bloomable for Demo {
             }),
         );
 
-        let lentil = Lentil::new(1.0, 1.0, 8).unwrap();
-        let lentil_id = api.scene.add_obj(Primitive::Lentil(lentil));
-        let lentil_instance_id = api.scene.add_instance(
+        let lentil = Lentil::new(1.0, 1.0, glass).unwrap();
+        let lentil_id = scene.add_obj(Primitive::Lentil(lentil));
+        let _ = scene.add_instance(
             lentil_id,
             Matrix4::from_translation(cgmath::Vector3 {
                 x: 2.0,
@@ -106,13 +116,27 @@ impl Bloomable for Demo {
                 z: 1.0,
             }),
         );
-        let lentil_instance_id2 = api.scene.add_instance(
+        let _ = scene.add_instance(
             lentil_id,
             Matrix4::from_translation(cgmath::Vector3 {
                 x: -2.0,
                 y: 0.0,
                 z: 1.0,
             }),
+        );
+        #[rustfmt::skip]
+        let _ = scene.add_instance(
+            lentil_id,
+            Matrix4::from_translation(cgmath::Vector3 {
+                    x: 2.0,
+                    y: 0.0,
+                    z: -3.0,
+                }) * cgmath::Matrix4::new(
+                    0.9182397, 0.3893702,-0.0722967, 0.0,
+                   -0.1784285, 0.5697361, 0.8022245, 0.0,
+                   -0.3535523,-0.7237346, 0.5926290 , 0.0,
+                    0.0      , 0.0      , 0.0      , 1.0,
+                ),
         );
     }
     fn resize(&mut self, _width: u32, _height: u32) {}

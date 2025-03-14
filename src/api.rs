@@ -12,7 +12,7 @@ use crate::{
     camera::Camera,
     core::{self, UniformBufferObject},
     material,
-    primitives::{self, Primitive},
+    primitives::Primitive,
     vec::Vec3,
 };
 
@@ -33,7 +33,6 @@ pub struct BloomAPI {
     pub scene: Scene,
     pub camera: Camera,
     pub uniform: core::UniformBufferObject,
-    // scene: primitives::Scene, // TODO: How do we tell when it has changed so we can rebuild/update buffers
 }
 
 impl BloomAPI {
@@ -50,7 +49,6 @@ impl BloomAPI {
             scene: Scene::default(),
             camera,
             uniform: UniformBufferObject::new(),
-            // scene: primitives::Scene::default(),
         }
     }
     pub(crate) fn update_camera(&mut self) {
@@ -69,15 +67,15 @@ pub struct Scene {
 }
 
 impl Scene {
-    pub fn add_material(&mut self, material: material::Material) -> usize {
+    pub fn add_material(&mut self, material: material::Material) -> u32 {
         let id = self.materials.len();
         self.materials.push(material);
-        id as usize
+        id as u32
     }
-    pub fn add_materials(&mut self, materials: &[material::Material]) -> Vec<usize> {
+    pub fn add_materials(&mut self, materials: &[material::Material]) -> Vec<u32> {
         let mut ids = Vec::with_capacity(materials.len());
         for m in materials {
-            let id = self.materials.len();
+            let id = self.materials.len() as u32;
             self.materials.push(*m);
             ids.push(id);
         }
