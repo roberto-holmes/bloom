@@ -58,6 +58,79 @@ impl Model {
             main_buffer: None,
         }
     }
+    pub fn new_gltf_primitive(
+        primitive: gltf::Primitive,
+        buffers: &Vec<gltf::buffer::Data>,
+        material_id: u32,
+    ) -> Self {
+        let r = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
+        let mut indices = Vec::new();
+        if let Some(gltf::mesh::util::ReadIndices::U16(gltf::accessor::Iter::Standard(iter))) =
+            r.read_indices()
+        {
+            for v in iter {
+                indices.push(v as u32);
+            }
+        }
+        let mut positions = Vec::new();
+        if let Some(iter) = r.read_positions() {
+            for v in iter {
+                positions.push(v);
+            }
+        }
+        let mut textures = Vec::new();
+        if let Some(gltf::mesh::util::ReadTexCoords::F32(gltf::accessor::Iter::Standard(iter))) =
+            r.read_tex_coords(0)
+        {
+            for v in iter {
+                textures.push(v);
+            }
+        }
+        let mut normals = Vec::new();
+        if let Some(iter) = r.read_normals() {
+            for v in iter {
+                normals.push(v);
+            }
+        }
+        let mut joints = Vec::new();
+        if let Some(gltf::mesh::util::ReadJoints::U8(gltf::accessor::Iter::Standard(iter))) =
+            r.read_joints(0)
+        {
+            for v in iter {
+                joints.push(v);
+            }
+        }
+        let mut weights = Vec::new();
+        if let Some(gltf::mesh::util::ReadWeights::F32(gltf::accessor::Iter::Standard(iter))) =
+            r.read_weights(0)
+        {
+            for v in iter {
+                weights.push(v);
+            }
+        }
+        let mut vertices = Vec::with_capacity(positions.len());
+
+        // Ensure we have a normal for each vertex
+        assert_eq!(positions.len(), normals.len());
+
+        // Populate the vertices with positions and normals
+        for (i, p) in positions.iter().enumerate() {
+            vertices.push(Vertex::new(Vec3(*p), Vec3(normals[i])));
+        }
+
+        let material_indices = vec![material_id; indices.len() / 3];
+
+        Self {
+            vertices,
+            indices,
+            material_indices,
+            vertex_buffer: None,
+            index_buffer: None,
+            mat_index_buffer: None,
+            primitive_data: None,
+            main_buffer: None,
+        }
+    }
     pub fn new_cube(material: u32) -> Result<Self> {
         #[rustfmt::skip]
         let vertices = vec![

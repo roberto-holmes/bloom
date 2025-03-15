@@ -10,7 +10,6 @@ use bloom::primitives::sphere::Sphere;
 use bloom::primitives::Primitive;
 use bloom::vec::Vec3;
 use cgmath::Matrix4;
-use cgmath::SquareMatrix;
 use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 
@@ -46,6 +45,8 @@ impl Bloomable for Demo {
 
         let red = scene.add_material(material::Material::new_basic(Vec3::new(1.0, 0.0, 0.0), 0.));
         let grey = scene.add_material(material::Material::new_basic(Vec3::new(0.7, 0.7, 0.7), 0.1));
+        let yellow =
+            scene.add_material(material::Material::new_basic(Vec3::new(1.0, 0.8, 0.0), 0.));
         let glass = scene.add_material(material::Material::new_clear(Vec3::new(0.9, 1.0, 1.0)));
         let mirror =
             scene.add_material(material::Material::new_basic(Vec3::new(1.0, 1.0, 0.9), 1.0));
@@ -54,19 +55,30 @@ impl Bloomable for Demo {
             1.0,
         ));
 
+        let (document, buffers, _) = gltf::import("models/Duck.glb").unwrap();
+        for m in document.meshes() {
+            for p in m.primitives() {
+                let m = Model::new_gltf_primitive(p, &buffers, yellow);
+                let m_id = scene.add_obj(Primitive::Model(m));
+                let _ = scene.add_instance(
+                    m_id,
+                    Matrix4::<f32>::from_translation(cgmath::Vector3::new(-50.0, -1.0, 0.0))
+                        * Matrix4::<f32>::from_scale(1.0 / 100.0),
+                );
+            }
+        }
+
         let cube = Model::new_cube(red).unwrap();
         let cube_id = scene.add_obj(Primitive::Model(cube));
 
         let plane_id = scene.add_obj(Primitive::Model(Model::new_plane(grey).unwrap()));
         let mirror_id = scene.add_obj(Primitive::Model(Model::new_mirror(mirror).unwrap()));
 
-        let cube_instance_id = scene.add_instance(cube_id, Matrix4::<f32>::identity());
-
         let _ = scene.add_instance(
             cube_id,
             Matrix4::from_translation(cgmath::Vector3 {
                 x: 2.0,
-                y: 0.0,
+                y: 3.0,
                 z: -1.0,
             }),
         );
@@ -113,7 +125,7 @@ impl Bloomable for Demo {
             Matrix4::from_translation(cgmath::Vector3 {
                 x: 2.0,
                 y: 0.0,
-                z: 1.0,
+                z: 0.0,
             }),
         );
         let _ = scene.add_instance(
@@ -121,7 +133,7 @@ impl Bloomable for Demo {
             Matrix4::from_translation(cgmath::Vector3 {
                 x: -2.0,
                 y: 0.0,
-                z: 1.0,
+                z: 0.0,
             }),
         );
         #[rustfmt::skip]
