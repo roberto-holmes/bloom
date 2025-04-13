@@ -1,5 +1,6 @@
 use std::{
     ffi::CString,
+    os::windows::raw,
     path::Path,
     sync::{mpsc, Arc, RwLock},
     time::Duration,
@@ -21,7 +22,6 @@ use crate::{
 };
 
 pub enum TransferCommand {
-    Resize(PhysicalSize<u32>),
     Ready(u64, usize), // Timeline semaphore timestamp
 }
 
@@ -81,6 +81,7 @@ pub fn thread(
 
     should_threads_die: Arc<RwLock<bool>>,
     event_receiver: mpsc::Receiver<TransferCommand>,
+    mut resize_receiver: single_value_channel::Receiver<PhysicalSize<u32>>,
     latest_frame_index: single_value_channel::Updater<usize>,
 ) {
     log::trace!("Creating thread");
@@ -115,6 +116,7 @@ pub fn thread(
             return;
         }
     };
+    let mut active_frame_index = 0;
     loop {
         // Check if we should end the thread
         match should_threads_die.read() {
@@ -128,6 +130,27 @@ pub fn thread(
             }
         }
 
+        let size = resize_receiver.latest();
+        // We only want to send an update if we've actually resized
+        if let (true, new_images) = match viewport.resize(*size, active_frame_index) {
+            Err(e) => {
+                log::error!("Failed to create new output images: {e}");
+                break;
+            }
+            Ok(v) => v,
+        } {
+            log::info!(
+                "Images {:?} are now {}x{}",
+                new_images,
+                size.width,
+                size.height
+            );
+            match transfer_sender.send(transfer::ResizedSource::Viewport((*size, new_images))) {
+                Err(e) => log::error!("Failed to update transfer with new images: {e}"),
+                Ok(()) => {}
+            };
+        }
+
         // Check for new event
         match event_receiver.recv_timeout(Duration::new(0, 10_000_000)) {
             Err(mpsc::RecvTimeoutError::Timeout) => continue,
@@ -135,26 +158,9 @@ pub fn thread(
                 log::error!("Viewport event channel has disconnected");
                 break;
             }
-            Ok(TransferCommand::Resize(size)) => {
-                let new_images = match viewport.resize(size) {
-                    Err(e) => {
-                        log::error!("Failed to create new output images: {e}");
-                        break;
-                    }
-                    Ok(v) => v,
-                };
-                log::warn!(
-                    "Images {:?} are now {}x{}",
-                    new_images,
-                    size.width,
-                    size.height
-                );
-                match transfer_sender.send(transfer::ResizedSource::Viewport(new_images)) {
-                    Err(e) => log::error!("Failed to update transfer with new images: {e}"),
-                    Ok(()) => {}
-                };
-            }
+
             Ok(TransferCommand::Ready(timestamp, frame)) => {
+                active_frame_index = frame;
                 match viewport.draw(transfer_semaphore, timestamp, frame, &uniforms_sender) {
                     Err(e) => log::error!("Failed to draw frame: {e}"),
                     Ok(()) => {
@@ -251,12 +257,6 @@ impl<'a> Viewport<'a> {
 
         let (image_available, render_finished, in_flight_fences) = create_sync_object(&device)?;
 
-        log::info!(
-            "Semaphores: image available - [{:?}], render finished - [{:?}]",
-            image_available,
-            render_finished
-        );
-
         Ok(Self {
             device,
             instance,
@@ -319,55 +319,66 @@ impl<'a> Viewport<'a> {
         }
         Ok(raw_images)
     }
-    fn resize(&mut self, new_size: PhysicalSize<u32>) -> Result<[vk::Image; 2]> {
-        log::debug!("Resizing to {}x{}", new_size.width, new_size.height);
+    fn resize(
+        &mut self,
+        new_size: PhysicalSize<u32>,
+        active_frame: usize,
+    ) -> Result<(bool, [vk::Image; 2])> {
         if self.images.is_none() {
-            return self.initial_size(new_size);
-        }
-        // Recreate swap chain
-        self.recreate_swap_chain();
-
-        let mut resized = false;
-        // Check if either storage image needed a resize and perform it
-        for i in 0..2 {
-            if self.images.as_mut().unwrap()[i].resize(new_size.width, new_size.height)? {
-                resized = true;
-                core::transition_image_layout(
-                    &self.device,
-                    self.command_pool.get(),
-                    self.queue,
-                    self.images.as_mut().unwrap()[i].get(),
-                    vk::ImageLayout::UNDEFINED,
-                    vk::ImageLayout::GENERAL,
-                    vk::PipelineStageFlags::TOP_OF_PIPE,
-                    vk::PipelineStageFlags::FRAGMENT_SHADER,
-                )?;
-            }
-        }
-        if resized {
-            for (i, &descriptor_set) in self.descriptor_sets.unwrap().iter().enumerate() {
-                // Now need to update the descriptor to reference the new image
-                let image_info = [vk::DescriptorImageInfo::default()
-                    .image_layout(vk::ImageLayout::GENERAL)
-                    .image_view(self.images.as_ref().unwrap()[i].view())];
-
-                let descriptor_writes = [vk::WriteDescriptorSet {
-                    dst_set: descriptor_set,
-                    dst_binding: 0,
-                    descriptor_count: 1,
-                    descriptor_type: vk::DescriptorType::STORAGE_IMAGE,
-                    ..Default::default()
-                }
-                .image_info(&image_info)];
-                unsafe { self.device.update_descriptor_sets(&descriptor_writes, &[]) };
-            }
+            return Ok((true, self.initial_size(new_size)?));
         }
 
         let mut raw_images = [vk::Image::null(); 2];
+        // Check if either storage image needed a resize and perform it
+        if self.images.as_ref().unwrap()[0].is_correct_size(new_size.width, new_size.height)
+            && self.images.as_ref().unwrap()[1].is_correct_size(new_size.width, new_size.height)
+        {
+            return Ok((false, raw_images));
+        }
+        // Wait for the previous frame to finish
+        unsafe {
+            self.device.wait_for_fences(
+                &[self.in_flight_fences[active_frame].get()],
+                true,
+                100_000_000,
+            )?; // 100ms timeout
+        }
+        self.recreate_swap_chain();
+        for image in self.images.as_mut().unwrap().iter_mut() {
+            let _ = image.resize(new_size.width, new_size.height)?;
+            core::transition_image_layout(
+                &self.device,
+                self.command_pool.get(),
+                self.queue,
+                image.get(),
+                vk::ImageLayout::UNDEFINED,
+                vk::ImageLayout::GENERAL,
+                vk::PipelineStageFlags::TOP_OF_PIPE,
+                vk::PipelineStageFlags::FRAGMENT_SHADER,
+            )?;
+        }
+        log::debug!("Resizing to {}x{}", new_size.width, new_size.height);
+        for (i, &descriptor_set) in self.descriptor_sets.unwrap().iter().enumerate() {
+            // Now need to update the descriptor to reference the new image
+            let image_info = [vk::DescriptorImageInfo::default()
+                .image_layout(vk::ImageLayout::GENERAL)
+                .image_view(self.images.as_ref().unwrap()[i].view())];
+
+            let descriptor_writes = [vk::WriteDescriptorSet {
+                dst_set: descriptor_set,
+                dst_binding: 0,
+                descriptor_count: 1,
+                descriptor_type: vk::DescriptorType::STORAGE_IMAGE,
+                ..Default::default()
+            }
+            .image_info(&image_info)];
+            unsafe { self.device.update_descriptor_sets(&descriptor_writes, &[]) };
+        }
         for i in 0..self.images.as_ref().unwrap().len() {
             raw_images[i] = self.images.as_ref().unwrap()[i].get();
         }
-        Ok(raw_images)
+
+        Ok((true, raw_images))
     }
     fn draw(
         &mut self,

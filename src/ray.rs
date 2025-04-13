@@ -17,7 +17,6 @@ use crate::{
 
 pub enum TransferCommand {
     Pause(u64),
-    Resize(PhysicalSize<u32>),
 }
 
 pub fn thread(
@@ -33,6 +32,7 @@ pub fn thread(
     transfer_semaphore: vk::Semaphore,
     transfer_sender: mpsc::Sender<transfer::ResizedSource>,
     transfer_commands: mpsc::Receiver<TransferCommand>,
+    mut resize: single_value_channel::Receiver<PhysicalSize<u32>>,
     notify_complete_frame: single_value_channel::Updater<u8>,
     update_as: mpsc::Receiver<physics::UpdateScene>,
     add_material: mpsc::Receiver<material::Material>,
@@ -107,43 +107,26 @@ pub fn thread(
             }
         }
 
+        let mut size = resize.latest();
+
         if first_run {
-            // We can't do any ray tracing until we have been given our first resize
-            match transfer_commands.recv_timeout(std::time::Duration::new(0, 10_000_000)) {
-                Ok(TransferCommand::Pause(v)) => {
-                    // We have been told to not do any work until a new timeline has been reached
-                    current_transfer_timestamp = v;
-                    continue;
-                }
-                Ok(TransferCommand::Resize(size)) => {
-                    log::debug!("Received initial resize");
-                    // We have been told to not do any work until a new timeline has been reached
-                    let new_images = match ray.resize(size) {
-                        Err(e) => {
-                            log::error!("Failed to create new output images: {e}");
-                            break;
-                        }
-                        Ok(v) => v,
-                    };
-                    log::warn!(
-                        "First images {:?} are now {}x{}",
-                        new_images,
-                        size.width,
-                        size.height
-                    );
-                    match transfer_sender.send(transfer::ResizedSource::Ray(new_images)) {
-                        Err(e) => log::error!("Failed to update transfer with new images: {e}"),
-                        Ok(()) => {}
-                    };
-                }
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    continue;
-                }
-                Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    log::error!("Failed to receive a notification from transfer");
+            let new_images = match ray.resize(*size) {
+                Err(e) => {
+                    log::error!("Failed to create new output images: {e}");
                     break;
                 }
-            }
+                Ok(v) => v,
+            };
+            log::warn!(
+                "First images {:?} are now {}x{}",
+                new_images,
+                size.width,
+                size.height
+            );
+            match transfer_sender.send(transfer::ResizedSource::Ray((*size, new_images))) {
+                Err(e) => log::error!("Failed to update transfer with new images: {e}"),
+                Ok(()) => {}
+            };
         } else {
             // Wait for previous frame to finish
             match core::wait_on_semaphore(
@@ -171,6 +154,28 @@ pub fn thread(
             current_frame_index %= MAX_FRAMES_IN_FLIGHT;
         }
 
+        while ray.need_resize(*size) {
+            // log::debug!("Received resize to {}x{}", size.width, size.height);
+            // We have been told to not do any work until a new timeline has been reached
+            let new_images = match ray.resize(*size) {
+                Err(e) => {
+                    log::error!("Failed to create new output images: {e}");
+                    break;
+                }
+                Ok(v) => v,
+            };
+            match transfer_sender.send(transfer::ResizedSource::Ray((*size, new_images))) {
+                Err(e) => log::error!("Failed to update transfer with new images: {e}"),
+                Ok(()) => {}
+            };
+            log::debug!(
+                "Images {:?} are now {}x{}",
+                new_images,
+                size.width,
+                size.height
+            );
+            size = resize.latest();
+        }
         // std::thread::sleep(std::time::Duration::from_millis(1000));
 
         // Check if transfer is actively using our images and we need to wait for it to finish
@@ -182,27 +187,6 @@ pub fn thread(
             Ok(TransferCommand::Pause(v)) => {
                 // We have been told to not do any work until a new timeline has been reached
                 current_transfer_timestamp = v;
-            }
-            Ok(TransferCommand::Resize(size)) => {
-                log::debug!("Received resize");
-                // We have been told to not do any work until a new timeline has been reached
-                let new_images = match ray.resize(size) {
-                    Err(e) => {
-                        log::error!("Failed to create new output images: {e}");
-                        break;
-                    }
-                    Ok(v) => v,
-                };
-                log::warn!(
-                    "Images {:?} are now {}x{}",
-                    new_images,
-                    size.width,
-                    size.height
-                );
-                match transfer_sender.send(transfer::ResizedSource::Ray(new_images)) {
-                    Err(e) => log::error!("Failed to update transfer with new images: {e}"),
-                    Ok(()) => {}
-                };
             }
             Err(mpsc::TryRecvError::Disconnected) => {
                 log::error!("Failed to receive a notification from transfer");
@@ -395,13 +379,15 @@ impl<'a> Ray<'a> {
             uniform,
         })
     }
-    // pub fn need_resize(&self, width: u32, height: u32, frame_index: usize) -> bool {
-    //     if let Some(images) = &self.images {
-    //         images[frame_index].is_correct_size(width, height)
-    //     } else {
-    //         false
-    //     }
-    // }
+    pub fn need_resize(&self, size: PhysicalSize<u32>) -> bool {
+        if let Some(images) = &self.images {
+            // Return true if either image size is incorrect
+            !images[0].is_correct_size(size.width, size.height)
+                || !images[1].is_correct_size(size.width, size.height)
+        } else {
+            false
+        }
+    }
     pub fn initial_size(&mut self, size: PhysicalSize<u32>) -> Result<[vk::Image; 2]> {
         log::trace!("Creating initial images and commands");
         self.images = Some(core::create_storage_image_pair(

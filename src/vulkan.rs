@@ -355,8 +355,8 @@ pub struct Image<'a> {
     image_create_info: vk::ImageCreateInfo<'a>,
     view_create_info: vk::ImageViewCreateInfo<'a>,
 
-    width: u32,
-    height: u32,
+    pub width: u32,
+    pub height: u32,
 
     allocator_pool: vk_mem::AllocatorPool,
     create_view: vk::PFN_vkCreateImageView,

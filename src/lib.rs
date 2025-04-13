@@ -347,6 +347,17 @@ impl<T: Bloomable> VulkanApp<T> {
         let (viewport_latest_frame_index_receiver, viewport_latest_frame_index_sender) =
             single_value_channel::channel_starting_with(0_usize);
 
+        let (ray_resize_receiver, ray_resize_updater) =
+            single_value_channel::channel_starting_with(PhysicalSize {
+                width: WINDOW_WIDTH,
+                height: WINDOW_HEIGHT,
+            });
+        let (viewport_resize_receiver, viewport_resize_updater) =
+            single_value_channel::channel_starting_with(PhysicalSize {
+                width: WINDOW_WIDTH,
+                height: WINDOW_HEIGHT,
+            });
+
         let viewport_transfer_resize_sender = ray_transfer_resize_sender.clone();
         let transfer_uniforms_sender = ray_update_uniforms_sender.clone();
         let viewport_update_uniforms_sender = ray_update_uniforms_sender.clone();
@@ -430,6 +441,8 @@ impl<T: Bloomable> VulkanApp<T> {
                         transfer_uniforms_sender,
                         ray_transfer_command_sender,
                         viewport_transfer_command_sender,
+                        ray_resize_updater,
+                        viewport_resize_updater,
                     );
                 }) {
                 Ok(v) => Some(v),
@@ -455,6 +468,7 @@ impl<T: Bloomable> VulkanApp<T> {
                         viewport_transfer_semaphore,
                         should_viewport_die_out,
                         viewport_transfer_command_receiver,
+                        viewport_resize_receiver,
                         viewport_latest_frame_index_sender,
                     );
                 }) {
@@ -499,6 +513,7 @@ impl<T: Bloomable> VulkanApp<T> {
                     ray_transfer_semaphore,
                     ray_transfer_resize_sender,
                     ray_transfer_command_receiver,
+                    ray_resize_receiver,
                     ray_frame_complete_sender,
                     update_acceleration_structure_receiver,
                     add_material_receiver,
