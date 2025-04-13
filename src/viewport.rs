@@ -1,6 +1,5 @@
 use std::{
     ffi::CString,
-    os::windows::raw,
     path::Path,
     sync::{mpsc, Arc, RwLock},
     time::Duration,
@@ -116,7 +115,10 @@ pub fn thread(
             return;
         }
     };
+
     let mut active_frame_index = 0;
+    let mut was_minimised = false;
+
     loop {
         // Check if we should end the thread
         match should_threads_die.read() {
@@ -131,8 +133,17 @@ pub fn thread(
         }
 
         let size = resize_receiver.latest();
+
+        if size.width == 0 && size.height == 0 {
+            was_minimised = true;
+            // If we are minimised then we shouldn't bother doing everything else
+            std::thread::sleep(Duration::from_millis(100));
+            continue;
+        }
+
         // We only want to send an update if we've actually resized
-        if let (true, new_images) = match viewport.resize(*size, active_frame_index) {
+        if let (true, new_images) = match viewport.resize(*size, active_frame_index, was_minimised)
+        {
             Err(e) => {
                 log::error!("Failed to create new output images: {e}");
                 break;
@@ -171,6 +182,7 @@ pub fn thread(
                 }
             }
         }
+        was_minimised = false;
     }
 }
 
@@ -323,13 +335,18 @@ impl<'a> Viewport<'a> {
         &mut self,
         new_size: PhysicalSize<u32>,
         active_frame: usize,
+        was_minimised: bool,
     ) -> Result<(bool, [vk::Image; 2])> {
+        if was_minimised {
+            self.recreate_swap_chain();
+        }
+
         if self.images.is_none() {
             return Ok((true, self.initial_size(new_size)?));
         }
 
         let mut raw_images = [vk::Image::null(); 2];
-        // Check if either storage image needed a resize and perform it
+        // Check if both images are already the correct size
         if self.images.as_ref().unwrap()[0].is_correct_size(new_size.width, new_size.height)
             && self.images.as_ref().unwrap()[1].is_correct_size(new_size.width, new_size.height)
         {
@@ -398,13 +415,23 @@ impl<'a> Viewport<'a> {
             self.device
                 .wait_for_fences(&[self.in_flight_fences[frame].get()], true, u64::MAX)?;
         }
-        let (swapchain_index, _is_suboptimal) = unsafe {
+        let swapchain_index = match unsafe {
             self.swapchain_stuff.get_loader().acquire_next_image(
                 self.swapchain_stuff.get_swapchain(),
                 1_000_000_000, // 1 second in nanoseconds
                 self.image_available[frame].get(),
                 vk::Fence::null(),
-            )?
+            )
+        } {
+            Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
+                log::warn!("Swapchain reports ERROR_OUT_OF_DATE_KHR",);
+                // self.recreate_swap_chain();
+                return Ok(());
+            }
+            Err(e) => {
+                return Err(anyhow!("Failed to get swapchain image: {e}"));
+            }
+            Ok((v, _is_suboptimal)) => v,
         };
         unsafe {
             self.device

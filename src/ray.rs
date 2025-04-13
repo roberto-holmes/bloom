@@ -94,6 +94,8 @@ pub fn thread(
 
     let mut first_run = true;
 
+    let mut is_minimised = false;
+
     loop {
         // Check if we should end the thread
         match should_threads_die.read() {
@@ -155,6 +157,11 @@ pub fn thread(
         }
 
         while ray.need_resize(*size) {
+            if size.width == 0 && size.height == 0 {
+                is_minimised = true;
+                break;
+            }
+            is_minimised = false;
             // log::debug!("Received resize to {}x{}", size.width, size.height);
             // We have been told to not do any work until a new timeline has been reached
             let new_images = match ray.resize(*size) {
@@ -197,6 +204,10 @@ pub fn thread(
         if let Err(e) = ray.update() {
             log::error!("Failed to check for updates: {e}");
             break;
+        }
+
+        if is_minimised {
+            continue;
         }
 
         // Perform a render

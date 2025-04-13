@@ -57,6 +57,7 @@ pub fn thread(
     let mut output_frame_index = 0;
     let mut timestamp = 0;
     let mut is_minimised = false;
+    let mut was_minimised = false;
     let mut old_size = PhysicalSize {
         width: 0,
         height: 0,
@@ -85,11 +86,19 @@ pub fn thread(
                 if new_size.width == 0 && new_size.height == 0 {
                     log::debug!("Window is minimized");
                     is_minimised = true;
+                    was_minimised = true;
                 } else {
                     is_minimised = false;
                 }
-                match resize(&ray_resize, &viewport_resize, &ubo, &resized, new_size) {
-                    Ok((ray_images, viewport_images)) => {
+                match resize(
+                    &ray_resize,
+                    &viewport_resize,
+                    &ubo,
+                    &resized,
+                    new_size,
+                    !is_minimised && !was_minimised,
+                ) {
+                    Ok((true, ray_images, viewport_images)) => {
                         log::trace!(
                             "Have ray images {:?} and viewport images {:?}",
                             ray_images,
@@ -105,10 +114,16 @@ pub fn thread(
                             }
                         }
                     }
+                    Ok((false, _, _)) => {
+                        log::info!("Not rebuilding transfer commands");
+                    }
                     Err(e) => {
                         log::error!("Failed to resize: {e}");
                         break;
                     }
+                }
+                if was_minimised == true && is_minimised == false {
+                    was_minimised = false;
                 }
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -178,11 +193,16 @@ fn resize(
     ubo: &mpsc::Sender<uniforms::Event>,
     resized: &mpsc::Receiver<ResizedSource>,
     new_size: PhysicalSize<u32>,
-) -> Result<([vk::Image; 2], [vk::Image; 2])> {
+    need_response: bool,
+) -> Result<(bool, [vk::Image; 2], [vk::Image; 2])> {
     ray.update(new_size)?;
     viewport.update(new_size)?;
     ubo.send(uniforms::Event::Resize(new_size))?;
     log::info!("Sent size {}x{}", new_size.width, new_size.height);
+
+    if !need_response {
+        return Ok((false, [vk::Image::null(); 2], [vk::Image::null(); 2]));
+    }
 
     // Check that we get a confirmation from Ray and Viewport
     let mut ray_resized = false;
@@ -245,7 +265,7 @@ fn resize(
         }
     }
 
-    Ok((ray_images.unwrap(), viewport_images.unwrap()))
+    Ok((true, ray_images.unwrap(), viewport_images.unwrap()))
 }
 
 struct Transfer {
