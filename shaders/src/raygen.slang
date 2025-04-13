@@ -20,6 +20,14 @@ void main() {
 	float3 sample = 0.0;
 	int sample_count = 0;
 
+	// if (LaunchID.x == 0 && LaunchID.y == 0 && ubo.ray_frame_num == 1) {
+	// 	printf("ar: %f\n", aspect_ratio);
+	// 	printf("o: %v3f\n", ubo.camera.origin);
+	// 	printf("u: %v3f\n", ubo.camera.u);
+	// 	printf("v: %v3f\n", ubo.camera.v);
+	// 	printf("w: %v3f\n\n", ubo.camera.w);
+	// }
+
 	for (sample_count = 0; sample_count < 16; sample_count++) {
 		init_rng(DispatchRaysIndex().xy, ubo.width, ubo.ray_frame_num + DispatchRaysIndex().x + sample_count);
 		// Start the rays from the center of each pixel with a random offset to perform antialiasing
@@ -40,6 +48,11 @@ void main() {
 		Payload payload;
 		payload.origin = ubo.camera.origin + dof_offset;
 		payload.direction = normalize(direction);
+
+		// if (LaunchID.x == 0 && LaunchID.y == 0 && ubo.ray_frame_num == 1) {
+		// 	printf("ori: %v3f\n", payload.origin);
+		// 	printf("dir: %v3f\n", payload.direction);
+		// }
 
 		float3 throughput = 1.0;
 
@@ -70,5 +83,6 @@ void main() {
 	// }
 	sample /= sample_count;
 	write_image[int2(LaunchID.xy)] = float4(sample, 0.0);
+	// write_image[int2(LaunchID.xy)] = float4(0.0, 1.0, 1.0, 0.0);
 	// write_image[int2(LaunchID.xy)] = float4(float(frame_num) / 100, 0.0, 0.0, 0.0);
 }

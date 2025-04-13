@@ -1,12 +1,12 @@
 use anyhow::{anyhow, Result};
 use ash::vk;
-use cgmath::Matrix;
 
 use crate::{vec::Vec3, vulkan};
 
 use super::{Addressable, Extrema, ObjectType, Objectionable, PrimitiveAddresses};
 
 #[repr(C)]
+#[derive(Debug)]
 /// Describe a cylindrical aspherical lens with two lens surface profiles
 pub struct LentilData {
     pub object_type: u64,
@@ -37,6 +37,7 @@ impl LentilData {
     }
 }
 
+#[derive(Debug)]
 pub struct Lentil {
     data: LentilData,
     data_buffer: Option<vulkan::Buffer>,
@@ -79,10 +80,15 @@ impl Addressable for Lentil {
 }
 
 impl Objectionable for Lentil {
-    fn allocate(&mut self, allocator: &vk_mem::Allocator, _device: &ash::Device) -> Result<()> {
+    fn allocate(
+        &mut self,
+        allocator: &vk_mem::Allocator,
+        _device: &ash::Device,
+        _command_pool: vk::CommandPool,
+        _queue: vk::Queue,
+    ) -> Result<()> {
         self.data_buffer = Some(vulkan::Buffer::new_populated(
             allocator,
-            size_of::<LentilData>() as u64,
             vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
             &self.data,
             1,

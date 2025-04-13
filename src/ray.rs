@@ -1,17 +1,24 @@
 use std::collections::HashMap;
 use std::ffi::CString;
 use std::path::Path;
-use std::sync::{mpsc, Arc, Mutex, RwLock};
+use std::sync::{mpsc, Arc, RwLock};
 
 use anyhow::{anyhow, Result};
 use ash::{vk, RawPtr};
-use vk_mem::{self};
+use vk_mem;
+use winit::dpi::PhysicalSize;
 
-use crate::api::BloomAPI;
-use crate::core::UniformBufferObject;
 use crate::primitives::{Addressable, Extrema, ObjectType, Objectionable, Primitive, AABB};
+use crate::uniforms::{self, UniformBufferObject};
 use crate::vulkan::Destructor;
-use crate::{core, material, primitives, structures, tools, vulkan, MAX_FRAMES_IN_FLIGHT};
+use crate::{
+    core, material, physics, primitives, structures, tools, transfer, vulkan, MAX_FRAMES_IN_FLIGHT,
+};
+
+pub enum TransferCommand {
+    Pause(u64),
+    Resize(PhysicalSize<u32>),
+}
 
 pub fn thread(
     device: ash::Device,
@@ -20,17 +27,17 @@ pub fn thread(
     physical_device: vk::PhysicalDevice,
 
     queue_family_indices: structures::QueueFamilyIndices,
-    images: [vulkan::Image; 2],
+    uniform_buffers: [vk::Buffer; 2],
 
     should_threads_die: Arc<RwLock<bool>>,
-    notify_transfer_wait: mpsc::Receiver<u64>,
-    notify_complete_frame: mpsc::Sender<u8>,
     transfer_semaphore: vk::Semaphore,
-
-    width: u32,
-    height: u32,
-
-    api: Arc<Mutex<BloomAPI>>,
+    transfer_sender: mpsc::Sender<transfer::ResizedSource>,
+    transfer_commands: mpsc::Receiver<TransferCommand>,
+    notify_complete_frame: single_value_channel::Updater<u8>,
+    update_as: mpsc::Receiver<physics::UpdateScene>,
+    add_material: mpsc::Receiver<material::Material>,
+    uniform: mpsc::Sender<uniforms::Event>,
+    latest_frame_index: single_value_channel::Updater<usize>,
 ) {
     log::trace!("Creating thread");
     let mut allocator_create_info =
@@ -39,7 +46,7 @@ pub fn thread(
     allocator_create_info.flags = vk_mem::AllocatorCreateFlags::BUFFER_DEVICE_ADDRESS;
 
     let allocator = match unsafe { vk_mem::Allocator::new(allocator_create_info) } {
-        Ok(v) => v,
+        Ok(v) => Arc::new(v),
         Err(e) => {
             panic!("Failed to create an allocator: {:?}", e);
         }
@@ -48,7 +55,6 @@ pub fn thread(
     let rt_device = ash::khr::ray_tracing_pipeline::Device::new(&instance, &device);
     let as_device = ash::khr::acceleration_structure::Device::new(&instance, &device);
 
-    // TODO: Which of these do we want? (or both?)
     let mut ray_tracing_pipeline_properties =
         vk::PhysicalDeviceRayTracingPipelinePropertiesKHR::default();
     let mut device_properties =
@@ -58,15 +64,17 @@ pub fn thread(
 
     let mut ray = match Ray::new(
         device,
+        instance,
+        physical_device,
         rt_device,
         as_device,
         ray_tracing_pipeline_properties,
         allocator,
         queue_family_indices,
-        images,
-        width,
-        height,
-        api,
+        uniform_buffers,
+        update_as,
+        add_material,
+        uniform,
     ) {
         Ok(v) => v,
         Err(e) => {
@@ -99,8 +107,46 @@ pub fn thread(
             }
         }
 
-        if !first_run {
-            match core::block_on_semaphore(
+        if first_run {
+            // We can't do any ray tracing until we have been given our first resize
+            match transfer_commands.recv_timeout(std::time::Duration::new(0, 10_000_000)) {
+                Ok(TransferCommand::Pause(v)) => {
+                    // We have been told to not do any work until a new timeline has been reached
+                    current_transfer_timestamp = v;
+                    continue;
+                }
+                Ok(TransferCommand::Resize(size)) => {
+                    log::debug!("Received initial resize");
+                    // We have been told to not do any work until a new timeline has been reached
+                    let new_images = match ray.resize(size) {
+                        Err(e) => {
+                            log::error!("Failed to create new output images: {e}");
+                            break;
+                        }
+                        Ok(v) => v,
+                    };
+                    log::warn!(
+                        "First images {:?} are now {}x{}",
+                        new_images,
+                        size.width,
+                        size.height
+                    );
+                    match transfer_sender.send(transfer::ResizedSource::Ray(new_images)) {
+                        Err(e) => log::error!("Failed to update transfer with new images: {e}"),
+                        Ok(()) => {}
+                    };
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    continue;
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    log::error!("Failed to receive a notification from transfer");
+                    break;
+                }
+            }
+        } else {
+            // Wait for previous frame to finish
+            match core::wait_on_semaphore(
                 &ray.device,
                 ray.semaphore.get(),
                 current_timestamp,
@@ -114,10 +160,8 @@ pub fn thread(
                 Ok(()) => {}
             }
 
-            // Compute sets the MSb of the frame so that transfer knows where it came from
-            let channel_frame = current_frame_index as u8 | 0x80;
             // Send current frame to transfer thread so that it knows where it can get a valid frame from
-            match notify_complete_frame.send(channel_frame) {
+            match notify_complete_frame.update(current_frame_index as u8) {
                 Err(e) => {
                     log::error!("Failed to notify transfer channel: {e}")
                 }
@@ -127,14 +171,38 @@ pub fn thread(
             current_frame_index %= MAX_FRAMES_IN_FLIGHT;
         }
 
-        // Check if we need to wait for a transfer to complete
-        match notify_transfer_wait.try_recv() {
+        // std::thread::sleep(std::time::Duration::from_millis(1000));
+
+        // Check if transfer is actively using our images and we need to wait for it to finish
+        // or if the window has been resized and we need to change our images
+        match transfer_commands.try_recv() {
             Err(mpsc::TryRecvError::Empty) => {
                 // Nothing to wait for, we can go on as planned
             }
-            Ok(v) => {
+            Ok(TransferCommand::Pause(v)) => {
                 // We have been told to not do any work until a new timeline has been reached
                 current_transfer_timestamp = v;
+            }
+            Ok(TransferCommand::Resize(size)) => {
+                log::debug!("Received resize");
+                // We have been told to not do any work until a new timeline has been reached
+                let new_images = match ray.resize(size) {
+                    Err(e) => {
+                        log::error!("Failed to create new output images: {e}");
+                        break;
+                    }
+                    Ok(v) => v,
+                };
+                log::warn!(
+                    "Images {:?} are now {}x{}",
+                    new_images,
+                    size.width,
+                    size.height
+                );
+                match transfer_sender.send(transfer::ResizedSource::Ray(new_images)) {
+                    Err(e) => log::error!("Failed to update transfer with new images: {e}"),
+                    Ok(()) => {}
+                };
             }
             Err(mpsc::TryRecvError::Disconnected) => {
                 log::error!("Failed to receive a notification from transfer");
@@ -142,19 +210,9 @@ pub fn thread(
             }
         }
 
-        // TODO: Check for a resize event
-        if ray.need_resize(width, height, current_frame_index) {
-            match ray.resize(width, height) {
-                Err(e) => {
-                    log::error!("Failed to resize output image: {e}")
-                }
-                _ => {}
-            };
-        }
-
-        match ray.update_uniforms(current_frame_index) {
-            Err(e) => log::error!("Failed to update uniform buffers: {e}"),
-            Ok(()) => {}
+        if let Err(e) = ray.update() {
+            log::error!("Failed to check for updates: {e}");
+            break;
         }
 
         // Perform a render
@@ -169,8 +227,15 @@ pub fn thread(
             Err(e) => {
                 log::error!("Failed to perform compute: {e}")
             }
-            _ => {}
+            Ok(()) => {
+                if let Err(e) = latest_frame_index.update(current_frame_index) {
+                    log::error!("Failed to send latest frame index to uniforms: {e}")
+                }
+            }
         };
+        if first_run {
+            log::info!("No longer first run");
+        }
         first_run = false;
         current_timestamp += 1;
     }
@@ -178,55 +243,60 @@ pub fn thread(
 }
 
 struct Ray<'a> {
-    device: ash::Device,
-    rt_device: ash::khr::ray_tracing_pipeline::Device,
-    _as_device: ash::khr::acceleration_structure::Device,
-
     ray_tracing_pipeline_properties: vk::PhysicalDeviceRayTracingPipelinePropertiesKHR<'a>,
     raygen_shader_binding_table: vulkan::Buffer,
     miss_shader_binding_table: vulkan::Buffer,
     hit_shader_binding_table: vulkan::Buffer,
 
+    update_as: mpsc::Receiver<physics::UpdateScene>,
+    add_material: mpsc::Receiver<material::Material>,
+    uniform: mpsc::Sender<uniforms::Event>,
     semaphore: Destructor<vk::Semaphore>,
 
-    images: [vulkan::Image<'a>; 2],
+    images: Option<[vulkan::Image<'a>; 2]>,
 
-    uniform_buffers: [vulkan::Buffer; 2],
+    uniform_buffers: [vk::Buffer; 2],
 
     queue: vk::Queue,
-    _descriptor_set_layout: Destructor<vk::DescriptorSetLayout>,
+    descriptor_set_layout: Destructor<vk::DescriptorSetLayout>,
     pipeline_layout: Destructor<vk::PipelineLayout>,
     pipeline: Destructor<vk::Pipeline>,
-    _command_pool: Destructor<vk::CommandPool>,
+    command_pool: Destructor<vk::CommandPool>,
     commands: [vk::CommandBuffer; 2],
-    _descriptor_pool: Destructor<vk::DescriptorPool>,
-    descriptor_sets: [vk::DescriptorSet; 2],
+    descriptor_pool: Destructor<vk::DescriptorPool>,
+    descriptor_sets: Option<[vk::DescriptorSet; 2]>,
 
-    obj_id_location_map: HashMap<u64, usize>,
-    _materials_buffer: vulkan::Buffer,
-    _aabbs_buffers: Vec<vulkan::Buffer>,
+    primitive_id_location_map: HashMap<u64, (Primitive, usize)>,
+    materials_buffer: vulkan::Buffer,
+    aabbs_buffers: Vec<vulkan::Buffer>,
 
-    _buffer_references: vulkan::Buffer,
-    _blass: Vec<AccelerationStructure>,
-    _top_level_as: AccelerationStructure,
+    buffer_references: vulkan::Buffer,
+    blass: Vec<AccelerationStructure>,
+    top_level_as: AccelerationStructure,
 
-    _allocator: vk_mem::Allocator,
-
-    api: Arc<Mutex<BloomAPI>>,
+    allocator: Arc<vk_mem::Allocator>,
+    physical_device: vk::PhysicalDevice,
+    rt_device: ash::khr::ray_tracing_pipeline::Device,
+    as_device: ash::khr::acceleration_structure::Device,
+    instance: ash::Instance,
+    device: ash::Device,
 }
 
 impl<'a> Ray<'a> {
     fn new(
         device: ash::Device,
+        instance: ash::Instance,
+        physical_device: vk::PhysicalDevice,
         rt_device: ash::khr::ray_tracing_pipeline::Device,
         as_device: ash::khr::acceleration_structure::Device,
         ray_tracing_pipeline_properties: vk::PhysicalDeviceRayTracingPipelinePropertiesKHR<'a>,
-        allocator: vk_mem::Allocator,
+        allocator: Arc<vk_mem::Allocator>,
         queue_family_indices: structures::QueueFamilyIndices,
-        mut images: [vulkan::Image<'a>; 2],
-        width: u32,
-        height: u32,
-        api: Arc<Mutex<BloomAPI>>,
+        uniform_buffers: [vk::Buffer; 2],
+
+        update_as: mpsc::Receiver<physics::UpdateScene>,
+        add_material: mpsc::Receiver<material::Material>,
+        uniform: mpsc::Sender<uniforms::Event>,
     ) -> Result<Self> {
         log::trace!("Creating object");
         // Populates queue
@@ -234,33 +304,32 @@ impl<'a> Ray<'a> {
 
         let (command_pool, commands) = create_empty_commands(&device, queue_family_indices)?;
 
-        let uniform_buffers = [
-            vulkan::Buffer::new_mapped(
-                &allocator,
-                size_of::<UniformBufferObject>() as u64,
-                vk::BufferUsageFlags::UNIFORM_BUFFER,
-            )?,
-            vulkan::Buffer::new_mapped(
-                &allocator,
-                size_of::<UniformBufferObject>() as u64,
-                vk::BufferUsageFlags::UNIFORM_BUFFER,
-            )?,
-        ];
+        let materials_buffer = create_materials(
+            &device,
+            command_pool.get(),
+            queue,
+            &allocator,
+            &add_material,
+        )?;
 
-        let materials_buffer = create_materials(&allocator, &api)?;
-
-        let (obj_id_location_map, blass, blas_instances, primitive_addresses, aabbs_buffers) =
+        let (primitive_id_location_map, blass, blas_instances, primitive_addresses, aabbs_buffers) =
             create_blas(
                 &allocator,
                 &device,
                 &as_device,
                 command_pool.get(),
                 queue,
-                &api,
+                &update_as,
             )?;
 
         // Get a reference to where all the parts of each model are on the GPU
-        let buffer_references = create_buffer_references(&allocator, &primitive_addresses)?;
+        let buffer_references = create_buffer_references(
+            &device,
+            command_pool.get(),
+            queue,
+            &allocator,
+            &primitive_addresses,
+        )?;
 
         let top_level_as = create_top_level_acceleration_structure(
             &device,
@@ -284,34 +353,7 @@ impl<'a> Ray<'a> {
                 &ray_tracing_pipeline_properties,
                 &shader_groups,
             )?;
-
-        log::trace!("Creating Descriptor Sets");
-        let (descriptor_pool, descriptor_sets) = create_descriptor_sets(
-            &device,
-            descriptor_set_layout.get(),
-            &top_level_as,
-            &images,
-            &uniform_buffers,
-            &buffer_references,
-            &materials_buffer,
-        )?;
-
-        log::trace!("Building command buffers");
-        build_command_buffers(
-            &device,
-            &rt_device,
-            &mut images,
-            width,
-            height,
-            descriptor_sets,
-            commands,
-            &ray_tracing_pipeline_properties,
-            &raygen_shader_binding_table,
-            &miss_shader_binding_table,
-            &hit_shader_binding_table,
-            pipeline.get(),
-            pipeline_layout.get(),
-        )?;
+        let descriptor_pool = create_descriptor_pool(&device)?;
 
         log::trace!("Building semaphore");
         let semaphore = Destructor::new(
@@ -322,44 +364,73 @@ impl<'a> Ray<'a> {
 
         Ok(Self {
             device,
-            _allocator: allocator,
+            instance,
+            physical_device,
+            allocator,
             semaphore,
-            images,
+            images: None,
             queue,
-            _descriptor_set_layout: descriptor_set_layout,
+            descriptor_set_layout,
             pipeline_layout,
             pipeline,
-            _command_pool: command_pool,
+            command_pool,
             commands,
-            _descriptor_pool: descriptor_pool,
-            descriptor_sets,
+            descriptor_pool,
+            descriptor_sets: None,
             rt_device,
-            _as_device: as_device,
+            as_device,
             ray_tracing_pipeline_properties,
             raygen_shader_binding_table,
             miss_shader_binding_table,
             hit_shader_binding_table,
-            api,
             uniform_buffers,
-            _top_level_as: top_level_as,
-            _buffer_references: buffer_references,
-            _blass: blass,
-            _materials_buffer: materials_buffer,
-            _aabbs_buffers: aabbs_buffers,
-            obj_id_location_map,
+            top_level_as,
+            buffer_references,
+            blass,
+            materials_buffer,
+            aabbs_buffers,
+            primitive_id_location_map,
+            update_as,
+            add_material,
+            uniform,
         })
     }
-    pub fn need_resize(&self, width: u32, height: u32, frame_index: usize) -> bool {
-        self.images[frame_index].is_correct_size(width, height)
-    }
-    pub fn resize(&mut self, width: u32, height: u32) -> Result<()> {
+    // pub fn need_resize(&self, width: u32, height: u32, frame_index: usize) -> bool {
+    //     if let Some(images) = &self.images {
+    //         images[frame_index].is_correct_size(width, height)
+    //     } else {
+    //         false
+    //     }
+    // }
+    pub fn initial_size(&mut self, size: PhysicalSize<u32>) -> Result<[vk::Image; 2]> {
+        log::trace!("Creating initial images and commands");
+        self.images = Some(core::create_storage_image_pair(
+            &self.device,
+            &self.instance,
+            &self.allocator,
+            self.physical_device,
+            self.command_pool.get(),
+            self.queue,
+            vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::TRANSFER_SRC,
+            size,
+            vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
+        )?);
+        self.descriptor_sets = Some(create_descriptor_sets(
+            &self.device,
+            self.descriptor_set_layout.get(),
+            self.descriptor_pool.get(),
+            &self.top_level_as,
+            self.images.as_ref().unwrap(),
+            &self.uniform_buffers,
+            &self.buffer_references,
+            &self.materials_buffer,
+        )?);
         build_command_buffers(
             &self.device,
             &self.rt_device,
-            &mut self.images,
-            width,
-            height,
-            self.descriptor_sets,
+            size.width,
+            size.height,
+            self.descriptor_sets.unwrap(),
             self.commands,
             &self.ray_tracing_pipeline_properties,
             &self.raygen_shader_binding_table,
@@ -368,6 +439,152 @@ impl<'a> Ray<'a> {
             self.pipeline.get(),
             self.pipeline_layout.get(),
         )?;
+        let mut raw_images = [vk::Image::null(); 2];
+        for i in 0..self.images.as_ref().unwrap().len() {
+            raw_images[i] = self.images.as_ref().unwrap()[i].get();
+        }
+        Ok(raw_images)
+    }
+    pub fn resize(&mut self, new_size: PhysicalSize<u32>) -> Result<[vk::Image; 2]> {
+        log::trace!("Resizing to {}x{}", new_size.width, new_size.height);
+        if self.images.is_none() {
+            return self.initial_size(new_size);
+        }
+
+        let mut resized = false;
+        // Check if either storage image needed a resize and perform it
+        for i in 0..2 {
+            if self.images.as_mut().unwrap()[i].resize(new_size.width, new_size.height)? {
+                resized = true;
+                core::transition_image_layout(
+                    &self.device,
+                    self.command_pool.get(),
+                    self.queue,
+                    self.images.as_mut().unwrap()[i].get(),
+                    vk::ImageLayout::UNDEFINED,
+                    vk::ImageLayout::GENERAL,
+                    vk::PipelineStageFlags::TOP_OF_PIPE,
+                    vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
+                )?;
+            }
+        }
+
+        if resized {
+            for (i, &descriptor_set) in self.descriptor_sets.unwrap().iter().enumerate() {
+                // Now need to update the descriptor to reference the new image
+                let read_image_descriptor = [vk::DescriptorImageInfo {
+                    image_view: self.images.as_ref().unwrap()[i].view(),
+                    image_layout: vk::ImageLayout::GENERAL,
+                    ..Default::default()
+                }];
+                let write_image_descriptor = [vk::DescriptorImageInfo {
+                    image_view: self.images.as_ref().unwrap()[(i + 1) % 2].view(),
+                    image_layout: vk::ImageLayout::GENERAL,
+                    ..Default::default()
+                }];
+
+                let descriptor_writes = [
+                    vk::WriteDescriptorSet {
+                        dst_set: descriptor_set,
+                        dst_binding: 1,
+                        descriptor_count: 1,
+                        descriptor_type: vk::DescriptorType::STORAGE_IMAGE,
+                        ..Default::default()
+                    }
+                    .image_info(&read_image_descriptor),
+                    vk::WriteDescriptorSet {
+                        dst_set: descriptor_set,
+                        dst_binding: 2,
+                        descriptor_count: 1,
+                        descriptor_type: vk::DescriptorType::STORAGE_IMAGE,
+                        ..Default::default()
+                    }
+                    .image_info(&write_image_descriptor),
+                ];
+                unsafe { self.device.update_descriptor_sets(&descriptor_writes, &[]) };
+            }
+        }
+        build_command_buffers(
+            &self.device,
+            &self.rt_device,
+            new_size.width,
+            new_size.height,
+            self.descriptor_sets.unwrap(),
+            self.commands,
+            &self.ray_tracing_pipeline_properties,
+            &self.raygen_shader_binding_table,
+            &self.miss_shader_binding_table,
+            &self.hit_shader_binding_table,
+            self.pipeline.get(),
+            self.pipeline_layout.get(),
+        )?;
+        let mut raw_images = [vk::Image::null(); 2];
+        for i in 0..self.images.as_ref().unwrap().len() {
+            raw_images[i] = self.images.as_ref().unwrap()[i].get();
+        }
+        log::trace!("Resize complete: have commands {:?}", self.commands);
+        Ok(raw_images)
+    }
+    pub fn update(&mut self) -> Result<()> {
+        let mut changed = false;
+
+        loop {
+            match self.add_material.try_recv() {
+                Ok(m) => {
+                    log::warn!("TODO: Implement adding materials")
+                }
+                Err(mpsc::TryRecvError::Empty) => {
+                    // Nothing to wait for, we can go on as planned
+                    break;
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    return Err(anyhow!(
+                        "Failed to receive an acceleration structure update"
+                    ));
+                }
+            }
+        }
+
+        loop {
+            match self.update_as.try_recv() {
+                Ok(physics::UpdateScene::Add(id, obj)) => {
+                    changed = true;
+                    log::warn!("TODO: Implement adding objects")
+                }
+                Ok(physics::UpdateScene::Remove(id)) => {
+                    changed = true;
+                    log::warn!("TODO: Implement removing objects")
+                }
+                Ok(physics::UpdateScene::AddInstance(
+                    instance_id,
+                    primitive_id,
+                    transformation,
+                )) => {
+                    changed = true;
+                    log::warn!("TODO: Implement adding instances")
+                }
+                Ok(physics::UpdateScene::RemoveInstance(instance_id)) => {
+                    changed = true;
+                    log::warn!("TODO: Implement removing instances")
+                }
+                Ok(physics::UpdateScene::MoveInstance(instance_id, transformation)) => {
+                    changed = true;
+                    log::warn!("TODO: Implement moving instances")
+                }
+                Err(mpsc::TryRecvError::Empty) => {
+                    // Nothing to wait for, we can go on as planned
+                    break;
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    return Err(anyhow!(
+                        "Failed to receive an acceleration structure update"
+                    ));
+                }
+            }
+        }
+        if changed {
+            self.uniform.send(uniforms::Event::ResetSamples)?;
+        }
         Ok(())
     }
     pub fn ray_trace(
@@ -375,15 +592,24 @@ impl<'a> Ray<'a> {
         current_frame_index: usize,
         transfer_semaphore: vk::Semaphore,
         transfer_timestamp_to_wait: u64,
-        compute_timestamp_to_wait: u64,
+        ray_timestamp_to_wait: u64,
         timestamp_to_signal: u64,
     ) -> Result<()> {
-        let wait_timestamps = [transfer_timestamp_to_wait, compute_timestamp_to_wait];
+        // log::trace!(
+        //     "Ray tracing into {current_frame_index} when timestamp reaches {}",
+        //     transfer_timestamp_to_wait
+        // );
+        let wait_timestamps = [transfer_timestamp_to_wait, ray_timestamp_to_wait];
         let wait_semaphores = [transfer_semaphore, self.semaphore.get()];
         let wait_stages = [
             vk::PipelineStageFlags::TRANSFER,
             vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
         ];
+
+        if self.images.is_none() {
+            // We only want to start ray tracing once the output images are set up
+            return Ok(());
+        }
 
         let signal_timestamps = [timestamp_to_signal];
         let signal_semaphores = [self.semaphore.get()];
@@ -404,23 +630,13 @@ impl<'a> Ray<'a> {
             self.device
                 .queue_submit(self.queue, &submit_info, vk::Fence::null())
         }?;
+        self.uniform.send(uniforms::Event::RayTick)?;
         Ok(())
-    }
-    fn update_uniforms(&mut self, frame_index: usize) -> Result<()> {
-        // let api = self.api.take().unwrap();
-        let ubos = [self.api.lock().unwrap().uniform.clone()];
-        // let ubos = [api.uniform.clone()];
-        self.uniform_buffers[frame_index].populate_mapped(ubos.as_ptr(), ubos.len())
     }
 }
 
 impl<'a> Drop for Ray<'a> {
     fn drop(&mut self) {
-        if let Ok(api) = &mut self.api.lock() {
-            for obj in api.scene.primitives.iter_mut() {
-                obj.1.free();
-            }
-        }
         unsafe {
             match self.device.queue_wait_idle(self.queue) {
                 Err(e) => log::error!("Ray failed to wait for its queue to finish: {e}"),
@@ -536,7 +752,6 @@ fn create_bottom_level_acceleration_structure(
     // TODO: Add a staging buffer so these buffers can live on the GPU
     let transform_buffer = vulkan::Buffer::new_populated(
         allocator,
-        size_of::<vk::TransformMatrixKHR>() as vk::DeviceSize,
         vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
             | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR,
         &transform_matrix,
@@ -679,7 +894,6 @@ fn create_top_level_acceleration_structure(
     log::debug!("Making a TLAS with {} instances", blas_instances.len());
     let instances_buffer = vulkan::Buffer::new_populated(
         allocator,
-        (blas_instances.len() * size_of::<vk::AccelerationStructureInstanceKHR>()) as u64,
         vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
             | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
         blas_instances.as_ptr(),
@@ -885,15 +1099,7 @@ fn create_shader_binding_tables(
     ))
 }
 
-fn create_descriptor_sets(
-    device: &ash::Device,
-    set_layout: vk::DescriptorSetLayout,
-    top_level_as: &AccelerationStructure,
-    storage_images: &[vulkan::Image; 2],
-    ubo: &[vulkan::Buffer; 2],
-    scene: &vulkan::Buffer,
-    materials: &vulkan::Buffer,
-) -> Result<(Destructor<vk::DescriptorPool>, [vk::DescriptorSet; 2])> {
+fn create_descriptor_pool(device: &ash::Device) -> Result<Destructor<vk::DescriptorPool>> {
     let pool_sizes = vec![
         vk::DescriptorPoolSize {
             ty: vk::DescriptorType::ACCELERATION_STRUCTURE_KHR,
@@ -923,15 +1129,26 @@ fn create_descriptor_sets(
     let descriptor_pool_create_info = vk::DescriptorPoolCreateInfo::default()
         .pool_sizes(&pool_sizes)
         .max_sets(MAX_FRAMES_IN_FLIGHT as u32);
-    let descriptor_pool = Destructor::new(
+    Ok(Destructor::new(
         device,
         unsafe { device.create_descriptor_pool(&descriptor_pool_create_info, None)? },
         device.fp_v1_0().destroy_descriptor_pool,
-    );
+    ))
+}
 
+fn create_descriptor_sets(
+    device: &ash::Device,
+    set_layout: vk::DescriptorSetLayout,
+    descriptor_pool: vk::DescriptorPool,
+    top_level_as: &AccelerationStructure,
+    storage_images: &[vulkan::Image; 2],
+    ubo: &[vk::Buffer; 2],
+    scene: &vulkan::Buffer,
+    materials: &vulkan::Buffer,
+) -> Result<[vk::DescriptorSet; 2]> {
     let set_layouts = [set_layout, set_layout];
     let allocate_info = vk::DescriptorSetAllocateInfo::default()
-        .descriptor_pool(descriptor_pool.get())
+        .descriptor_pool(descriptor_pool)
         .set_layouts(&set_layouts);
 
     let descriptor_sets = unsafe { device.allocate_descriptor_sets(&allocate_info)? };
@@ -953,7 +1170,11 @@ fn create_descriptor_sets(
             ..Default::default()
         }];
 
-        let buffer_descriptor = [ubo[i].create_descriptor()];
+        let buffer_descriptor = [vk::DescriptorBufferInfo {
+            buffer: ubo[i],
+            offset: 0,
+            range: size_of::<UniformBufferObject>() as u64,
+        }];
         let scene_descriptor = [scene.create_descriptor()];
         let material_descriptor = [materials.create_descriptor()];
 
@@ -1009,7 +1230,7 @@ fn create_descriptor_sets(
         ];
         unsafe { device.update_descriptor_sets(&descriptor_writes, &[]) };
     }
-    Ok((descriptor_pool, [descriptor_sets[0], descriptor_sets[1]]))
+    Ok([descriptor_sets[0], descriptor_sets[1]])
 }
 
 fn create_pipeline<'a>(
@@ -1217,7 +1438,6 @@ fn create_pipeline<'a>(
 fn build_command_buffers(
     device: &ash::Device,
     rt_device: &ash::khr::ray_tracing_pipeline::Device,
-    storage_image: &mut [vulkan::Image; 2],
     width: u32,
     height: u32,
     descriptor_sets: [vk::DescriptorSet; 2],
@@ -1229,43 +1449,6 @@ fn build_command_buffers(
     pipeline: vk::Pipeline,
     pipeline_layout: vk::PipelineLayout,
 ) -> Result<()> {
-    // Check if either storage image needed a resize and perform it
-    if storage_image[0].resize(width, height)? || storage_image[1].resize(width, height)? {
-        for (i, &descriptor_set) in descriptor_sets.iter().enumerate() {
-            // Now need to update the descriptor to reference the new image
-            let read_image_descriptor = [vk::DescriptorImageInfo {
-                image_view: storage_image[i].view(),
-                image_layout: vk::ImageLayout::GENERAL,
-                ..Default::default()
-            }];
-            let write_image_descriptor = [vk::DescriptorImageInfo {
-                image_view: storage_image[(i + 1) % 2].view(),
-                image_layout: vk::ImageLayout::GENERAL,
-                ..Default::default()
-            }];
-
-            let descriptor_writes = [
-                vk::WriteDescriptorSet {
-                    dst_set: descriptor_set,
-                    dst_binding: 1,
-                    descriptor_count: 1,
-                    descriptor_type: vk::DescriptorType::STORAGE_IMAGE,
-                    ..Default::default()
-                }
-                .image_info(&read_image_descriptor),
-                vk::WriteDescriptorSet {
-                    dst_set: descriptor_set,
-                    dst_binding: 2,
-                    descriptor_count: 1,
-                    descriptor_type: vk::DescriptorType::STORAGE_IMAGE,
-                    ..Default::default()
-                }
-                .image_info(&write_image_descriptor),
-            ];
-            unsafe { device.update_descriptor_sets(&descriptor_writes, &[]) };
-        }
-    }
-
     let begin_info = vk::CommandBufferBeginInfo::default();
 
     // for &command_buffer in command_buffers {
@@ -1328,6 +1511,7 @@ fn build_command_buffers(
             device.end_command_buffer(command_buffer)?;
         }
     }
+    log::trace!("Recorded commands {:?}", command_buffers);
     Ok(())
 }
 
@@ -1350,13 +1534,18 @@ fn create_empty_commands(
 }
 
 fn create_buffer_references(
+    device: &ash::Device,
+    command_pool: vk::CommandPool,
+    queue: vk::Queue,
     allocator: &vk_mem::Allocator,
     data: &Vec<primitives::PrimitiveAddresses>,
 ) -> Result<vulkan::Buffer> {
     log::trace!("Creating buffer references");
-    vulkan::Buffer::new_populated(
+    vulkan::Buffer::new_populated_staged(
+        device,
+        command_pool,
+        queue,
         allocator,
-        (data.len() * size_of::<primitives::PrimitiveAddresses>()) as u64,
         vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
         data.as_ptr(),
         data.len(),
@@ -1364,20 +1553,34 @@ fn create_buffer_references(
 }
 
 fn create_materials(
+    device: &ash::Device,
+    command_pool: vk::CommandPool,
+    queue: vk::Queue,
     allocator: &vk_mem::Allocator,
-    api: &Arc<Mutex<BloomAPI>>,
+    add_material: &mpsc::Receiver<material::Material>,
 ) -> Result<vulkan::Buffer> {
     log::trace!("Creating materials");
 
-    let materials = &api
-        .lock()
-        .expect("Failed to lock api mutex when generating AABBs")
-        .scene
-        .materials;
+    let mut materials = Vec::with_capacity(100);
 
-    let material_buffer = vulkan::Buffer::new_populated(
+    // materials.push(material::Material::new_basic(Vec3::new(1.0, 0.0, 0.0), 0.));
+
+    loop {
+        match add_material.try_recv() {
+            // TODO: Material IDs so we can modify or remove materials
+            Ok(v) => materials.push(v),
+            Err(mpsc::TryRecvError::Empty) => break,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                return Err(anyhow!("Material channel disconnected"))
+            }
+        }
+    }
+
+    let material_buffer = vulkan::Buffer::new_populated_staged(
+        device,
+        command_pool,
+        queue,
         allocator,
-        (materials.len() * size_of::<material::Material>()) as vk::DeviceSize,
         vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS | vk::BufferUsageFlags::STORAGE_BUFFER,
         materials.as_ptr(),
         materials.len(),
@@ -1396,22 +1599,21 @@ fn add_aabb<T: Addressable + Extrema>(
     primitive_addresses: &mut Vec<primitives::PrimitiveAddresses>,
     aabbs: &mut Vec<AABB>,
     aabbs_buffers: &mut Vec<vulkan::Buffer>,
-    obj_id: u64,
     obj: &T,
-    obj_location: &mut HashMap<u64, usize>,
 ) -> Result<()> {
     aabbs.push(primitives::AABB::new(obj));
     primitive_addresses.push(obj.get_addresses(device)?);
-    aabbs_buffers.push(vulkan::Buffer::new_populated(
+    aabbs_buffers.push(vulkan::Buffer::new_populated_staged(
+        device,
+        command_pool,
+        queue,
         allocator,
-        size_of::<primitives::AABB>() as vk::DeviceSize,
         vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
             | vk::BufferUsageFlags::STORAGE_BUFFER
             | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR,
         aabbs.last().unwrap(),
         1,
     )?);
-    obj_location.insert(obj_id, blass.len());
     blass.push(create_bottom_level_acceleration_structure(
         device,
         allocator,
@@ -1432,9 +1634,9 @@ fn create_blas(
     as_device: &ash::khr::acceleration_structure::Device,
     command_pool: vk::CommandPool,
     queue: vk::Queue,
-    api: &Arc<Mutex<BloomAPI>>,
+    update_as: &mpsc::Receiver<physics::UpdateScene>,
 ) -> Result<(
-    HashMap<u64, usize>,
+    HashMap<u64, (Primitive, usize)>,
     Vec<AccelerationStructure>,
     Vec<vk::AccelerationStructureInstanceKHR>,
     Vec<primitives::PrimitiveAddresses>,
@@ -1448,20 +1650,16 @@ fn create_blas(
     let mut aabbs = vec![];
     let mut aabbs_buffers = vec![];
 
-    // Map the IDs of objects to their position in the blass vector
-    let mut obj_location_map: HashMap<u64, usize> = HashMap::new();
+    // Map the IDs of objects to their position in the blass vector and store the object
+    let mut primitive_map: HashMap<u64, (Primitive, usize)> = HashMap::new();
 
-    let scene = &mut api
-        .lock()
-        .expect("Failed to lock api mutex when generating AABBs")
-        .scene;
-
-    // Create objects that the instances will refer to
-    for obj in scene.primitives.iter_mut() {
-        match obj.1 {
-            primitives::Primitive::Model(o) => {
-                obj_location_map.insert(*obj.0, blass.len());
-                o.allocate(allocator, device)?;
+    // TODO: Somehow use ray.update instead?
+    loop {
+        // Create objects that the instances will refer to
+        match update_as.try_recv() {
+            Ok(physics::UpdateScene::Add(id, primitives::Primitive::Model(mut o))) => {
+                log::trace!("{} - Adding a model", line!());
+                o.allocate(allocator, device, command_pool, queue)?;
                 primitive_addresses.push(o.get_addresses(device)?);
                 blass.push(create_bottom_level_acceleration_structure(
                     device,
@@ -1470,14 +1668,16 @@ fn create_blas(
                     command_pool,
                     queue,
                     vk::GeometryTypeKHR::TRIANGLES,
-                    Some(o),
+                    Some(&o),
                     None,
                     None,
                 )?);
+                primitive_map.insert(id, (primitives::Primitive::Model(o), blass.len() - 1));
             }
-            primitives::Primitive::Lentil(o) => {
-                obj_location_map.insert(*obj.0, blass.len());
-                o.allocate(allocator, device)?;
+            Ok(physics::UpdateScene::Add(id, primitives::Primitive::Lentil(mut o))) => {
+                log::trace!("{} - Adding a lentil", line!());
+                o.allocate(allocator, device, command_pool, queue)?;
+                primitive_map.insert(id, (primitives::Primitive::Lentil(o), blass.len() - 1));
                 add_aabb(
                     allocator,
                     device,
@@ -1488,14 +1688,13 @@ fn create_blas(
                     &mut primitive_addresses,
                     &mut aabbs,
                     &mut aabbs_buffers,
-                    *obj.0,
-                    o,
-                    &mut obj_location_map,
+                    &primitive_map.get(&id).unwrap().0,
                 )?;
             }
-            primitives::Primitive::Sphere(o) => {
-                obj_location_map.insert(*obj.0, blass.len());
-                o.allocate(allocator, device)?;
+            Ok(physics::UpdateScene::Add(id, primitives::Primitive::Sphere(mut o))) => {
+                log::trace!("{} - Adding a sphere", line!());
+                o.allocate(allocator, device, command_pool, queue)?;
+                primitive_map.insert(id, (primitives::Primitive::Sphere(o), blass.len() - 1));
                 add_aabb(
                     allocator,
                     device,
@@ -1506,50 +1705,55 @@ fn create_blas(
                     &mut primitive_addresses,
                     &mut aabbs,
                     &mut aabbs_buffers,
-                    *obj.0,
-                    o,
-                    &mut obj_location_map,
+                    &primitive_map.get(&id).unwrap().0,
                 )?;
+            }
+            Ok(physics::UpdateScene::AddInstance(instance_id, primitive_id, transformation)) => {
+                log::trace!("{} - Adding an instance", line!());
+                // TODO: How are we keeping track of instance_id?
+                let (primitive, location_in_blas) = match primitive_map.get(&primitive_id) {
+                    Some(v) => v,
+                    None => {
+                        return Err(anyhow!(
+                            "Failed to find primitive {} in the blas",
+                            primitive_id
+                        ))
+                    }
+                };
+                let primitive_type = match primitive {
+                    &Primitive::Model(_) => ObjectType::Triangle,
+                    &Primitive::Sphere(_) => ObjectType::Sphere,
+                    &Primitive::Lentil(_) => ObjectType::Lentil,
+                };
+                // Create a Bottom Level Acceleration structure for each instance
+                blas_instances.push(create_blas_instance(
+                    as_device,
+                    &mut blass,
+                    *location_in_blas,
+                    transformation,
+                    primitive_type,
+                )?);
+            }
+            Ok(physics::UpdateScene::Remove(_)) => log::warn!(
+                "Asking to remove a primitive before we initial state is built - ignoring"
+            ),
+            Ok(physics::UpdateScene::RemoveInstance(_)) => log::warn!(
+                "Asking to remove an instance before we initial state is built - ignoring"
+            ),
+            Ok(physics::UpdateScene::MoveInstance(_, _)) => {
+                log::warn!("Asking to move an instance before we initial state is built - ignoring")
+            }
+            Err(mpsc::TryRecvError::Empty) => break,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                return Err(anyhow!(
+                    "Update Acceleration Structure channel disconnected"
+                ))
             }
         }
     }
 
-    // Create the instances of objects
-    for instance in scene.instances.iter() {
-        let location_in_blas = match obj_location_map.get(&instance.1 .0) {
-            Some(v) => *v,
-            None => {
-                return Err(anyhow!(
-                    "Failed to find object {} in the blas",
-                    instance.1 .0
-                ))
-            }
-        };
-        let object_type = match scene.primitives.get(&instance.1 .0) {
-            Some(o) => match &o {
-                &Primitive::Model(_) => ObjectType::Triangle,
-                &Primitive::Sphere(_) => ObjectType::Sphere,
-                &Primitive::Lentil(_) => ObjectType::Lentil,
-            },
-            None => {
-                return Err(anyhow!(
-                    "Failed to find object {} in the scene's primitives",
-                    instance.1 .0
-                ))
-            }
-        };
-        // Create a Bottom Level Acceleration structure for each model
-        blas_instances.push(create_blas_instance(
-            as_device,
-            &mut blass,
-            location_in_blas,
-            instance.1 .1,
-            object_type,
-        )?);
-    }
-
     Ok((
-        obj_location_map,
+        primitive_map,
         blass,
         blas_instances,
         primitive_addresses,

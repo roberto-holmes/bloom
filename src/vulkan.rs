@@ -1,8 +1,10 @@
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use ash::{vk, RawPtr};
 use vk_mem::{self, Alloc};
+
+use crate::core;
 
 #[derive(Debug)]
 pub struct Destructor<T: Copy + Default> {
@@ -214,6 +216,9 @@ impl Buffer {
         usage: vk::BufferUsageFlags,
     ) -> Result<Self> {
         log::trace!("Creating VMA allocated buffer");
+        if size == 0 {
+            return Err(anyhow!("Tried to create a 0 size buffer"));
+        }
         let create_info = vk_mem::AllocationCreateInfo {
             usage: location,
             flags,
@@ -262,20 +267,52 @@ impl Buffer {
     }
     pub fn new_populated<T>(
         allocator: &vk_mem::Allocator,
-        size: vk::DeviceSize,
         usage: vk::BufferUsageFlags,
         data: *const T,
-        data_size: usize,
+        data_len: usize,
     ) -> Result<Self> {
         let mut buffer = Self::new_generic(
             allocator,
-            size,
+            (size_of::<T>() * data_len) as u64,
             vk_mem::MemoryUsage::Auto,
             vk_mem::AllocationCreateFlags::HOST_ACCESS_SEQUENTIAL_WRITE,
             usage,
         )?;
         buffer.type_name = std::any::type_name::<T>();
-        buffer.populate(data, data_size)?;
+        buffer.populate(data, data_len)?;
+        log::trace!("Created buffer of {}", buffer.type_name);
+        Ok(buffer)
+    }
+    pub fn new_populated_staged<T>(
+        device: &ash::Device,
+        command_pool: vk::CommandPool,
+        queue: vk::Queue,
+        allocator: &vk_mem::Allocator,
+        usage: vk::BufferUsageFlags,
+        data: *const T,
+        data_len: usize,
+    ) -> Result<Self> {
+        let size = (size_of::<T>() * data_len) as u64;
+        let staging_buffer = Self::new_populated(
+            allocator,
+            vk::BufferUsageFlags::TRANSFER_SRC,
+            data,
+            data_len,
+        )?;
+        let mut buffer =
+            Self::new_gpu(allocator, size, usage | vk::BufferUsageFlags::TRANSFER_DST)?;
+
+        core::copy_buffer(
+            device,
+            staging_buffer.get(),
+            buffer.get(),
+            size,
+            command_pool,
+            queue,
+        )?;
+
+        buffer.type_name = std::any::type_name::<T>();
+
         Ok(buffer)
     }
     pub fn create_descriptor(&self) -> vk::DescriptorBufferInfo {
@@ -404,6 +441,11 @@ impl<'a> Image<'a> {
             let mut create_info: vk_mem::ffi::VmaAllocationCreateInfo =
                 (&self.alloc_create_info).into();
             create_info.pool = self.allocator_pool.pool.0;
+            // TODO: Enable `VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT` for large images/buffers
+            // https://gpuopen-librariesandsdks.github.io/VulkanMemoryAllocator/html/usage_patterns.html
+            // create_info.flags =
+            //     vk_mem::ffi::VmaAllocationCreateFlagBits::VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT
+            //         as u32;
             let mut image = vk::Image::null();
             let mut allocation: vk_mem::ffi::VmaAllocation = std::mem::zeroed();
             vk_mem::ffi::vmaCreateImage(

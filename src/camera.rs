@@ -1,11 +1,27 @@
 use std::f32::consts::{FRAC_PI_2, PI};
 
 use bytemuck::{Pod, Zeroable};
+use cgmath::Quaternion;
 
 use crate::{
     api::{DOF_SCALE, FOCAL_DISTANCE, VFOV_DEG},
     vec::Vec3,
 };
+
+#[derive(Debug, Copy, Clone)]
+pub struct CameraOrientation {
+    pub pos: Vec3,
+    pub quat: Quaternion<f32>,
+}
+
+impl Default for CameraOrientation {
+    fn default() -> Self {
+        Self {
+            pos: Vec3::default(),
+            quat: Quaternion::new(0.0, 1.0, 0.0, 0.0),
+        }
+    }
+}
 
 #[derive(Debug, Copy, Clone, Pod, Zeroable)]
 #[repr(C)]

@@ -506,5 +506,5 @@ fn main(@builtin(position) pos: vec4f) -> @location(0) vec4<f32> {
     // return sample / f32(uniforms.ray_frame_num+1);
     // return vec4(sample / f32(uniforms.ray_frame_num), 1.0);
     return vec4(sample, 1.0);
-        // return vec4(f32(uniforms.frame_num)/100, 0.2, 0.6, 1.0);
+        // return vec4(f32(uniforms.frame_num)/10, 0.2, 0.6, 1.0);
 }

@@ -54,7 +54,7 @@ pub fn thread<'a>(
         }
 
         if !first_run {
-            match core::block_on_semaphore(
+            match core::wait_on_semaphore(
                 &compute.device,
                 compute.semaphore.get(),
                 current_timestamp,

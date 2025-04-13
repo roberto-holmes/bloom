@@ -2,7 +2,6 @@ use anyhow::{Context, Result};
 use ash::vk;
 
 use crate::{
-    core,
     vulkan::{self, Destructor},
     WINDOW_HEIGHT, WINDOW_WIDTH,
 };
@@ -111,8 +110,7 @@ impl SwapChainStuff {
                 .context("Failed to get Swapchain Images")?
         };
 
-        let image_views =
-            core::create_image_views(device, surface_format.format, &swapchain_raw_images)?;
+        let image_views = create_image_views(device, surface_format.format, &swapchain_raw_images)?;
 
         Ok(SwapChainStuff {
             swapchain,
@@ -272,4 +270,45 @@ impl SwapChainSupportDetails {
         }
         vk::PresentModeKHR::FIFO // The only mode that is guaranteed to be available
     }
+}
+
+fn create_image_view(
+    device: &ash::Device,
+    image: vk::Image,
+    format: vk::Format,
+    aspect_flags: vk::ImageAspectFlags,
+) -> Result<Destructor<vk::ImageView>> {
+    let create_info = vk::ImageViewCreateInfo::default()
+        .view_type(vk::ImageViewType::TYPE_2D)
+        .format(format)
+        .image(image)
+        .subresource_range(vk::ImageSubresourceRange {
+            aspect_mask: aspect_flags,
+            base_mip_level: 0,
+            level_count: 1,
+            base_array_layer: 0,
+            layer_count: 1,
+        });
+    Ok(Destructor::new(
+        device,
+        unsafe { device.create_image_view(&create_info, None)? },
+        device.fp_v1_0().destroy_image_view,
+    ))
+}
+
+fn create_image_views(
+    device: &ash::Device,
+    surface_format: vk::Format,
+    swapchain_images: &Vec<vk::Image>,
+) -> Result<Vec<Destructor<vk::ImageView>>> {
+    let mut image_views = vec![];
+    for &image in swapchain_images {
+        image_views.push(create_image_view(
+            device,
+            image,
+            surface_format,
+            vk::ImageAspectFlags::COLOR,
+        )?);
+    }
+    Ok(image_views)
 }

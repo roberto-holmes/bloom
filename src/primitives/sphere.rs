@@ -6,6 +6,7 @@ use crate::{vec::Vec3, vulkan};
 use super::{Addressable, Extrema, ObjectType, Objectionable, PrimitiveAddresses};
 
 #[repr(C)]
+#[derive(Debug)]
 pub struct SphereData {
     pub object_type: u64,
     pub radius: f32,
@@ -24,6 +25,7 @@ impl SphereData {
     }
 }
 
+#[derive(Debug)]
 pub struct Sphere {
     data: SphereData,
     data_buffer: Option<vulkan::Buffer>,
@@ -49,10 +51,15 @@ impl Extrema for Sphere {
 }
 
 impl Objectionable for Sphere {
-    fn allocate(&mut self, allocator: &vk_mem::Allocator, _device: &ash::Device) -> Result<()> {
+    fn allocate(
+        &mut self,
+        allocator: &vk_mem::Allocator,
+        _device: &ash::Device,
+        _command_pool: vk::CommandPool,
+        _queue: vk::Queue,
+    ) -> Result<()> {
         self.data_buffer = Some(vulkan::Buffer::new_populated(
             allocator,
-            size_of::<SphereData>() as u64,
             vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
             &self.data,
             1,

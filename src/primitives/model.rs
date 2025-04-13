@@ -3,7 +3,7 @@ use ash::vk;
 
 use crate::{vec::Vec3, vulkan};
 
-use super::{Addressable, ObjectType, Objectionable, PrimitiveAddresses};
+use super::{Addressable, Extrema, ObjectType, Objectionable, PrimitiveAddresses};
 
 #[repr(C)]
 #[derive(Debug)]
@@ -16,7 +16,7 @@ pub struct MeshData {
 
 #[derive(Debug)]
 pub struct Vertex {
-    _pos: Vec3,
+    pos: Vec3,
     _pad1: u32,
     _normal: Vec3,
     _pad2: u32,
@@ -25,7 +25,7 @@ pub struct Vertex {
 impl Vertex {
     fn new(pos: Vec3, normal: Vec3) -> Self {
         Self {
-            _pos: pos,
+            pos,
             _pad1: 0,
             _normal: normal,
             _pad2: 0,
@@ -267,11 +267,13 @@ impl Model {
 }
 
 impl Objectionable for Model {
-    fn allocate(&mut self, allocator: &vk_mem::Allocator, device: &ash::Device) -> Result<()> {
-        let vertex_buffer_size = self.vertices.len() * size_of::<Vertex>();
-        let index_buffer_size = self.indices.len() * size_of::<u32>();
-        let mat_index_buffer_size = self.material_indices.len() * size_of::<i32>();
-
+    fn allocate(
+        &mut self,
+        allocator: &vk_mem::Allocator,
+        device: &ash::Device,
+        command_pool: vk::CommandPool,
+        queue: vk::Queue,
+    ) -> Result<()> {
         // let max_material_index = 1;
         // TODO: Make sure material indices never exceed the number of available materials?
         // for index in &mut material_indices {
@@ -279,28 +281,33 @@ impl Objectionable for Model {
         // }
 
         // TODO: Add a staging buffer so these buffers can live on the GPU
-        self.vertex_buffer = Some(vulkan::Buffer::new_populated(
+        self.vertex_buffer = Some(vulkan::Buffer::new_populated_staged(
+            device,
+            command_pool,
+            queue,
             allocator,
-            vertex_buffer_size as vk::DeviceSize,
             vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
                 | vk::BufferUsageFlags::STORAGE_BUFFER
                 | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR,
             self.vertices.as_ptr(),
             self.vertices.len(),
         )?);
-        self.index_buffer = Some(vulkan::Buffer::new_populated(
+        self.index_buffer = Some(vulkan::Buffer::new_populated_staged(
+            device,
+            command_pool,
+            queue,
             allocator,
-            index_buffer_size as vk::DeviceSize,
             vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
                 | vk::BufferUsageFlags::STORAGE_BUFFER
                 | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR,
             self.indices.as_ptr(),
             self.indices.len(),
         )?);
-        // log::debug!("Cube materials: {:?}", self.material_indices);
-        self.mat_index_buffer = Some(vulkan::Buffer::new_populated(
+        self.mat_index_buffer = Some(vulkan::Buffer::new_populated_staged(
+            device,
+            command_pool,
+            queue,
             allocator,
-            mat_index_buffer_size as vk::DeviceSize,
             vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS | vk::BufferUsageFlags::STORAGE_BUFFER,
             self.material_indices.as_ptr(),
             self.material_indices.len(),
@@ -325,9 +332,11 @@ impl Objectionable for Model {
                 .get_device_address(device),
         });
 
-        self.main_buffer = Some(vulkan::Buffer::new_populated(
+        self.main_buffer = Some(vulkan::Buffer::new_populated_staged(
+            device,
+            command_pool,
+            queue,
             allocator,
-            size_of::<MeshData>() as u64,
             vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
             self.primitive_data.as_ref().unwrap(),
             1,
@@ -349,5 +358,23 @@ impl Addressable for Model {
         self.mat_index_buffer = None;
         self.primitive_data = None;
         self.main_buffer = None;
+    }
+}
+
+impl Extrema for Model {
+    fn get_extrema(&self) -> (Vec3, Vec3) {
+        if self.vertices.len() == 0 {
+            log::warn!("Trying to check the size of an empty model");
+            return (Vec3::zero(), Vec3::zero());
+        }
+        let mut min = self.vertices[0].pos;
+        let mut max = self.vertices[0].pos;
+
+        for v in &self.vertices {
+            min = min.min_extrema(&v.pos);
+            max = max.max_extrema(&v.pos);
+        }
+
+        (min, max)
     }
 }

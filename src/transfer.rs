@@ -1,36 +1,49 @@
 use std::{
-    sync::{mpsc, Arc, Mutex, RwLock},
+    sync::{mpsc, Arc, RwLock},
     time::Duration,
+    u64,
 };
 
 use anyhow::{anyhow, Result};
 use ash::vk;
+use winit::{dpi::PhysicalSize, event};
 
-use crate::{
-    api::BloomAPI, core, structures, vulkan::Destructor, IDEAL_RADIANCE_IMAGE_SIZE_HEIGHT,
-    IDEAL_RADIANCE_IMAGE_SIZE_WIDTH,
-};
+use crate::{core, ray, structures, uniforms, viewport, vulkan::Destructor, MAX_FRAMES_IN_FLIGHT};
+
+pub enum Event {
+    Draw,
+    Resize,
+}
+
+pub enum ResizedSource {
+    Viewport([vk::Image; 2]),
+    Ray([vk::Image; 2]),
+}
 
 pub fn thread(
     device: ash::Device,
+    instance: ash::Instance,
+    physical_device: vk::PhysicalDevice,
     queue_family_indices: structures::QueueFamilyIndices,
     semaphore: vk::Semaphore,
-    compute_images: &[vk::Image; 2],
-    graphic_images: &[vk::Image; 2],
-
     should_threads_die: Arc<RwLock<bool>>,
-    listener: mpsc::Receiver<u8>,
-    compute_channel: mpsc::Sender<u64>,
-    graphic_channel: mpsc::Sender<u64>,
-    api: Arc<Mutex<BloomAPI>>,
+
+    mut ray_frame_done: single_value_channel::Receiver<u8>,
+    draw_request: mpsc::Receiver<bool>,
+    resize_request: mpsc::Receiver<PhysicalSize<u32>>,
+    resized: mpsc::Receiver<ResizedSource>,
+
+    ubo: mpsc::Sender<uniforms::Event>,
+    ray: mpsc::Sender<ray::TransferCommand>,
+    viewport: mpsc::Sender<viewport::TransferCommand>,
 ) {
     log::trace!("Creating thread");
-    let transfer = match Transfer::new(
+    let mut transfer = match Transfer::new(
         device,
+        instance,
+        physical_device,
         semaphore,
         queue_family_indices,
-        compute_images,
-        graphic_images,
     ) {
         Err(e) => {
             log::error!("Failed to create transfer object: {e}");
@@ -39,8 +52,9 @@ pub fn thread(
         Ok(t) => t,
     };
 
-    let mut compute_valid_frame_index = 0;
+    let mut output_frame_index = 0;
     let mut timestamp = 0;
+    let mut is_minimised = false;
 
     loop {
         // Check if we should end the thread
@@ -55,94 +69,168 @@ pub fn thread(
             }
         }
 
-        // Wait for either Graphics or Compute queues to be ready
-        let graphic_valid_frame_index = match listener.recv_timeout(Duration::new(0, 10_000_000)) {
-            Ok(v) => {
-                if v & 0x80 != 0 {
-                    log::trace!("Received new compute frame");
-                    // If received from compute, make note of the current compute frame that can be used to copy
-                    compute_valid_frame_index = v & !0x80;
-                    api.lock().expect("Failed to unlock API").uniform.tick_ray();
-                    continue;
+        // Wait for either a draw or resize event
+        match resize_request.recv_timeout(Duration::new(0, 1_000)) {
+            Ok(new_size) => {
+                if new_size.width == 0 && new_size.height == 0 {
+                    log::debug!("Window is minimized");
+                    is_minimised = true;
+                } else {
+                    is_minimised = false;
                 }
-                log::trace!("Received new graphic frame");
-                api.lock().expect("Failed to unlock API").uniform.tick();
-                // else begin the copy process and notify compute and graphics of when they can begin doing stuff
-                v
+                match resize(&ray, &viewport, &ubo, &resized, new_size) {
+                    Ok((ray_images, viewport_images)) => {
+                        log::trace!(
+                            "Have ray images {:?} and viewport images {:?}",
+                            ray_images,
+                            viewport_images
+                        );
+                        match transfer.update_commands(&ray_images, &viewport_images, new_size) {
+                            Ok(()) => {}
+                            Err(e) => {
+                                log::error!(
+                                    "Failed to update the images in the transfer object: {e}"
+                                );
+                                break;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        log::error!("Failed to resize: {e}");
+                        break;
+                    }
+                }
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                continue;
-            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => {
-                log::error!("Transfer channel has disconnected");
+                log::error!("Resize channel has disconnected");
                 break;
             }
         };
-
-        // Notify compute to pause any further computations
-        match compute_channel.send(timestamp + 1) {
-            Err(e) => {
-                log::error!(
-                    "Transfer failed to notify compute channel that it should pause compute: {e}"
-                )
+        match draw_request.try_recv() {
+            Ok(true) => {
+                if is_minimised {
+                    continue;
+                }
+                log::trace!("Drawing");
+                let ray_frame = *ray_frame_done.latest();
+                // Notify ray to pause any further ray tracing until the image is free to use
+                match ray.send(ray::TransferCommand::Pause(timestamp + 1)) {
+                    Err(e) => {
+                        log::error!(
+                                "Transfer failed to notify ray channel that it should pause ray tracing: {e}"
+                            );
+                        break;
+                    }
+                    Ok(()) => {}
+                }
+                // Let the viewport know when the data will be ready and which frame to use
+                match viewport.send(viewport::TransferCommand::Ready(
+                    timestamp + 1,
+                    output_frame_index,
+                )) {
+                    Err(e) => {
+                        log::error!("Transfer failed to notify graphics channel: {e}");
+                        break;
+                    }
+                    Ok(()) => {}
+                }
+                // Perform a copy
+                match transfer.perform_compute_copy(
+                    output_frame_index,
+                    ray_frame as usize,
+                    timestamp,
+                    timestamp + 1,
+                ) {
+                    Err(e) => {
+                        log::error!("Failed to perform copy operation {e}");
+                        break;
+                    }
+                    Ok(()) => {}
+                }
+                timestamp += 1;
+                output_frame_index += 1;
+                output_frame_index %= MAX_FRAMES_IN_FLIGHT;
             }
-            Ok(()) => {}
-        }
-        // Let graphics know when the data will be ready
-        match graphic_channel.send(timestamp + 1) {
-            Err(e) => {
-                log::error!("Transfer failed to notify graphics channel: {e}")
+            Ok(false) => {}
+            Err(mpsc::TryRecvError::Empty) => {}
+            Err(mpsc::TryRecvError::Disconnected) => {
+                log::error!("Draw channel has disconnected");
+                break;
             }
-            Ok(()) => {}
         }
-
-        // log::trace!(
-        //     "Copying compute {compute_valid_frame_index} to graphic {graphic_valid_frame_index}"
-        // );
-
-        // Perform a copy
-        match transfer.perform_compute_copy(
-            graphic_valid_frame_index as usize,
-            compute_valid_frame_index as usize,
-            timestamp,
-            timestamp + 1,
-        ) {
-            Err(e) => {
-                log::error!("Failed to perform copy operation {e}")
-            }
-            Ok(()) => {}
-        }
-        timestamp += 1;
     }
 }
 
+fn resize(
+    ray: &mpsc::Sender<ray::TransferCommand>,
+    viewport: &mpsc::Sender<viewport::TransferCommand>,
+    ubo: &mpsc::Sender<uniforms::Event>,
+    resized: &mpsc::Receiver<ResizedSource>,
+    new_size: PhysicalSize<u32>,
+) -> Result<([vk::Image; 2], [vk::Image; 2])> {
+    ray.send(ray::TransferCommand::Resize(new_size))?;
+    viewport.send(viewport::TransferCommand::Resize(new_size))?;
+    ubo.send(uniforms::Event::Resize(new_size))?;
+
+    // Check that we get a confirmation from Ray and Viewport
+    let mut ray_resized = false;
+    let mut viewport_resized = false;
+
+    let mut ray_images = None;
+    let mut viewport_images = None;
+
+    loop {
+        match resized.recv_timeout(Duration::new(10, 000_000_000)) {
+            Ok(ResizedSource::Ray(v)) => {
+                ray_resized = true;
+                ray_images = Some(v);
+                if viewport_resized {
+                    break;
+                }
+            }
+            Ok(ResizedSource::Viewport(v)) => {
+                viewport_resized = true;
+                viewport_images = Some(v);
+                if ray_resized {
+                    break;
+                }
+            }
+            Err(e) => {
+                return Err(anyhow!("Timed out waiting for resize to complete (ray - {ray_resized}, viewport - {viewport_resized}): {e}"));
+            }
+        }
+    }
+
+    Ok((ray_images.unwrap(), viewport_images.unwrap()))
+}
+
 struct Transfer {
-    pub device: ash::Device,
     queue: vk::Queue,
     semaphore: vk::Semaphore,
     #[allow(dead_code)]
     command_pool: Destructor<vk::CommandPool>,
     commands: [vk::CommandBuffer; 4],
+    pub device: ash::Device,
+    instance: ash::Instance,
+    physical_device: vk::PhysicalDevice,
 }
 
 impl Transfer {
     pub fn new(
         device: ash::Device,
+        instance: ash::Instance,
+        physical_device: vk::PhysicalDevice,
         semaphore: vk::Semaphore,
         queue_family_indices: structures::QueueFamilyIndices,
-        compute_images: &[vk::Image; 2],
-        graphic_images: &[vk::Image; 2],
     ) -> Result<Self> {
         log::trace!("Creating object");
         let queue = core::create_queue(&device, queue_family_indices.transfer_family.unwrap());
-        let (command_pool, commands) = create_commands(
-            &device,
-            queue_family_indices,
-            compute_images,
-            graphic_images,
-        )?;
+        let (command_pool, commands) = create_commands(&device, &queue_family_indices)?;
         Ok(Self {
             device,
+            instance,
+            physical_device,
             queue,
             semaphore,
             command_pool,
@@ -151,18 +239,26 @@ impl Transfer {
     }
     pub fn perform_compute_copy(
         &self,
-        graphic_frame_index: usize,
-        compute_frame_index: usize,
+        viewport_frame_index: usize,
+        ray_frame_index: usize,
         timestamp_to_wait: u64,
         timestamp_to_signal: u64,
     ) -> Result<()> {
+        // unsafe { self.device.queue_wait_idle(self.queue)? };
         let wait_timestamps = [timestamp_to_wait];
         let signal_timestamps = [timestamp_to_signal];
         let semaphores = [self.semaphore];
         let wait_stages = [vk::PipelineStageFlags::TRANSFER];
 
-        let command_index = 1 << graphic_frame_index | compute_frame_index;
+        let command_index = 1 << viewport_frame_index | ray_frame_index;
         let command_buffer = [self.commands[command_index]];
+
+        log::trace!(
+            "Copying {ray_frame_index} to {viewport_frame_index} (command {command_index}/{:?}) - Waiting on timestamp {}, will signal {}",
+            command_buffer[0],
+            timestamp_to_wait,
+            timestamp_to_signal
+        );
 
         let mut timeline_info = vk::TimelineSemaphoreSubmitInfo::default()
             .signal_semaphore_values(&signal_timestamps)
@@ -181,15 +277,171 @@ impl Transfer {
             Err(e) => return Err(anyhow!("Failed to submit compute commands: {}", e)),
             _ => {}
         }
+        // match core::wait_on_semaphore(&self.device, self.semaphore, timestamp_to_wait, 1_000_000) {
+        //     Ok(()) => {}
+        //     Err(vk::Result::TIMEOUT) => log::warn!("Semaphore timed out"),
+        //     Err(e) => {
+        //         log::error!("Failed to wait for compute copy to complete: {:?}", e)
+        //     }
+        // }
+        Ok(())
+    }
+    fn update_commands(
+        &mut self,
+        ray_images: &[vk::Image; 2],
+        viewport_images: &[vk::Image; 2],
+        size: PhysicalSize<u32>,
+    ) -> Result<()> {
+        for ray_frame_index in 0..2 {
+            for viewport_frame_index in 0..2 {
+                self.copy_commands(
+                    ray_frame_index,
+                    viewport_frame_index,
+                    ray_images,
+                    viewport_images,
+                    size,
+                )?;
+            }
+        }
+        log::info!("Prepared commands {:?}", self.commands);
+        Ok(())
+    }
+
+    fn copy_commands(
+        &mut self,
+        ray_frame_index: usize,
+        viewport_frame_index: usize,
+        ray_images: &[vk::Image; 2],
+        viewport_images: &[vk::Image; 2],
+        size: PhysicalSize<u32>,
+    ) -> Result<()> {
+        let command_buffer = self.commands[1 << viewport_frame_index | ray_frame_index];
+
+        let subresource_range = vk::ImageSubresourceRange {
+            aspect_mask: vk::ImageAspectFlags::COLOR,
+            base_mip_level: 0,
+            level_count: 1,
+            base_array_layer: 0,
+            layer_count: 1,
+        };
+
+        let mut ray_barrier = vk::ImageMemoryBarrier::default()
+            .old_layout(vk::ImageLayout::GENERAL)
+            .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .image(ray_images[ray_frame_index])
+            .subresource_range(subresource_range)
+            .src_access_mask(vk::AccessFlags::SHADER_READ)
+            .dst_access_mask(vk::AccessFlags::TRANSFER_READ);
+        let mut viewport_barrier = vk::ImageMemoryBarrier::default()
+            .old_layout(vk::ImageLayout::UNDEFINED)
+            .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .image(viewport_images[viewport_frame_index])
+            .subresource_range(subresource_range)
+            .src_access_mask(vk::AccessFlags::SHADER_READ)
+            .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE);
+
+        let mut image_memory_barriers = [ray_barrier, viewport_barrier];
+
+        let subresource = vk::ImageSubresourceLayers {
+            aspect_mask: vk::ImageAspectFlags::COLOR,
+            mip_level: 0,
+            base_array_layer: 0,
+            layer_count: 1,
+        };
+
+        let width = std::cmp::min(
+            size.width,
+            core::get_max_image_size(&self.instance, self.physical_device),
+        );
+        let height = std::cmp::min(
+            size.height,
+            core::get_max_image_size(&self.instance, self.physical_device),
+        );
+
+        log::warn!("Copy region is {width}x{height}");
+
+        let regions = [vk::ImageCopy {
+            src_subresource: subresource,
+            dst_subresource: subresource,
+            src_offset: vk::Offset3D { x: 0, y: 0, z: 0 },
+            dst_offset: vk::Offset3D { x: 0, y: 0, z: 0 },
+            extent: vk::Extent3D {
+                width,
+                height,
+                depth: 1,
+            },
+        }];
+
+        let begin_info = vk::CommandBufferBeginInfo::default();
+        unsafe {
+            self.device
+                .begin_command_buffer(command_buffer, &begin_info)?;
+            self.device.cmd_pipeline_barrier(
+                command_buffer,
+                vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &image_memory_barriers,
+            );
+            self.device.cmd_copy_image(
+                command_buffer,
+                ray_images[ray_frame_index],
+                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                viewport_images[viewport_frame_index],
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                &regions,
+            );
+        }
+
+        ray_barrier.src_access_mask = vk::AccessFlags::TRANSFER_READ;
+        ray_barrier.dst_access_mask = vk::AccessFlags::SHADER_READ;
+        viewport_barrier.src_access_mask = vk::AccessFlags::TRANSFER_WRITE;
+        viewport_barrier.dst_access_mask = vk::AccessFlags::SHADER_READ;
+        ray_barrier.old_layout = vk::ImageLayout::TRANSFER_SRC_OPTIMAL;
+        ray_barrier.new_layout = vk::ImageLayout::GENERAL;
+        viewport_barrier.old_layout = vk::ImageLayout::TRANSFER_DST_OPTIMAL;
+        viewport_barrier.new_layout = vk::ImageLayout::GENERAL;
+
+        image_memory_barriers = [ray_barrier, viewport_barrier]; // TODO: Is this necessary or will the changes already be here?
+
+        unsafe {
+            self.device.cmd_pipeline_barrier(
+                command_buffer,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::PipelineStageFlags::FRAGMENT_SHADER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &image_memory_barriers,
+            );
+            self.device.end_command_buffer(command_buffer)?;
+        }
+
         Ok(())
     }
 }
 
 impl Drop for Transfer {
     fn drop(&mut self) {
+        // TODO: Set timeline semaphore to max value
+        let signal_info = vk::SemaphoreSignalInfo {
+            semaphore: self.semaphore,
+            value: i32::MAX as u64,
+            ..Default::default()
+        };
         unsafe {
             match self.device.queue_wait_idle(self.queue) {
                 Err(e) => log::error!("Transfer failed to wait for its queue to finish: {e}"),
+                _ => {}
+            }
+            match self.device.signal_semaphore(&signal_info) {
+                Err(e) => log::error!("Transfer failed to signal the end of the semaphore: {e}"),
                 _ => {}
             }
         }
@@ -198,9 +450,7 @@ impl Drop for Transfer {
 
 fn create_commands(
     device: &ash::Device,
-    queue_family_indices: structures::QueueFamilyIndices,
-    compute_images: &[vk::Image; 2],
-    graphic_images: &[vk::Image; 2],
+    queue_family_indices: &structures::QueueFamilyIndices,
 ) -> Result<(Destructor<vk::CommandPool>, [vk::CommandBuffer; 4])> {
     let pool_info = vk::CommandPoolCreateInfo::default()
         .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
@@ -210,162 +460,15 @@ fn create_commands(
         unsafe { device.create_command_pool(&pool_info, None)? },
         device.fp_v1_0().destroy_command_pool,
     );
-
     let command_buffers = core::create_command_buffers(device, command_pool.get(), 4)?;
 
-    let copy_commands =
-        record_copy_commands(device, &command_buffers, &compute_images, &graphic_images)?;
-
-    Ok((command_pool, copy_commands))
-}
-
-fn record_copy_commands(
-    device: &ash::Device,
-    command_buffers: &Vec<vk::CommandBuffer>,
-    radiance_images: &[vk::Image; 2],
-    output_images: &[vk::Image; 2],
-) -> Result<[vk::CommandBuffer; 4]> {
-    // We need a set of commands for each permutation of the frames lining up
-    Ok([
-        copy_commands(
-            device,
-            command_buffers,
-            0,
-            0,
-            radiance_images,
-            output_images,
-        )?,
-        copy_commands(
-            device,
-            command_buffers,
-            1,
-            0,
-            radiance_images,
-            output_images,
-        )?,
-        copy_commands(
-            device,
-            command_buffers,
-            0,
-            1,
-            radiance_images,
-            output_images,
-        )?,
-        copy_commands(
-            device,
-            command_buffers,
-            1,
-            1,
-            radiance_images,
-            output_images,
-        )?,
-    ])
-}
-
-fn copy_commands(
-    device: &ash::Device,
-    command_buffers: &Vec<vk::CommandBuffer>,
-    current_frame_index: usize,
-    draw_frame: usize,
-    radiance_images: &[vk::Image; 2],
-    output_images: &[vk::Image; 2],
-) -> Result<vk::CommandBuffer> {
-    assert_eq!(command_buffers.len(), 4);
-    let command_buffer = command_buffers[1 << draw_frame | current_frame_index];
-
-    let subresource_range = vk::ImageSubresourceRange {
-        aspect_mask: vk::ImageAspectFlags::COLOR,
-        base_mip_level: 0,
-        level_count: 1,
-        base_array_layer: 0,
-        layer_count: 1,
-    };
-
-    let mut compute_barrier = vk::ImageMemoryBarrier::default()
-        .old_layout(vk::ImageLayout::GENERAL)
-        .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
-        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-        .image(radiance_images[current_frame_index])
-        .subresource_range(subresource_range)
-        .src_access_mask(vk::AccessFlags::SHADER_READ)
-        .dst_access_mask(vk::AccessFlags::TRANSFER_READ);
-    let mut draw_barrier = vk::ImageMemoryBarrier::default()
-        .old_layout(vk::ImageLayout::UNDEFINED)
-        .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-        .image(output_images[draw_frame])
-        .subresource_range(subresource_range)
-        .src_access_mask(vk::AccessFlags::SHADER_READ)
-        .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE);
-
-    let mut image_memory_barriers = [compute_barrier, draw_barrier];
-
-    let subresource = vk::ImageSubresourceLayers {
-        aspect_mask: vk::ImageAspectFlags::COLOR,
-        mip_level: 0,
-        base_array_layer: 0,
-        layer_count: 1,
-    };
-
-    let regions = [vk::ImageCopy {
-        src_subresource: subresource,
-        dst_subresource: subresource,
-        src_offset: vk::Offset3D { x: 0, y: 0, z: 0 },
-        dst_offset: vk::Offset3D { x: 0, y: 0, z: 0 },
-        extent: vk::Extent3D {
-            width: IDEAL_RADIANCE_IMAGE_SIZE_WIDTH, // TODO: Resize dynamically
-            height: IDEAL_RADIANCE_IMAGE_SIZE_HEIGHT,
-            depth: 1,
-        },
-    }];
-
-    let begin_info = vk::CommandBufferBeginInfo::default();
-    unsafe {
-        device.begin_command_buffer(command_buffer, &begin_info)?;
-        device.cmd_pipeline_barrier(
-            command_buffer,
-            vk::PipelineStageFlags::COMPUTE_SHADER,
-            vk::PipelineStageFlags::TRANSFER,
-            vk::DependencyFlags::empty(),
-            &[],
-            &[],
-            &image_memory_barriers,
-        );
-        device.cmd_copy_image(
-            command_buffer,
-            radiance_images[current_frame_index],
-            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
-            output_images[draw_frame],
-            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-            &regions,
-        );
-    }
-
-    compute_barrier.src_access_mask = vk::AccessFlags::TRANSFER_READ;
-    compute_barrier.dst_access_mask = vk::AccessFlags::SHADER_READ;
-    draw_barrier.src_access_mask = vk::AccessFlags::TRANSFER_WRITE;
-    draw_barrier.dst_access_mask = vk::AccessFlags::SHADER_READ;
-    compute_barrier.old_layout = vk::ImageLayout::TRANSFER_SRC_OPTIMAL;
-    compute_barrier.new_layout = vk::ImageLayout::GENERAL;
-    draw_barrier.old_layout = vk::ImageLayout::TRANSFER_DST_OPTIMAL;
-    draw_barrier.new_layout = vk::ImageLayout::GENERAL;
-
-    image_memory_barriers = [compute_barrier, draw_barrier]; // TODO: Is this necessary or will the changes already be here?
-
-    unsafe {
-        device.cmd_pipeline_barrier(
-            command_buffer,
-            vk::PipelineStageFlags::TRANSFER,
-            vk::PipelineStageFlags::FRAGMENT_SHADER,
-            vk::DependencyFlags::empty(),
-            &[],
-            &[],
-            &image_memory_barriers,
-        );
-        device.end_command_buffer(command_buffer)?;
-    }
-
-    Ok(command_buffer)
+    Ok((
+        command_pool,
+        [
+            command_buffers[0],
+            command_buffers[1],
+            command_buffers[2],
+            command_buffers[3],
+        ],
+    ))
 }
