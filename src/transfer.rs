@@ -30,7 +30,7 @@ pub fn thread(
 
     mut ray_frame_done: single_value_channel::Receiver<u8>,
     draw_request: mpsc::Receiver<bool>,
-    resize_request: mpsc::Receiver<PhysicalSize<u32>>,
+    mut resize_request: single_value_channel::Receiver<PhysicalSize<u32>>,
     resized: mpsc::Receiver<ResizedSource>,
 
     ubo: mpsc::Sender<uniforms::Event>,
@@ -77,61 +77,52 @@ pub fn thread(
         }
 
         // Wait for either a draw or resize event
-        match resize_request.recv_timeout(Duration::new(0, 1_000)) {
-            Ok(new_size) => {
-                if new_size == old_size {
-                    continue;
-                }
-                old_size = new_size;
-                if new_size.width == 0 && new_size.height == 0 {
-                    log::debug!("Window is minimized");
-                    is_minimised = true;
-                    was_minimised = true;
-                } else {
-                    is_minimised = false;
-                }
-                match resize(
-                    &ray_resize,
-                    &viewport_resize,
-                    &ubo,
-                    &resized,
-                    new_size,
-                    !is_minimised && !was_minimised,
-                ) {
-                    Ok((true, ray_images, viewport_images)) => {
-                        log::trace!(
-                            "Have ray images {:?} and viewport images {:?}",
-                            ray_images,
-                            viewport_images
-                        );
-                        match transfer.update_commands(&ray_images, &viewport_images, new_size) {
-                            Ok(()) => {}
-                            Err(e) => {
-                                log::error!(
-                                    "Failed to update the images in the transfer object: {e}"
-                                );
-                                break;
-                            }
+        let new_size = resize_request.latest();
+        if *new_size != old_size {
+            old_size = *new_size;
+            if new_size.width == 0 || new_size.height == 0 {
+                log::debug!("Window is minimized");
+                is_minimised = true;
+                was_minimised = true;
+            } else {
+                is_minimised = false;
+            }
+            match transfer.resize(
+                &ray_resize,
+                &viewport_resize,
+                &ubo,
+                &resized,
+                *new_size,
+                !is_minimised && !was_minimised,
+                timestamp,
+            ) {
+                Ok((true, ray_images, viewport_images)) => {
+                    log::trace!(
+                        "Have ray images {:?} and viewport images {:?}",
+                        ray_images,
+                        viewport_images
+                    );
+                    match transfer.update_commands(&ray_images, &viewport_images, *new_size) {
+                        Ok(()) => {}
+                        Err(e) => {
+                            log::error!("Failed to update the images in the transfer object: {e}");
+                            break;
                         }
                     }
-                    Ok((false, _, _)) => {
-                        log::info!("Not rebuilding transfer commands");
-                    }
-                    Err(e) => {
-                        log::error!("Failed to resize: {e}");
-                        break;
-                    }
                 }
-                if was_minimised == true && is_minimised == false {
-                    was_minimised = false;
+                Ok((false, _, _)) => {
+                    log::info!("Not rebuilding transfer commands");
+                }
+                Err(e) => {
+                    log::error!("Failed to resize: {e}");
+                    break;
                 }
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                log::error!("Resize channel has disconnected");
-                break;
+            if was_minimised == true && is_minimised == false {
+                was_minimised = false;
             }
-        };
+        }
+
         match draw_request.try_recv() {
             Ok(true) => {
                 if is_minimised {
@@ -187,87 +178,6 @@ pub fn thread(
     }
 }
 
-fn resize(
-    ray: &single_value_channel::Updater<PhysicalSize<u32>>,
-    viewport: &single_value_channel::Updater<PhysicalSize<u32>>,
-    ubo: &mpsc::Sender<uniforms::Event>,
-    resized: &mpsc::Receiver<ResizedSource>,
-    new_size: PhysicalSize<u32>,
-    need_response: bool,
-) -> Result<(bool, [vk::Image; 2], [vk::Image; 2])> {
-    ray.update(new_size)?;
-    viewport.update(new_size)?;
-    ubo.send(uniforms::Event::Resize(new_size))?;
-    log::info!("Sent size {}x{}", new_size.width, new_size.height);
-
-    if !need_response {
-        return Ok((false, [vk::Image::null(); 2], [vk::Image::null(); 2]));
-    }
-
-    // Check that we get a confirmation from Ray and Viewport
-    let mut ray_resized = false;
-    let mut viewport_resized = false;
-
-    let mut ray_images = None;
-    let mut viewport_images = None;
-
-    loop {
-        match resized.recv_timeout(Duration::new(1, 000_000_000)) {
-            Ok(ResizedSource::Ray((reported_size, v))) if reported_size == new_size => {
-                ray_resized = true;
-                ray_images = Some(v);
-                if viewport_resized {
-                    break;
-                }
-            }
-            Ok(ResizedSource::Ray((reported_size, _))) => {
-                log::warn!(
-                    "Ray reported it has resized to {}x{} but expected {}x{}",
-                    reported_size.width,
-                    reported_size.height,
-                    new_size.width,
-                    new_size.height
-                )
-            }
-            Ok(ResizedSource::Viewport((reported_size, v))) if reported_size == new_size => {
-                viewport_resized = true;
-                viewport_images = Some(v);
-                if ray_resized {
-                    break;
-                }
-            }
-            Ok(ResizedSource::Viewport((reported_size, _))) => {
-                log::warn!(
-                    "Viewport reported it has resized to {}x{} but expected {}x{}",
-                    reported_size.width,
-                    reported_size.height,
-                    new_size.width,
-                    new_size.height
-                )
-            }
-            Err(e) => {
-                return Err(anyhow!(
-                    "Resize to {}x{} (ray - {}, viewport - {}): {e}",
-                    new_size.width,
-                    new_size.height,
-                    if ray_resized {
-                        "completed"
-                    } else {
-                        "timed out"
-                    },
-                    if viewport_resized {
-                        "completed"
-                    } else {
-                        "timed out"
-                    }
-                ));
-            }
-        }
-    }
-
-    Ok((true, ray_images.unwrap(), viewport_images.unwrap()))
-}
-
 struct Transfer {
     queue: vk::Queue,
     semaphore: vk::Semaphore,
@@ -315,6 +225,21 @@ impl Transfer {
 
         let command_index = 1 << viewport_frame_index | ray_frame_index;
         let command_buffer = [self.commands[command_index]];
+
+        // Only allow one copy operation to be in flight
+        let last_timestamp = if timestamp_to_wait > 1 {
+            timestamp_to_wait - 1
+        } else {
+            0
+        };
+
+        match core::wait_on_semaphore(&self.device, self.semaphore, last_timestamp, 100_000_000) {
+            Ok(()) => {}
+            Err(vk::Result::TIMEOUT) => log::warn!("Semaphore timed out"),
+            Err(e) => {
+                log::error!("Failed to wait for compute copy to complete: {:?}", e)
+            }
+        }
 
         log::trace!(
             "Copying {ray_frame_index} to {viewport_frame_index} (command {command_index}/{:?}) - Waiting on timestamp {}, will signal {}",
@@ -487,6 +412,98 @@ impl Transfer {
         }
 
         Ok(())
+    }
+    fn resize(
+        &self,
+        ray: &single_value_channel::Updater<PhysicalSize<u32>>,
+        viewport: &single_value_channel::Updater<PhysicalSize<u32>>,
+        ubo: &mpsc::Sender<uniforms::Event>,
+        resized: &mpsc::Receiver<ResizedSource>,
+        new_size: PhysicalSize<u32>,
+        need_response: bool,
+        timestamp_to_wait: u64,
+    ) -> Result<(bool, [vk::Image; 2], [vk::Image; 2])> {
+        // Wait for the previous copies to finish so the images are not in use
+        match core::wait_on_semaphore(&self.device, self.semaphore, timestamp_to_wait, 100_000_000)
+        {
+            Ok(()) => {}
+            Err(vk::Result::TIMEOUT) => log::warn!("Semaphore timed out"),
+            Err(e) => {
+                log::error!("Failed to wait for compute copy to complete: {:?}", e)
+            }
+        }
+
+        ray.update(new_size)?;
+        viewport.update(new_size)?;
+        ubo.send(uniforms::Event::Resize(new_size))?;
+        log::info!("Sent size {}x{}", new_size.width, new_size.height);
+
+        if !need_response {
+            return Ok((false, [vk::Image::null(); 2], [vk::Image::null(); 2]));
+        }
+
+        // Check that we get a confirmation from Ray and Viewport
+        let mut ray_resized = false;
+        let mut viewport_resized = false;
+
+        let mut ray_images = None;
+        let mut viewport_images = None;
+
+        loop {
+            match resized.recv_timeout(Duration::new(1, 000_000_000)) {
+                Ok(ResizedSource::Ray((reported_size, v))) if reported_size == new_size => {
+                    ray_resized = true;
+                    ray_images = Some(v);
+                    if viewport_resized {
+                        break;
+                    }
+                }
+                Ok(ResizedSource::Ray((reported_size, _))) => {
+                    log::warn!(
+                        "Ray reported it has resized to {}x{} but expected {}x{}",
+                        reported_size.width,
+                        reported_size.height,
+                        new_size.width,
+                        new_size.height
+                    )
+                }
+                Ok(ResizedSource::Viewport((reported_size, v))) if reported_size == new_size => {
+                    viewport_resized = true;
+                    viewport_images = Some(v);
+                    if ray_resized {
+                        break;
+                    }
+                }
+                Ok(ResizedSource::Viewport((reported_size, _))) => {
+                    log::warn!(
+                        "Viewport reported it has resized to {}x{} but expected {}x{}",
+                        reported_size.width,
+                        reported_size.height,
+                        new_size.width,
+                        new_size.height
+                    )
+                }
+                Err(e) => {
+                    return Err(anyhow!(
+                        "Resize to {}x{} (ray - {}, viewport - {}): {e}",
+                        new_size.width,
+                        new_size.height,
+                        if ray_resized {
+                            "completed"
+                        } else {
+                            "timed out"
+                        },
+                        if viewport_resized {
+                            "completed"
+                        } else {
+                            "timed out"
+                        }
+                    ));
+                }
+            }
+        }
+
+        Ok((true, ray_images.unwrap(), viewport_images.unwrap()))
     }
 }
 

@@ -134,10 +134,10 @@ pub fn thread(
 
         let size = resize_receiver.latest();
 
-        if size.width == 0 && size.height == 0 {
+        if size.width == 0 || size.height == 0 {
             was_minimised = true;
             // If we are minimised then we shouldn't bother doing everything else
-            std::thread::sleep(Duration::from_millis(100));
+            std::thread::sleep(Duration::from_millis(10));
             continue;
         }
 
@@ -173,8 +173,12 @@ pub fn thread(
             Ok(TransferCommand::Ready(timestamp, frame)) => {
                 active_frame_index = frame;
                 match viewport.draw(transfer_semaphore, timestamp, frame, &uniforms_sender) {
-                    Err(e) => log::error!("Failed to draw frame: {e}"),
-                    Ok(()) => {
+                    Err(e) => {
+                        log::error!("Failed to draw frame: {e}");
+                        break;
+                    }
+                    Ok(false) => log::warn!("Need to redraw"),
+                    Ok(true) => {
                         if let Err(e) = latest_frame_index.update(frame) {
                             log::error!("Failed to send latest frame index to uniforms: {e}")
                         }
@@ -360,7 +364,10 @@ impl<'a> Viewport<'a> {
                 100_000_000,
             )?; // 100ms timeout
         }
-        self.recreate_swap_chain();
+        if !was_minimised {
+            self.recreate_swap_chain();
+        }
+
         for image in self.images.as_mut().unwrap().iter_mut() {
             let _ = image.resize(new_size.width, new_size.height)?;
             core::transition_image_layout(
@@ -397,13 +404,14 @@ impl<'a> Viewport<'a> {
 
         Ok((true, raw_images))
     }
+    /// Returns whether we successfully presented an image (or if we need to redraw)
     fn draw(
         &mut self,
         transfer_semaphore: vk::Semaphore,
         wait_timestamp: u64,
         frame: usize,
         uniforms_sender: &mpsc::Sender<uniforms::Event>,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         if self.images.is_none() {
             return Err(anyhow!("Tried to draw with an uninitialised image"));
         }
@@ -425,8 +433,8 @@ impl<'a> Viewport<'a> {
         } {
             Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
                 log::warn!("Swapchain reports ERROR_OUT_OF_DATE_KHR",);
-                // self.recreate_swap_chain();
-                return Ok(());
+                self.recreate_swap_chain();
+                return Ok(false);
             }
             Err(e) => {
                 return Err(anyhow!("Failed to get swapchain image: {e}"));
@@ -478,11 +486,21 @@ impl<'a> Viewport<'a> {
             .swapchains(&swapchains)
             .image_indices(&image_indices);
 
-        unsafe {
+        match unsafe {
             self.swapchain_stuff
                 .get_loader()
-                .queue_present(self.queue, &present_info)?
-        };
+                .queue_present(self.queue, &present_info)
+        } {
+            Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
+                log::warn!("Queue Present reports ERROR_OUT_OF_DATE_KHR",);
+                self.recreate_swap_chain();
+                return Ok(false);
+            }
+            Err(e) => {
+                return Err(anyhow!("Failed to present queue: {e}"));
+            }
+            Ok(_) => {}
+        }
 
         // Get timestamps
         // TODO: Move to using vk::QueryResultFlags::WITH_AVAILABILITY copying values to a vk::Buffer or otherwise removing this wait to avoid stalls
@@ -518,7 +536,7 @@ impl<'a> Viewport<'a> {
                 }
             }
         };
-        Ok(())
+        Ok(true)
     }
     fn recreate_swap_chain(&mut self) {
         self.swapchain_stuff

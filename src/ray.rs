@@ -157,7 +157,7 @@ pub fn thread(
         }
 
         while ray.need_resize(*size) {
-            if size.width == 0 && size.height == 0 {
+            if size.width == 0 || size.height == 0 {
                 is_minimised = true;
                 break;
             }

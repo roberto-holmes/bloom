@@ -225,7 +225,7 @@ struct VulkanApp<T: Bloomable> {
     physics_thread: Option<JoinHandle<()>>,
 
     draw_event: mpsc::SyncSender<bool>,
-    resize_event: mpsc::Sender<PhysicalSize<u32>>,
+    resize_event: single_value_channel::Updater<PhysicalSize<u32>>,
     mem_properties: vk::PhysicalDeviceMemoryProperties,
 
     transfer_semaphore: vulkan::Destructor<vk::Semaphore>,
@@ -339,7 +339,11 @@ impl<T: Bloomable> VulkanApp<T> {
         let (character_physics_sender, character_physics_receiver) = mpsc::channel();
         let (update_scene_sender, update_scene_receiver) = mpsc::channel();
 
-        let (resize_sender, resize_receiver) = mpsc::channel();
+        let (resize_receiver, resize_sender) =
+            single_value_channel::channel_starting_with(PhysicalSize {
+                width: WINDOW_WIDTH,
+                height: WINDOW_HEIGHT,
+            });
         let (draw_sender, draw_receiver) = mpsc::sync_channel(1);
 
         let (ray_latest_frame_index_receiver, ray_latest_frame_index_sender) =
@@ -564,12 +568,8 @@ impl<T: Bloomable> VulkanApp<T> {
 
     pub fn resize(&mut self, new_size: PhysicalSize<u32>) {
         self.current_size = new_size;
-        log::info!(
-            "Size will be {}x{} on next resize",
-            new_size.width,
-            new_size.height
-        );
-        match self.resize_event.send(self.current_size) {
+        log::trace!("Resizing to {}x{}", new_size.width, new_size.height);
+        match self.resize_event.update(self.current_size) {
             Err(e) => {
                 log::error!("Failed to send resize request: {e}")
             }
