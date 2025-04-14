@@ -19,7 +19,7 @@ mod viewport;
 mod vulkan;
 
 use std::{
-    sync::{mpsc, Arc, Mutex, RwLock},
+    sync::{mpsc, Arc, RwLock},
     thread::{self, JoinHandle},
     time::{Duration, SystemTime},
 };
@@ -29,7 +29,7 @@ use api::{BloomAPI, Bloomable};
 use ash::{vk, Entry};
 use core::*;
 use debug::ValidationInfo;
-use structures::{SurfaceStuff, SwapChainStuff};
+use structures::SurfaceStuff;
 use uniforms::UniformBufferObject;
 use vulkan::Destructor;
 use winit::{
@@ -172,18 +172,6 @@ impl<T: Bloomable> ApplicationHandler for App<T> {
                 self.last_frame_time = SystemTime::now();
                 self.vulkan.as_mut().unwrap().draw(delta_time);
             }
-            // WindowEvent::KeyboardInput {
-            //     event:
-            //         KeyEvent {
-            //             state: ElementState::Pressed,
-            //             physical_key: PhysicalKey::Code(KeyCode::KeyR),
-            //             ..
-            //         },
-            //     ..
-            // } => {
-            //     log::info!("Resize button pressed");
-            //     self.vulkan.as_mut().unwrap().resize();
-            // }
             WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {
@@ -268,9 +256,6 @@ impl<T: Bloomable> VulkanApp<T> {
                 .get_physical_device_memory_properties(physical_device)
         };
 
-        // let graphics_queue =
-        //     core::create_queue(device.get(), queue_family_indices.graphics_family.unwrap());
-
         let ray_uniform_buffers = create_uniform_buffer::<UniformBufferObject>(&allocator)?;
         let viewport_uniform_buffers = create_uniform_buffer::<UniformBufferObject>(&allocator)?;
 
@@ -279,25 +264,6 @@ impl<T: Bloomable> VulkanApp<T> {
             viewport_uniform_buffers[0].get(),
             viewport_uniform_buffers[1].get(),
         ];
-
-        // let command_pool = create_command_pool(
-        //     device.get(),
-        //     queue_family_indices.graphics_family.unwrap().0,
-        // )?;
-
-        // let descriptor_sets = create_descriptor_sets(
-        //     device.get(),
-        //     descriptor_pool.get(),
-        //     set_layout.get(),
-        //     &uniform_buffers,
-        //     &raw_graphic_image_views,
-        // )?;
-
-        // let command_buffers = create_command_buffers(
-        //     device.get(),
-        //     command_pool.get(),
-        //     MAX_FRAMES_IN_FLIGHT as u32,
-        // )?;
 
         let should_transfer_die = Arc::new(RwLock::new(false));
         let should_viewport_die = Arc::new(RwLock::new(false));

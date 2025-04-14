@@ -5,7 +5,7 @@ use crate::{
     debug::{check_validation_layer_support, populate_debug_messenger_create_info},
     tools, VALIDATION,
 };
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Result};
 use ash::vk;
 use std::collections::HashSet;
 use std::ffi::CString;
@@ -466,20 +466,6 @@ pub fn create_shader_module(
     }
 }
 
-pub fn find_memory_type(
-    type_filter: u32,
-    required_properties: vk::MemoryPropertyFlags,
-    mem_properties: vk::PhysicalDeviceMemoryProperties,
-) -> Result<u32> {
-    for (i, memory_type) in mem_properties.memory_types.iter().enumerate() {
-        if (type_filter & (1 << i)) > 0 && memory_type.property_flags.contains(required_properties)
-        {
-            return Ok(i as u32);
-        }
-    }
-    return Err(anyhow!("Failed to find a memory type"));
-}
-
 pub fn copy_buffer(
     device: &ash::Device,
     src: vk::Buffer,
@@ -531,148 +517,6 @@ pub fn create_command_buffers(
     let command_buffers = unsafe { device.allocate_command_buffers(&alloc_info) }?;
     Ok(command_buffers)
 }
-
-fn create_image(
-    device: &ash::Device,
-    width: u32,
-    height: u32,
-    format: vk::Format,
-    tiling: vk::ImageTiling,
-    usage: vk::ImageUsageFlags,
-    required_memory_properties: vk::MemoryPropertyFlags,
-    device_memory_properties: vk::PhysicalDeviceMemoryProperties,
-) -> Result<(Destructor<vk::Image>, Destructor<vk::DeviceMemory>)> {
-    let image_create_info = vk::ImageCreateInfo::default()
-        .image_type(vk::ImageType::TYPE_2D)
-        .extent(vk::Extent3D {
-            width,
-            height,
-            depth: 1,
-        })
-        .mip_levels(1)
-        .array_layers(1)
-        .format(format)
-        .tiling(tiling)
-        .initial_layout(vk::ImageLayout::UNDEFINED)
-        .usage(usage)
-        .sharing_mode(vk::SharingMode::EXCLUSIVE)
-        .samples(vk::SampleCountFlags::TYPE_1);
-
-    let texture_image = unsafe {
-        device
-            .create_image(&image_create_info, None)
-            .context("Failed to create Texture Image!")?
-    };
-
-    let image_memory_requirement = unsafe { device.get_image_memory_requirements(texture_image) };
-    let memory_allocate_info = vk::MemoryAllocateInfo::default()
-        .allocation_size(image_memory_requirement.size)
-        .memory_type_index(find_memory_type(
-            image_memory_requirement.memory_type_bits,
-            required_memory_properties,
-            device_memory_properties,
-        )?);
-
-    let texture_image_memory = unsafe {
-        device
-            .allocate_memory(&memory_allocate_info, None)
-            .context("Failed to allocate texture image memory")?
-    };
-
-    unsafe {
-        device
-            .bind_image_memory(texture_image, texture_image_memory, 0)
-            .context("Failed to bind image memory")?
-    };
-    let image = Destructor::new(device, texture_image, device.fp_v1_0().destroy_image);
-    let image_memory = Destructor::new(device, texture_image_memory, device.fp_v1_0().free_memory);
-
-    Ok((image, image_memory))
-}
-
-// #[allow(unused)]
-// pub fn create_texture_image(
-//     device: &ash::Device,
-//     mem_properties: vk::PhysicalDeviceMemoryProperties,
-//     command_pool: vk::CommandPool,
-//     submit_queue: vk::Queue,
-// ) -> Result<(Destructor<vk::Image>, Destructor<vk::DeviceMemory>)> {
-//     let mut image_object = image::ImageReader::open("textures/statue.jpg")?.decode()?; // Apparently this function is slow in debug mode
-//     image_object = image_object.flipv();
-//     let (image_width, image_height) = (image_object.width(), image_object.height());
-//     let image_size =
-//         (std::mem::size_of::<u8>() as u32 * image_width * image_height * 4) as vk::DeviceSize;
-//     let image_data = image_object.to_rgba8().into_raw();
-
-//     if image_size <= 0 {
-//         return Err(anyhow!("Failed to load texture image"));
-//     }
-
-//     let (staging_buffer, staging_buffer_memory) = create_buffer(
-//         device,
-//         mem_properties,
-//         image_size,
-//         vk::BufferUsageFlags::TRANSFER_SRC,
-//         vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
-//     )?;
-
-//     unsafe {
-//         let data_ptr = device
-//             .map_memory(
-//                 staging_buffer_memory.get(),
-//                 0,
-//                 image_size,
-//                 vk::MemoryMapFlags::empty(),
-//             )
-//             .context("Failed to map memory for the image texture buffer")?
-//             as *mut u8;
-
-//         data_ptr.copy_from_nonoverlapping(image_data.as_ptr(), image_data.len());
-
-//         device.unmap_memory(staging_buffer_memory.get());
-//     }
-
-//     let (texture_image, texture_image_memory) = create_image(
-//         device,
-//         image_width,
-//         image_height,
-//         vk::Format::R8G8B8A8_SRGB,
-//         vk::ImageTiling::OPTIMAL,
-//         vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED,
-//         vk::MemoryPropertyFlags::DEVICE_LOCAL,
-//         mem_properties,
-//     )?;
-
-//     transition_image_layout(
-//         device,
-//         command_pool,
-//         submit_queue,
-//         texture_image.get(),
-//         vk::ImageLayout::UNDEFINED,
-//         vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-//     )?;
-
-//     copy_buffer_to_image(
-//         device,
-//         command_pool,
-//         submit_queue,
-//         staging_buffer.get(),
-//         texture_image.get(),
-//         image_width,
-//         image_height,
-//     )?;
-
-//     transition_image_layout(
-//         device,
-//         command_pool,
-//         submit_queue,
-//         texture_image.get(),
-//         vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-//         vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-//     )?;
-
-//     Ok((texture_image, texture_image_memory))
-// }
 
 pub fn create_storage_image_pair<'a>(
     device: &ash::Device,
@@ -845,48 +689,6 @@ pub fn transition_image_layout(
     Ok(())
 }
 
-fn copy_buffer_to_image(
-    device: &ash::Device,
-    command_pool: vk::CommandPool,
-    submit_queue: vk::Queue,
-    buffer: vk::Buffer,
-    image: vk::Image,
-    width: u32,
-    height: u32,
-) -> Result<()> {
-    let command_buffer = begin_single_time_commands(device, command_pool)?;
-
-    let regions = [vk::BufferImageCopy::default()
-        .buffer_offset(0)
-        .buffer_row_length(0)
-        .buffer_image_height(0)
-        .image_subresource(vk::ImageSubresourceLayers {
-            aspect_mask: vk::ImageAspectFlags::COLOR,
-            mip_level: 0,
-            base_array_layer: 0,
-            layer_count: 1,
-        })
-        .image_offset(vk::Offset3D::default())
-        .image_extent(vk::Extent3D {
-            width,
-            height,
-            depth: 1,
-        })];
-
-    unsafe {
-        device.cmd_copy_buffer_to_image(
-            command_buffer,
-            buffer,
-            image,
-            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-            &regions,
-        )
-    };
-
-    end_single_time_command(device, command_pool, submit_queue, command_buffer)?;
-    Ok(())
-}
-
 #[allow(unused)]
 pub fn create_texture_sampler(
     device: &ash::Device,
@@ -911,30 +713,6 @@ pub fn create_texture_sampler(
         .min_lod(0.0)
         .max_lod(0.0);
     Ok(unsafe { device.create_sampler(&create_info, None)? })
-}
-
-fn find_supported_format(
-    instance: &ash::Instance,
-    physical_device: vk::PhysicalDevice,
-    candidates: &Vec<vk::Format>,
-    tiling: vk::ImageTiling,
-    features: vk::FormatFeatureFlags,
-) -> Result<vk::Format> {
-    for &format in candidates {
-        let props =
-            unsafe { instance.get_physical_device_format_properties(physical_device, format) };
-
-        if tiling == vk::ImageTiling::LINEAR
-            && (props.linear_tiling_features & features) == features
-        {
-            return Ok(format);
-        } else if tiling == vk::ImageTiling::OPTIMAL
-            && (props.optimal_tiling_features & features) == features
-        {
-            return Ok(format);
-        }
-    }
-    Err(anyhow!("Failed to find a supported format"))
 }
 
 pub fn prepare_timestamp_queries(

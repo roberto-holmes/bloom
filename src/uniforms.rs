@@ -11,7 +11,7 @@ use crate::{
     api::{DOF_SCALE, FOCAL_DISTANCE, VFOV_DEG},
     camera::{Camera, CameraUniforms},
     vec::Vec3,
-    vulkan, WINDOW_HEIGHT, WINDOW_WIDTH,
+    vulkan,
 };
 
 pub enum Event {

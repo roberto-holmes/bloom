@@ -111,6 +111,7 @@ pub fn thread(
 
         let mut size = resize.latest();
 
+        // TODO: Figure out why Ray sometimes doesn't always start until a manual resize/draw occurs
         if first_run {
             let new_images = match ray.resize(*size) {
                 Err(e) => {
