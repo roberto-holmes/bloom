@@ -10,11 +10,6 @@ use winit::dpi::PhysicalSize;
 
 use crate::{core, ray, structures, uniforms, viewport, vulkan::Destructor, MAX_FRAMES_IN_FLIGHT};
 
-pub enum Event {
-    Draw,
-    Resize,
-}
-
 pub enum ResizedSource {
     Viewport((PhysicalSize<u32>, [vk::Image; 2])),
     Ray((PhysicalSize<u32>, [vk::Image; 2])),
@@ -179,6 +174,7 @@ pub fn thread(
 }
 
 struct Transfer {
+    last_timestamp: u64,
     queue: vk::Queue,
     semaphore: vk::Semaphore,
     #[allow(dead_code)]
@@ -201,6 +197,7 @@ impl Transfer {
         let queue = core::create_queue(&device, queue_family_indices.transfer_family.unwrap());
         let (command_pool, commands) = create_commands(&device, &queue_family_indices)?;
         Ok(Self {
+            last_timestamp: 0,
             device,
             instance,
             physical_device,
@@ -211,7 +208,7 @@ impl Transfer {
         })
     }
     pub fn perform_compute_copy(
-        &self,
+        &mut self,
         viewport_frame_index: usize,
         ray_frame_index: usize,
         timestamp_to_wait: u64,
@@ -265,13 +262,7 @@ impl Transfer {
             Err(e) => return Err(anyhow!("Failed to submit compute commands: {}", e)),
             _ => {}
         }
-        // match core::wait_on_semaphore(&self.device, self.semaphore, timestamp_to_wait, 1_000_000) {
-        //     Ok(()) => {}
-        //     Err(vk::Result::TIMEOUT) => log::warn!("Semaphore timed out"),
-        //     Err(e) => {
-        //         log::error!("Failed to wait for compute copy to complete: {:?}", e)
-        //     }
-        // }
+        self.last_timestamp = timestamp_to_signal;
         Ok(())
     }
     fn update_commands(
@@ -516,15 +507,24 @@ impl Drop for Transfer {
             ..Default::default()
         };
         unsafe {
-            match self.device.queue_wait_idle(self.queue) {
-                Err(e) => log::error!("Transfer failed to wait for its queue to finish: {e}"),
-                _ => {}
+            match core::wait_on_semaphore(
+                &self.device,
+                self.semaphore,
+                self.last_timestamp,
+                100_000_000,
+            ) {
+                Ok(()) => {}
+                Err(vk::Result::TIMEOUT) => log::warn!("Semaphore timed out"),
+                Err(e) => {
+                    log::error!("Failed to wait for compute copy to complete: {:?}", e)
+                }
             }
             match self.device.signal_semaphore(&signal_info) {
                 Err(e) => log::error!("Transfer failed to signal the end of the semaphore: {e}"),
                 _ => {}
             }
         }
+        log::trace!("Cleaned up Transfer");
     }
 }
 

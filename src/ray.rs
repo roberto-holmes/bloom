@@ -148,7 +148,8 @@ pub fn thread(
             // Send current frame to transfer thread so that it knows where it can get a valid frame from
             match notify_complete_frame.update(current_frame_index as u8) {
                 Err(e) => {
-                    log::error!("Failed to notify transfer channel: {e}")
+                    log::error!("Failed to notify transfer channel: {e}");
+                    break;
                 }
                 Ok(()) => {}
             }
@@ -640,6 +641,7 @@ impl<'a> Drop for Ray<'a> {
                 _ => {}
             }
         }
+        log::trace!("Cleaned up Ray");
     }
 }
 

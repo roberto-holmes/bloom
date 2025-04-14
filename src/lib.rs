@@ -601,12 +601,33 @@ impl<T: Bloomable> Drop for VulkanApp<T> {
     fn drop(&mut self) {
         log::debug!("Cleaning up");
         // Kill threads
+        match self.should_transfer_die.write() {
+            Ok(mut m) => *m = true,
+            Err(e) => log::error!("Failed to write to transfer death mutex: {e}"),
+        }
+        if let Some(t) = self.transfer_thread.take() {
+            log::debug!("Waiting for transfer to finish");
+            t.join().unwrap();
+        }
+        std::thread::sleep(Duration::from_secs(1));
+        match self.should_ray_die.write() {
+            Ok(mut m) => *m = true,
+            Err(e) => log::error!("Failed to write to ray death mutex: {e}"),
+        }
+        if let Some(t) = self.ray_thread.take() {
+            log::debug!("Waiting for ray to finish");
+            t.join().unwrap();
+        }
+        match self.should_viewport_die.write() {
+            Ok(mut m) => *m = true,
+            Err(e) => log::error!("Failed to write to viewport death mutex: {e}"),
+        }
         match self.should_physics_die.write() {
             Ok(mut m) => *m = true,
             Err(e) => log::error!("Failed to write to physics death mutex: {e}"),
         }
         if let Some(t) = self.physics_thread.take() {
-            log::debug!("Wating for physics to finish");
+            log::debug!("Waiting for physics to finish");
             t.join().unwrap();
         }
         match self.should_character_die.write() {
@@ -614,31 +635,11 @@ impl<T: Bloomable> Drop for VulkanApp<T> {
             Err(e) => log::error!("Failed to write to character death mutex: {e}"),
         }
         if let Some(t) = self.character_thread.take() {
-            log::debug!("Wating for character to finish");
+            log::debug!("Waiting for character to finish");
             t.join().unwrap();
-        }
-        match self.should_transfer_die.write() {
-            Ok(mut m) => *m = true,
-            Err(e) => log::error!("Failed to write to transfer death mutex: {e}"),
-        }
-        if let Some(t) = self.transfer_thread.take() {
-            log::debug!("Wating for transfer to finish");
-            t.join().unwrap();
-        }
-        match self.should_ray_die.write() {
-            Ok(mut m) => *m = true,
-            Err(e) => log::error!("Failed to write to ray death mutex: {e}"),
-        }
-        if let Some(t) = self.ray_thread.take() {
-            log::debug!("Wating for ray to finish");
-            t.join().unwrap();
-        }
-        match self.should_viewport_die.write() {
-            Ok(mut m) => *m = true,
-            Err(e) => log::error!("Failed to write to viewport death mutex: {e}"),
         }
         if let Some(t) = self.viewport_thread.take() {
-            log::debug!("Wating for viewport to finish");
+            log::debug!("Waiting for viewport to finish");
             t.join().unwrap();
         }
         match self.should_uniforms_die.write() {
@@ -646,7 +647,7 @@ impl<T: Bloomable> Drop for VulkanApp<T> {
             Err(e) => log::error!("Failed to write to uniforms death mutex: {e}"),
         }
         if let Some(t) = self.uniforms_thread.take() {
-            log::debug!("Wating for uniforms to finish");
+            log::debug!("Waiting for uniforms to finish");
             t.join().unwrap();
         }
 
