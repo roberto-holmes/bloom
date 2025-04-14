@@ -28,7 +28,7 @@ pub struct BloomAPI {
     update_scene: mpsc::Sender<physics::UpdateScene>,
     control_character: mpsc::Sender<character::Controls>,
 
-    mat_ids: HashSet<u32>,
+    mat_ids: Vec<u32>,
     obj_ids: HashSet<u64>,
     ins_ids: HashSet<u64>,
 }
@@ -51,20 +51,17 @@ impl BloomAPI {
             add_material,
             update_scene,
             control_character,
-            mat_ids: HashSet::with_capacity(100),
+            mat_ids: Vec::with_capacity(100),
             obj_ids: HashSet::with_capacity(100),
             ins_ids: HashSet::with_capacity(100),
         }
     }
+    // Materials can only be added, not removed
     pub fn add_material(&mut self, material: material::Material) -> Result<u32> {
-        let mut rng = rand::rng();
-        let mut id = rng.random();
-        while self.mat_ids.contains(&id) {
-            // Ensure we create a unique ID
-            id = rng.random();
-        }
+        let id = self.mat_ids.len() as u32;
+        self.mat_ids.push(id);
         self.add_material.send(material)?;
-        Ok(id) // TODO: Material IDs
+        Ok(id)
     }
     pub fn add_obj(&mut self, obj: Primitive) -> Result<u64> {
         let mut rng = rand::rng();
