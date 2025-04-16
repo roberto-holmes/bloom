@@ -1,4 +1,5 @@
 use std::sync::{Arc, Mutex, Weak};
+use std::time::Duration;
 
 use anyhow::Result;
 use bloom;
@@ -208,7 +209,8 @@ impl Bloomable for Demo {
         //     _ => (),
         // }
     }
-    fn update(&mut self) {}
+    fn display_tick(&mut self) {}
+    fn physics_tick(&mut self, delta_time: Duration) {}
 }
 
 #[derive(Debug, Default)]

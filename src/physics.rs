@@ -1,6 +1,6 @@
 use cgmath::Matrix4;
 
-use crate::{character, primitives::Primitive, uniforms};
+use crate::{api::Bloomable, character, primitives::Primitive, uniforms};
 use std::{
     sync::{mpsc, Arc, RwLock},
     time::{Duration, Instant},
@@ -22,13 +22,15 @@ pub enum UpdateScene {
     MoveInstance(u64, Matrix4<f32>),
 }
 
-pub fn thread(
+pub fn thread<T: Bloomable>(
     update_period: Duration,
     should_threads_die: Arc<RwLock<bool>>,
     update_scene_channel: mpsc::Receiver<UpdateScene>,
     character_channel: mpsc::Receiver<character::Orientation>,
     update_acceleration_structure: mpsc::Sender<UpdateScene>,
     uniforms: mpsc::Sender<uniforms::Event>,
+
+    user_app: Arc<RwLock<T>>,
 ) {
     let mut physics = Physics::new();
     let mut last_run_time = Instant::now();
@@ -44,6 +46,12 @@ pub fn thread(
                 log::error!("rwlock is poisoned, ending thread: {}", e)
             }
         }
+        // Call the user's update function
+        match user_app.write() {
+            Ok(mut app) => app.physics_tick(last_run_time.elapsed()),
+            Err(e) => log::error!("Physics' User App is poisoned: {e}"),
+        }
+
         match character_channel.try_recv() {
             Ok(v) => {
                 // TODO: Update character position
@@ -76,8 +84,6 @@ pub fn thread(
                 break;
             }
         }
-
-        // TODO: Call user's function
 
         physics.tick();
         // TODO: update_acceleration_structure if something changed

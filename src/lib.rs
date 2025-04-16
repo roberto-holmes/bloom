@@ -72,7 +72,7 @@ const VALIDATION: ValidationInfo = ValidationInfo {
     required_validation_layers: ["", ""],
 };
 
-pub fn run<T: Bloomable>(user_app: T) {
+pub fn run<T: Bloomable + Sync + Send + 'static>(user_app: T) {
     env_logger::init();
     // log::error!("Testing Error");
     // log::warn!("Testing Warn");
@@ -99,7 +99,7 @@ pub fn run<T: Bloomable>(user_app: T) {
     };
 }
 
-struct App<T: Bloomable> {
+struct App<T: Bloomable + Sync + Send + 'static> {
     window: Option<Window>,
     vulkan: Option<VulkanApp<T>>,
     last_frame_time: SystemTime,
@@ -107,7 +107,7 @@ struct App<T: Bloomable> {
     user_app: Option<T>,
 }
 
-impl<T: Bloomable> App<T> {
+impl<T: Bloomable + Sync + Send + 'static> App<T> {
     pub fn new(user_app: T) -> Self {
         Self {
             window: None,
@@ -119,7 +119,7 @@ impl<T: Bloomable> App<T> {
     }
 }
 
-impl<T: Bloomable> ApplicationHandler for App<T> {
+impl<T: Bloomable + Sync + Send + 'static> ApplicationHandler for App<T> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         let window = event_loop
             .create_window(
@@ -152,11 +152,11 @@ impl<T: Bloomable> ApplicationHandler for App<T> {
             }
             WindowEvent::Resized(physical_size) => {
                 // log::info!("Resize event");
-                self.vulkan
-                    .as_mut()
-                    .unwrap()
-                    .user_app
-                    .resize(physical_size.width, physical_size.height);
+                match self.vulkan.as_mut().unwrap().user_app.write() {
+                    Ok(mut app) => app.resize(physical_size.width, physical_size.height),
+                    Err(e) => log::error!("Failed to give user app the resize event: {e}"),
+                }
+
                 self.vulkan.as_mut().unwrap().resize(physical_size);
             }
             WindowEvent::RedrawRequested => {
@@ -184,14 +184,17 @@ impl<T: Bloomable> ApplicationHandler for App<T> {
                 log::info!("Draw button pressed");
                 self.vulkan.as_mut().unwrap().draw(Duration::default());
             }
-            e => self.vulkan.as_mut().unwrap().user_app.input(e),
+            e => match self.vulkan.as_mut().unwrap().user_app.write() {
+                Ok(mut app) => app.input(e),
+                Err(e) => log::error!("Failed to give user app the window event: {e}"),
+            },
         }
     }
 }
 
 #[allow(dead_code)]
-struct VulkanApp<T: Bloomable> {
-    pub user_app: T,
+struct VulkanApp<T: Bloomable + Sync + Send + 'static> {
+    pub user_app: Arc<RwLock<T>>,
     current_size: PhysicalSize<u32>,
 
     should_ray_die: Arc<RwLock<bool>>,
@@ -227,7 +230,7 @@ struct VulkanApp<T: Bloomable> {
     _entry: Entry,
 }
 
-impl<T: Bloomable> VulkanApp<T> {
+impl<T: Bloomable + Sync + Send + 'static> VulkanApp<T> {
     pub fn new(window: &Window, mut user_app: T) -> Result<Self> {
         log::debug!("Initialising vulkan application");
         let entry = unsafe { Entry::load()? };
@@ -350,7 +353,8 @@ impl<T: Bloomable> VulkanApp<T> {
         );
         user_app.init(api)?;
 
-        log::info!("Transfer semaphore is {:?}", transfer_semaphore);
+        let main_user_app = Arc::new(RwLock::new(user_app));
+        let physics_user_app = Arc::clone(&main_user_app);
 
         let physics_thread =
             match thread::Builder::new()
@@ -363,6 +367,7 @@ impl<T: Bloomable> VulkanApp<T> {
                         character_physics_receiver,
                         update_acceleration_structure_sender,
                         physics_update_uniforms_sender,
+                        physics_user_app,
                     );
                 }) {
                 Ok(v) => Some(v),
@@ -391,7 +396,7 @@ impl<T: Bloomable> VulkanApp<T> {
             };
 
         // TODO: Ray either needs to be able to deal with empty scenes or wait until it has data before it builds
-        thread::sleep(Duration::from_secs(1));
+        thread::sleep(Duration::from_secs(2));
 
         let transfer_thread =
             match thread::Builder::new()
@@ -499,7 +504,7 @@ impl<T: Bloomable> VulkanApp<T> {
         };
 
         Ok(Self {
-            user_app,
+            user_app: main_user_app,
             current_size: PhysicalSize {
                 width: 1920,
                 height: 1080,
@@ -563,7 +568,7 @@ impl<T: Bloomable> VulkanApp<T> {
     }
 }
 
-impl<T: Bloomable> Drop for VulkanApp<T> {
+impl<T: Bloomable + Sync + Send + 'static> Drop for VulkanApp<T> {
     fn drop(&mut self) {
         log::debug!("Cleaning up");
         // Kill threads

@@ -1,4 +1,4 @@
-use std::{collections::HashSet, sync::mpsc};
+use std::{collections::HashSet, sync::mpsc, time::Duration};
 
 use anyhow::{anyhow, Result};
 use cgmath::Matrix4;
@@ -15,8 +15,8 @@ pub trait Bloomable {
     fn init(&mut self, api: BloomAPI) -> Result<()>;
     fn input(&mut self, event: WindowEvent);
     fn resize(&mut self, width: u32, height: u32);
-    fn update(&mut self);
-    // fn fixed_update(&mut self);
+    fn display_tick(&mut self);
+    fn physics_tick(&mut self, delta_time: Duration);
 }
 
 pub struct BloomAPI {
