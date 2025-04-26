@@ -104,7 +104,7 @@ struct App<T: Bloomable + Sync + Send + 'static> {
     vulkan: Option<VulkanApp<T>>,
     last_frame_time: SystemTime,
 
-    user_app: Option<T>,
+    is_initialised: bool,
 }
 
 impl<T: Bloomable + Sync + Send + 'static> App<T> {
@@ -114,13 +114,18 @@ impl<T: Bloomable + Sync + Send + 'static> App<T> {
             vulkan: None,
             last_frame_time: SystemTime::now(),
 
-            user_app: Some(user_app),
+            is_initialised: false,
         }
     }
 }
 
 impl<T: Bloomable + Sync + Send + 'static> ApplicationHandler for App<T> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.is_initialised {
+            log::warn!("Window is already initialised but has been resumed");
+            return;
+        }
+        // Create window with whatever default attributes we want
         let window = event_loop
             .create_window(
                 Window::default_attributes()
@@ -133,6 +138,7 @@ impl<T: Bloomable + Sync + Send + 'static> ApplicationHandler for App<T> {
                 .expect("Failed to create vulkan app"),
         );
         self.window = Some(window);
+        self.is_initialised = true;
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
