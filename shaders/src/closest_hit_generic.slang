@@ -15,7 +15,7 @@ StructuredBuffer<Material> materials;
 
 [shader("closesthit")]
 void main(inout Payload ray, in CustomAttributes att) {
-	init_rng(DispatchRaysIndex().xy, ubo.width, ubo.ray_frame_num + uint(length(WorldRayDirection()) * 100));
+	init_rng(DispatchRaysIndex().xy, ubo.width, ubo.ray_frame_num + uint(length(WorldRayDirection()) * 100) + ubo.random_num);
 	// Get the primitive type from RayTCurrent (The second value from the ReportHit function)
 
 	Material mat;

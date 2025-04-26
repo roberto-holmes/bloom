@@ -14,7 +14,7 @@ StructuredBuffer<Material> materials;
 
 [shader("closesthit")]
 void main(inout Payload p, in Attributes attribs) {
-	init_rng(DispatchRaysIndex().xy, ubo.width, ubo.ray_frame_num + uint(length(WorldRayDirection()) * 100));
+	init_rng(DispatchRaysIndex().xy, ubo.width, ubo.ray_frame_num + uint(length(WorldRayDirection()) * 100) + ubo.random_num);
 	// Get the data corresponding to this object from the Instance Index inserted during TLAS creation
 	Mesh* mesh = (Mesh*)scene[InstanceID()].primitive;
 	let vertices = mesh.vertices;

@@ -110,4 +110,5 @@ public struct UBO {
 	public uint ray_frame_num;
 	public uint width;
 	public uint height;
+	public uint random_num;
 }

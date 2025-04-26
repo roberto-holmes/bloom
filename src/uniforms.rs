@@ -25,11 +25,7 @@ pub enum Event {
 #[derive(Debug, Copy, Clone)]
 #[repr(C)]
 pub struct UniformBufferObject {
-    pub camera: CameraUniforms,
-    pub frame_num: u32,
-    pub ray_frame_num: u32, // TODO: Implement in a thread safe way
-    pub width: u32,
-    pub height: u32,
+    random_num: u32,
 }
 
 impl UniformBufferObject {
@@ -40,6 +36,7 @@ impl UniformBufferObject {
             ray_frame_num: 0,
             width: 0,
             height: 0,
+            random_num: rand::random(),
         }
     }
     pub fn update(&mut self, extent: vk::Extent2D) -> Self {
@@ -58,9 +55,9 @@ impl UniformBufferObject {
         self.ray_frame_num = 1;
         self.frame_num = 0;
     }
-    // pub fn update_camera(&mut self, camera: &Camera) {
-    //     self.camera = *camera.uniforms();
-    // }
+    pub fn refresh_random_number(&mut self) {
+        self.random_num = rand::random();
+    }
 }
 
 pub fn thread(
@@ -115,6 +112,8 @@ pub fn thread(
                 break;
             }
         }
+
+        ubo.refresh_random_number();
 
         let ray_index = *latest_ray_frame_index.latest();
         let viewport_index = *latest_viewport_frame_index.latest();
