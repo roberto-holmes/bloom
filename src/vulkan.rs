@@ -142,7 +142,7 @@ impl Drop for Swapchain {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct Buffer {
     allocator: vk_mem::ffi::VmaAllocator,
     buffer: vk::Buffer,

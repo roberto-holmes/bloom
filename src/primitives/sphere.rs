@@ -6,7 +6,7 @@ use crate::{vec::Vec3, vulkan};
 use super::{Addressable, Extrema, ObjectType, Objectionable, PrimitiveAddresses};
 
 #[repr(C)]
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub struct SphereData {
     pub object_type: u64,
     pub radius: f32,
@@ -25,7 +25,7 @@ impl SphereData {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct Sphere {
     data: SphereData,
     data_buffer: Option<vulkan::Buffer>,

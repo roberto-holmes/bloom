@@ -1,7 +1,7 @@
 use crate::vec::Vec3;
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub struct Material {
     albedo: Vec3,
     alpha: f32,             // 0.0 = Transparent (Dielectric), 1.0 = Opaque

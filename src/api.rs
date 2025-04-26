@@ -125,3 +125,84 @@ impl BloomAPI {
         };
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::{material::Material, primitives::lentil::Lentil};
+
+    use super::*;
+
+    #[test]
+    fn add_material() -> Result<()> {
+        let test_material_count = 1024;
+        let test_material = Material::new_basic(Vec3::unit_x(), 0.75);
+
+        let (add_material_sender, add_material_receiver) = mpsc::channel();
+        let (update_scene_sender, _) = mpsc::channel();
+        let mut api = BloomAPI::new(add_material_sender, update_scene_sender);
+
+        for _ in 0..test_material_count {
+            api.add_material(test_material)?;
+        }
+        let mut material_count = 0;
+
+        loop {
+            match add_material_receiver.recv_timeout(Duration::from_millis(10)) {
+                Ok(m) => {
+                    assert_eq!(m, test_material);
+                    material_count += 1;
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    panic!("Material channel disconnected")
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => break,
+            };
+        }
+
+        // Check that we received all the materials
+        assert_eq!(test_material_count, material_count);
+        // Check that all the materials were saved
+        assert_eq!(test_material_count, api.mat_ids.len());
+        Ok(())
+    }
+
+    #[test]
+    fn add_obj() -> Result<()> {
+        let test_obj_count = 1 << 10;
+        let test_obj = Primitive::Lentil(Lentil::new(0.2, 2.3, 4)?);
+
+        let (add_material_sender, _) = mpsc::channel();
+        let (update_scene_sender, update_scene_receiver) = mpsc::channel();
+        let mut api = BloomAPI::new(add_material_sender, update_scene_sender);
+
+        for _ in 0..test_obj_count {
+            api.add_obj(test_obj.clone())?;
+        }
+        let mut obj_count = 0;
+
+        let mut ids = HashSet::with_capacity(test_obj_count);
+
+        loop {
+            match update_scene_receiver.recv_timeout(Duration::from_millis(10)) {
+                Ok(physics::UpdatePhysics::Scene(physics::UpdateScene::Add(id, obj))) => {
+                    // Ensure all the IDs are unique
+                    assert!(!ids.contains(&id));
+                    ids.insert(id);
+                    // Ensure the object hasn't been mangled somehow
+                    assert_eq!(obj, test_obj);
+                    obj_count += 1;
+                }
+                Ok(_) => panic!("Wrong data received"),
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    panic!("Material channel disconnected")
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => break,
+            };
+        }
+
+        assert_eq!(test_obj_count, obj_count);
+        // Make sure we have a unique ID for every object
+        assert_eq!(ids.len(), obj_count);
+        Ok(())
+    }
+}

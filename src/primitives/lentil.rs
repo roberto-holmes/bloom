@@ -6,7 +6,7 @@ use crate::{vec::Vec3, vulkan};
 use super::{Addressable, Extrema, ObjectType, Objectionable, PrimitiveAddresses};
 
 #[repr(C)]
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 /// Describe a cylindrical aspherical lens with two lens surface profiles
 pub struct LentilData {
     pub object_type: u64,
@@ -37,7 +37,7 @@ impl LentilData {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct Lentil {
     data: LentilData,
     data_buffer: Option<vulkan::Buffer>,

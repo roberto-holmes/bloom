@@ -30,7 +30,7 @@ pub(crate) trait Objectionable {
     ) -> Result<()>;
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum Primitive {
     Model(model::Model),
     Sphere(sphere::Sphere),

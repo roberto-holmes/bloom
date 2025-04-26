@@ -146,3 +146,90 @@ pub fn thread(
         };
     }
 }
+
+#[cfg(test)]
+mod tests {
+
+    use super::*;
+
+    #[test]
+    fn new_ubo() {
+        let ubo = UniformBufferObject::new();
+        assert_eq!(ubo.ray_frame_num, 0);
+        assert_eq!(ubo.ray_frame_num_out, 0);
+        assert_eq!(ubo.width, 0);
+        assert_eq!(ubo.height, 0);
+    }
+
+    // #[test]
+    // fn tick_viewport() {
+    //     let frames = 19_165;
+    //     let mut ubo = UniformBufferObject::new();
+    //     ubo.tick();
+    //     assert_eq!(ubo.frame_num, 1);
+    //     for _ in 1..frames {
+    //         ubo.tick();
+    //     }
+    //     assert_eq!(ubo.frame_num, frames);
+    //     // for _ in frames..u32::MAX {
+    //     //     ubo.tick();
+    //     // }
+    //     // assert_eq!(ubo.frame_num, u32::MAX);
+    // }
+
+    #[test]
+    fn tick_ray() {
+        let frames = 762_436;
+        let mut ubo = UniformBufferObject::new();
+        ubo.tick_ray();
+        assert_eq!(ubo.ray_frame_num, 1);
+        for _ in 1..frames {
+            ubo.tick_ray();
+        }
+        assert_eq!(ubo.ray_frame_num, frames);
+        // for _ in frames..u32::MAX {
+        //     ubo.tick_ray();
+        // }
+        // assert_eq!(ubo.ray_frame_num, u32::MAX);
+    }
+
+    #[test]
+    fn set_output_ray() {
+        let mut ubo = UniformBufferObject::new();
+        assert_eq!(ubo.ray_frame_num_out, 0);
+        ubo.set_ray(1);
+        assert_eq!(ubo.ray_frame_num_out, 1);
+        ubo.set_ray(762_436);
+        assert_eq!(ubo.ray_frame_num_out, 762_436);
+        ubo.set_ray(u32::MAX);
+        assert_eq!(ubo.ray_frame_num_out, u32::MAX);
+    }
+
+    #[test]
+    fn reset_samples() {
+        let mut ubo = UniformBufferObject::new();
+        for _ in 0..26 {
+            ubo.tick_ray();
+        }
+        ubo.set_ray(1_136_455);
+        ubo.reset_samples();
+        assert_eq!(ubo.ray_frame_num_out, 0);
+        assert_eq!(ubo.ray_frame_num, 0);
+    }
+
+    #[test]
+    fn update_position() {
+        let mut ubo = UniformBufferObject::new();
+        let pos = Vec3::new(1.2, -123_023.135, 0.0);
+        ubo.update_camera_position(pos);
+        assert_eq!(ubo.camera.position, pos);
+    }
+
+    #[test]
+    fn update_rotation() {
+        let mut ubo = UniformBufferObject::new();
+        let quat = Quaternion::new(1_465_021.212, -0.0, -123_023.135, 0.0);
+        ubo.update_camera_quaternion(quat);
+        assert_eq!(ubo.camera.quaternion, quat);
+    }
+}

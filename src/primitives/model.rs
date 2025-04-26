@@ -6,7 +6,7 @@ use crate::{vec::Vec3, vulkan};
 use super::{Addressable, Extrema, ObjectType, Objectionable, PrimitiveAddresses};
 
 #[repr(C)]
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub struct MeshData {
     pub object_type: u64,
     pub vertices: vk::DeviceAddress,
@@ -14,7 +14,7 @@ pub struct MeshData {
     pub material_indices: vk::DeviceAddress,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub struct Vertex {
     pos: Vec3,
     _pad1: u32,
@@ -33,7 +33,7 @@ impl Vertex {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct Model {
     pub vertices: Vec<Vertex>,
     pub indices: Vec<u32>,
@@ -371,8 +371,8 @@ impl Extrema for Model {
         let mut max = self.vertices[0].pos;
 
         for v in &self.vertices {
-            min = min.min_extrema(&v.pos);
-            max = max.max_extrema(&v.pos);
+            min = min.min_extrema(v.pos);
+            max = max.max_extrema(v.pos);
         }
 
         (min, max)
