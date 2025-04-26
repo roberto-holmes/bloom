@@ -769,10 +769,8 @@ pub fn create_pipeline(
     swapchain_stuff: &SwapChainStuff,
     set_layout: vk::DescriptorSetLayout,
 ) -> Result<(Destructor<vk::PipelineLayout>, Destructor<vk::Pipeline>)> {
-    // let vert_shader_code = read_shader_code(Path::new("shaders/spv/vertex.wgsl.spv"))?;
     let vert_shader_code = read_shader_code(Path::new("shaders/spv/viewport.vert.spv"))?;
-    let frag_shader_code = read_shader_code(Path::new("shaders/spv/frag.wgsl.spv"))?;
-    // let frag_shader_code = read_shader_code(Path::new("shaders/spv/ray.frag.spv"))?;
+    let frag_shader_code = read_shader_code(Path::new("shaders/spv/frag.slang.spv"))?;
 
     let vert_shader_module = core::create_shader_module(device, &vert_shader_code)?;
     let frag_shader_module = core::create_shader_module(device, &frag_shader_code)?;
