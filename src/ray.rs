@@ -33,7 +33,7 @@ pub fn thread(
     transfer_sender: mpsc::Sender<transfer::ResizedSource>,
     transfer_commands: mpsc::Receiver<TransferCommand>,
     mut resize: single_value_channel::Receiver<PhysicalSize<u32>>,
-    notify_complete_frame: single_value_channel::Updater<u8>,
+    notify_complete_frame: single_value_channel::Updater<(u8, u32)>,
     update_as: mpsc::Receiver<physics::UpdateScene>,
     add_material: mpsc::Receiver<material::Material>,
     uniform: mpsc::Sender<uniforms::Event>,
@@ -96,6 +96,8 @@ pub fn thread(
 
     let mut is_minimised = false;
 
+    let mut current_frame_count = 1;
+
     loop {
         // Check if we should end the thread
         match should_threads_die.read() {
@@ -147,13 +149,14 @@ pub fn thread(
             }
 
             // Send current frame to transfer thread so that it knows where it can get a valid frame from
-            match notify_complete_frame.update(current_frame_index as u8) {
+            match notify_complete_frame.update((current_frame_index as u8, current_frame_count)) {
                 Err(e) => {
                     log::error!("Failed to notify transfer channel: {e}");
                     break;
                 }
                 Ok(()) => {}
             }
+            current_frame_count += 1;
             current_frame_index += 1;
             current_frame_index %= MAX_FRAMES_IN_FLIGHT;
         }
@@ -1165,7 +1168,7 @@ fn create_descriptor_sets(
             ..Default::default()
         }];
         let write_image_descriptor = [vk::DescriptorImageInfo {
-            image_view: storage_images[i].view(),
+            image_view: storage_images[(i + 1) % 2].view(),
             image_layout: vk::ImageLayout::GENERAL,
             ..Default::default()
         }];

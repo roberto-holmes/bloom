@@ -94,20 +94,18 @@ public struct Buffers {
 	public uint64_t primitive;
 }
 
-public struct CameraUniforms {
+public struct Camera {
 	public float3 origin;
-	public float focal_distance;
-	public float3 u;
 	public float vfov;
-	public float3 v;
+	public float4 q;
+	public float focal_distance;
 	public float dof_scale;
-	public float3 w;
 }
 
 public struct UBO {
-	public CameraUniforms camera;
-	public uint frame_num;
+	public Camera camera;
 	public uint ray_frame_num;
+	public uint ray_frame_num_out;
 	public uint width;
 	public uint height;
 	public uint random_num;

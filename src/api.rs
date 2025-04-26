@@ -1,32 +1,37 @@
-use std::{collections::HashSet, sync::mpsc, time::Duration};
+use std::{
+    collections::HashSet,
+    sync::{mpsc, RwLock},
+    time::Duration,
+};
 
 use anyhow::{anyhow, Result};
 use cgmath::Matrix4;
 use rand::Rng;
-use winit::event::WindowEvent;
 
-use crate::{character, material, physics, primitives::Primitive};
+use crate::{
+    material,
+    physics::{self, UpdatePhysics, UpdateScene},
+    primitives::Primitive,
+    quaternion::Quaternion,
+    vec::Vec3,
+};
 
 pub const FOCAL_DISTANCE: f32 = 4.5;
 pub const VFOV_DEG: f32 = 40.;
 pub const DOF_SCALE: f32 = 0.0;
 
 pub trait Bloomable {
+    fn init_window(&mut self, window: std::sync::Arc<RwLock<winit::window::Window>>);
     fn init(&mut self, api: BloomAPI) -> Result<()>;
-    fn input(&mut self, event: WindowEvent);
+    fn input(&mut self, event: winit::event::WindowEvent);
     fn resize(&mut self, width: u32, height: u32);
     fn display_tick(&mut self);
     fn physics_tick(&mut self, delta_time: Duration);
 }
 
 pub struct BloomAPI {
-    // Needs to include a way to modify all of the buffers
-    // pub scene: Scene,
-    // pub camera: Camera,
-    // pub uniform: uniforms::UniformBufferObject,
     add_material: mpsc::Sender<material::Material>,
-    update_scene: mpsc::Sender<physics::UpdateScene>,
-    control_character: mpsc::Sender<character::Controls>,
+    update_physics: mpsc::Sender<physics::UpdatePhysics>,
 
     mat_ids: Vec<u32>,
     obj_ids: HashSet<u64>,
@@ -36,8 +41,7 @@ pub struct BloomAPI {
 impl BloomAPI {
     pub fn new(
         add_material: mpsc::Sender<material::Material>,
-        update_scene: mpsc::Sender<physics::UpdateScene>,
-        control_character: mpsc::Sender<character::Controls>,
+        update_physics: mpsc::Sender<physics::UpdatePhysics>,
     ) -> Self {
         // let camera = Camera::look_at(
         //     Vec3::new(9., 6., 9.),
@@ -49,8 +53,7 @@ impl BloomAPI {
         // );
         Self {
             add_material,
-            update_scene,
-            control_character,
+            update_physics,
             mat_ids: Vec::with_capacity(100),
             obj_ids: HashSet::with_capacity(100),
             ins_ids: HashSet::with_capacity(100),
@@ -70,7 +73,10 @@ impl BloomAPI {
             // Ensure we create a unique ID
             id = rng.random();
         }
-        if let Err(e) = self.update_scene.send(physics::UpdateScene::Add(id, obj)) {
+        if let Err(e) = self
+            .update_physics
+            .send(UpdatePhysics::Scene(UpdateScene::Add(id, obj)))
+        {
             return Err(anyhow!("Failed to send new object: {e}"));
         };
         self.obj_ids.insert(id);
@@ -88,125 +94,34 @@ impl BloomAPI {
             // Ensure we create a unique ID
             id = rng.random();
         }
-        if let Err(e) = self.update_scene.send(physics::UpdateScene::AddInstance(
-            id,
-            object_id,
-            transformation,
-        )) {
+        if let Err(e) = self
+            .update_physics
+            .send(UpdatePhysics::Scene(UpdateScene::AddInstance(
+                id,
+                object_id,
+                transformation,
+            )))
+        {
             return Err(anyhow!("Failed to send new instance: {e}"));
         };
         self.ins_ids.insert(id);
         log::debug!("Added an instance");
         Ok(id)
     }
-    // pub(crate) fn update_camera(&mut self) {
-    //     self.uniform.update_camera(&self.camera);
-    // }
+    pub fn update_camera_position(&self, pos: Vec3) {
+        if let Err(e) = self
+            .update_physics
+            .send(UpdatePhysics::Camera(physics::Camera::Position(pos)))
+        {
+            log::error!("Failed to send new camera position: {e}");
+        };
+    }
+    pub fn update_camera_quaternion(&self, q: Quaternion) {
+        if let Err(e) = self
+            .update_physics
+            .send(UpdatePhysics::Camera(physics::Camera::Quaternion(q)))
+        {
+            log::error!("Failed to send new camera quaternion: {e}");
+        };
+    }
 }
-
-// pub struct Scene {
-//     // Camera position and settings
-//     camera: Camera,
-//     // Vector of materials
-//     pub(crate) materials: Vec<material::Material>,
-//     // Collection containing each object in the scene
-//     pub(crate) primitives: HashMap<u64, Primitive>,
-//     pub(crate) instances: HashMap<u64, (u64, Matrix4<f32>)>,
-// }
-
-// impl Scene {
-// pub fn add_materials(&mut self, materials: &[material::Material]) -> Vec<u32> {
-//     let mut ids = Vec::with_capacity(materials.len());
-//     for m in materials {
-//         let id = self.materials.len() as u32;
-//         self.materials.push(*m);
-//         ids.push(id);
-//     }
-//     ids
-// }
-// pub fn add_obj(&mut self, obj: Primitive) -> u64 {
-//     let mut rng = rand::rng();
-//     let mut id = rng.random();
-//     while self.primitives.contains_key(&id) {
-//         // Ensure we create a unique ID
-//         id = rng.random();
-//     }
-//     self.primitives.insert(id, obj);
-//     id
-// }
-// pub fn add_objs(&mut self, objs: Vec<Primitive>) -> Vec<u64> {
-//     let mut ids = Vec::with_capacity(objs.len());
-//     self.primitives.reserve(objs.len());
-//     for o in objs {
-//         ids.push(self.add_obj(o));
-//     }
-//     ids
-// }
-// pub fn remove_obj(&mut self, id: u64) {
-//     self.primitives.remove(&id);
-// }
-// pub fn remove_batch_obj(&mut self, ids: &[u64]) {
-//     for id in ids {
-//         self.remove_obj(*id);
-//     }
-// }
-// pub fn add_instance(&mut self, object_id: u64, transformation: Matrix4<f32>) -> Result<u64> {
-//     if !self.primitives.contains_key(&object_id) {
-//         return Err(anyhow!(
-//             "Tried to add an instance that referred to non-existant object {object_id}"
-//         ));
-//     }
-//     let mut rng = rand::rng();
-//     let mut id = rng.random();
-//     while self.instances.contains_key(&id) {
-//         // Ensure we create a unique ID
-//         id = rng.random();
-//     }
-//     self.instances.insert(id, (object_id, transformation));
-//     Ok(id)
-// }
-// pub fn add_instances(
-//     &mut self,
-//     object_id: u64,
-//     transformations: &[Matrix4<f32>],
-// ) -> Result<Vec<u64>> {
-//     let mut ids = Vec::with_capacity(transformations.len());
-//     self.instances.reserve(transformations.len());
-//     for t in transformations {
-//         ids.push(self.add_instance(object_id, t.clone())?);
-//     }
-//     Ok(ids)
-// }
-// pub fn remove_instance(&mut self, id: u64) {
-//     self.primitives.remove(&id);
-// }
-// pub fn remove_instances(&mut self, ids: &[u64]) {
-//     for id in ids {
-//         self.remove_instance(*id);
-//     }
-// }
-// pub fn get_transformation(&self, id: u64) -> Result<Matrix4<f32>> {
-//     match self.instances.get(&id) {
-//         Some(v) => Ok(v.1),
-//         None => Err(anyhow!("No object exists with id {id}")),
-//     }
-// }
-// pub fn set_transformation(&mut self, id: u64, transformation: Matrix4<f32>) -> Result<()> {
-//     // TODO: Figure out how to trigger an Acceleration Structure update
-//     match self.instances.get_mut(&id) {
-//         Some(v) => Ok(v.1 = transformation),
-//         None => Err(anyhow!("No object exists with id {id}")),
-//     }
-// }
-// }
-
-// impl Default for Scene {
-//     fn default() -> Self {
-//         Self {
-//             camera: Camera::default(),
-//             materials: vec![],
-//             primitives: HashMap::new(),
-//             instances: HashMap::new(),
-//         }
-//     }
-// }

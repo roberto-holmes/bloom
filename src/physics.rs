@@ -1,6 +1,6 @@
 use cgmath::Matrix4;
 
-use crate::{api::Bloomable, character, primitives::Primitive, uniforms};
+use crate::{api::Bloomable, primitives::Primitive, quaternion::Quaternion, uniforms, vec::Vec3};
 use std::{
     sync::{mpsc, Arc, RwLock},
     time::{Duration, Instant},
@@ -22,11 +22,26 @@ pub enum UpdateScene {
     MoveInstance(u64, Matrix4<f32>),
 }
 
+pub enum Camera {
+    /// Change the position of the camera
+    Position(Vec3),
+    /// Change the rotation of the camera
+    Quaternion(Quaternion),
+    // TODO: Describe the shape of the camera for physics purposes and if it should be collidable
+    // Shape,
+    // RelativePosition(Vec3),
+    // Collidable(bool)
+}
+
+pub enum UpdatePhysics {
+    Scene(UpdateScene),
+    Camera(Camera),
+}
+
 pub fn thread<T: Bloomable>(
     update_period: Duration,
     should_threads_die: Arc<RwLock<bool>>,
-    update_scene_channel: mpsc::Receiver<UpdateScene>,
-    character_channel: mpsc::Receiver<character::Orientation>,
+    update_channel: mpsc::Receiver<UpdatePhysics>,
     update_acceleration_structure: mpsc::Sender<UpdateScene>,
     uniforms: mpsc::Sender<uniforms::Event>,
 
@@ -51,23 +66,10 @@ pub fn thread<T: Bloomable>(
             Ok(mut app) => app.physics_tick(last_run_time.elapsed()),
             Err(e) => log::error!("Physics' User App is poisoned: {e}"),
         }
+        last_run_time = Instant::now();
 
-        match character_channel.try_recv() {
-            Ok(v) => {
-                // TODO: Update character position
-                if let Err(e) = uniforms.send(uniforms::Event::UpdateCamera) {
-                    log::error!("Failed to send a camera update: {e}");
-                    break;
-                }
-            }
-            Err(mpsc::TryRecvError::Empty) => {}
-            Err(mpsc::TryRecvError::Disconnected) => {
-                log::error!("Character control channel has disconnected");
-                break;
-            }
-        }
-        match update_scene_channel.try_recv() {
-            Ok(v) => {
+        match update_channel.try_recv() {
+            Ok(UpdatePhysics::Scene(v)) => {
                 // TODO: Add these into the physics object and do calculations on their positions
                 // log::debug!(
                 //     "Physics received an update scene request containing: {:?}",
@@ -75,6 +77,20 @@ pub fn thread<T: Bloomable>(
                 // );
                 if let Err(e) = update_acceleration_structure.send(v) {
                     log::error!("Failed to send an acceleration structure update: {e}");
+                    break;
+                }
+            }
+            Ok(UpdatePhysics::Camera(Camera::Position(pos))) => {
+                // TODO: Collision detection
+                if let Err(e) = uniforms.send(uniforms::Event::UpdateCameraPosition(pos)) {
+                    log::error!("Failed to send new camera position: {e}");
+                    break;
+                }
+            }
+            Ok(UpdatePhysics::Camera(Camera::Quaternion(q))) => {
+                // TODO: Collision detection
+                if let Err(e) = uniforms.send(uniforms::Event::UpdateCameraQuaternion(q)) {
+                    log::error!("Failed to send new camera quaternion: {e}");
                     break;
                 }
             }
@@ -94,7 +110,6 @@ pub fn thread<T: Bloomable>(
         } else {
             log::warn!("Physics loop is running late, trying to loop every {:?} but actually looping every {:?}", update_period, last_run_time.elapsed());
         }
-        last_run_time = Instant::now();
     }
 }
 

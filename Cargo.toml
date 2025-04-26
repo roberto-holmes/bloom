@@ -9,6 +9,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0.95"
+approx = "0.5.1"
 ash = { path = "./ash/ash" }
 ash-window = { path = "./ash/ash-window" }
 bytemuck = { version = "1.21", features = ["derive"] }

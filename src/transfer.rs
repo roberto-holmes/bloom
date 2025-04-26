@@ -23,14 +23,16 @@ pub fn thread(
     semaphore: vk::Semaphore,
     should_threads_die: Arc<RwLock<bool>>,
 
-    mut ray_frame_done: single_value_channel::Receiver<u8>,
+    mut ray_frame_done: single_value_channel::Receiver<(u8, u32)>,
+    // ray_frame_count_sender: mpsc::Sender<u32>,
+    ray_frame_count_sender: mpsc::SyncSender<u32>,
     draw_request: mpsc::Receiver<bool>,
     mut resize_request: single_value_channel::Receiver<PhysicalSize<u32>>,
     resized: mpsc::Receiver<ResizedSource>,
 
     ubo: mpsc::Sender<uniforms::Event>,
     ray: mpsc::Sender<ray::TransferCommand>,
-    viewport: mpsc::Sender<viewport::TransferCommand>,
+    viewport: mpsc::SyncSender<viewport::TransferCommand>,
     ray_resize: single_value_channel::Updater<PhysicalSize<u32>>,
     viewport_resize: single_value_channel::Updater<PhysicalSize<u32>>,
 ) {
@@ -124,17 +126,28 @@ pub fn thread(
                     continue;
                 }
                 log::trace!("Drawing");
-                let ray_frame = *ray_frame_done.latest();
                 // Notify ray to pause any further ray tracing until the image is free to use
                 match ray.send(ray::TransferCommand::Pause(timestamp + 1)) {
                     Err(e) => {
                         log::error!(
-                                "Transfer failed to notify ray channel that it should pause ray tracing: {e}"
-                            );
+                            "Transfer failed to notify ray channel that it should pause ray tracing: {e}"
+                        );
                         break;
                     }
                     Ok(()) => {}
                 }
+                let (ray_frame, ray_frame_num) = *ray_frame_done.latest();
+                // log::debug!("Sending new frame count of {ray_frame_num}");
+                match ray_frame_count_sender.send(ray_frame_num) {
+                    Err(e) => {
+                        log::error!(
+                            "Transfer failed to notify uniform of new ray frame number: {e}"
+                        );
+                        break;
+                    }
+                    Ok(()) => {}
+                }
+                // log::debug!("\t{ray_frame_num} done");
                 // Let the viewport know when the data will be ready and which frame to use
                 match viewport.send(viewport::TransferCommand::Ready(
                     timestamp + 1,
@@ -220,7 +233,7 @@ impl Transfer {
         let semaphores = [self.semaphore];
         let wait_stages = [vk::PipelineStageFlags::TRANSFER];
 
-        let command_index = 1 << viewport_frame_index | ray_frame_index;
+        let command_index = viewport_frame_index << 1 | ray_frame_index;
         let command_buffer = [self.commands[command_index]];
 
         // Only allow one copy operation to be in flight
@@ -294,7 +307,7 @@ impl Transfer {
         viewport_images: &[vk::Image; 2],
         size: PhysicalSize<u32>,
     ) -> Result<()> {
-        let command_buffer = self.commands[1 << viewport_frame_index | ray_frame_index];
+        let command_buffer = self.commands[viewport_frame_index << 1 | ray_frame_index];
 
         let subresource_range = vk::ImageSubresourceRange {
             aspect_mask: vk::ImageAspectFlags::COLOR,

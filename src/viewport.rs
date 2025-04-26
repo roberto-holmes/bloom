@@ -8,7 +8,7 @@ use std::{
 use anyhow::{anyhow, Result};
 use ash::vk;
 use memoffset::offset_of;
-use winit::dpi::PhysicalSize;
+use winit::{dpi::PhysicalSize, window::Window};
 
 use crate::{
     core::{self, transition_image_layout},
@@ -69,14 +69,15 @@ pub fn thread(
     instance: ash::Instance,
     physical_device: vk::PhysicalDevice,
     surface_stuff: structures::SurfaceStuff,
+    window: Arc<RwLock<Window>>,
 
     queue_family_indices: structures::QueueFamilyIndices,
 
     uniform_buffers: [vk::Buffer; 2],
 
     transfer_sender: mpsc::Sender<transfer::ResizedSource>,
-    uniforms_sender: mpsc::Sender<uniforms::Event>,
     transfer_semaphore: vk::Semaphore,
+    viewport_semaphore: vk::Semaphore,
 
     should_threads_die: Arc<RwLock<bool>>,
     event_receiver: mpsc::Receiver<TransferCommand>,
@@ -101,6 +102,7 @@ pub fn thread(
 
     // Build viewport object
     let mut viewport = match Viewport::new(
+        window,
         device,
         instance,
         physical_device,
@@ -172,7 +174,7 @@ pub fn thread(
 
             Ok(TransferCommand::Ready(timestamp, frame)) => {
                 active_frame_index = frame;
-                match viewport.draw(transfer_semaphore, timestamp, frame, &uniforms_sender) {
+                match viewport.draw(transfer_semaphore, timestamp, viewport_semaphore, frame) {
                     Err(e) => {
                         log::error!("Failed to draw frame: {e}");
                         break;
@@ -180,7 +182,8 @@ pub fn thread(
                     Ok(false) => log::warn!("Need to redraw"),
                     Ok(true) => {
                         if let Err(e) = latest_frame_index.update(frame) {
-                            log::error!("Failed to send latest frame index to uniforms: {e}")
+                            log::error!("Failed to send latest frame index to uniforms: {e}");
+                            break;
                         }
                     }
                 }
@@ -215,6 +218,8 @@ struct Viewport<'a> {
     query_pool_timestamps: Destructor<vk::QueryPool>,
     timestamps: Vec<u64>,
 
+    window: Arc<RwLock<Window>>,
+
     allocator: Arc<vk_mem::Allocator>,
     device: ash::Device,
     instance: ash::Instance,
@@ -223,6 +228,7 @@ struct Viewport<'a> {
 
 impl<'a> Viewport<'a> {
     pub fn new(
+        window: Arc<RwLock<Window>>,
         device: ash::Device,
         instance: ash::Instance,
         physical_device: vk::PhysicalDevice,
@@ -298,6 +304,7 @@ impl<'a> Viewport<'a> {
             image_available,
             render_finished,
             in_flight_fences,
+            window,
         })
     }
     fn initial_size(&mut self, size: PhysicalSize<u32>) -> Result<[vk::Image; 2]> {
@@ -409,20 +416,30 @@ impl<'a> Viewport<'a> {
         &mut self,
         transfer_semaphore: vk::Semaphore,
         wait_timestamp: u64,
+        viewport_semaphore: vk::Semaphore,
         frame: usize,
-        uniforms_sender: &mpsc::Sender<uniforms::Event>,
     ) -> Result<bool> {
+        let start = std::time::Instant::now();
         if self.images.is_none() {
             return Err(anyhow!("Tried to draw with an uninitialised image"));
         }
 
-        log::trace!("Drawing {frame} once timestamp reaches {}", wait_timestamp);
+        log::trace!(
+            "[{} μs] Drawing {frame} once timestamp reaches {}",
+            start.elapsed().as_micros(),
+            wait_timestamp
+        );
 
         // Wait for the previous frame to finish
         unsafe {
             self.device
                 .wait_for_fences(&[self.in_flight_fences[frame].get()], true, u64::MAX)?;
         }
+        log::trace!(
+            "[{} μs] Back from fences [{:.2} fps]",
+            start.elapsed().as_micros(),
+            1.0 / start.elapsed().as_secs_f32()
+        );
         let swapchain_index = match unsafe {
             self.swapchain_stuff.get_loader().acquire_next_image(
                 self.swapchain_stuff.get_swapchain(),
@@ -448,8 +465,6 @@ impl<'a> Viewport<'a> {
 
         self.record_commands(swapchain_index as usize, frame)?;
 
-        uniforms_sender.send(uniforms::Event::ViewportTick)?;
-
         let wait_semaphores = [self.image_available[frame].get(), transfer_semaphore];
         let wait_stages = [
             vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
@@ -459,17 +474,19 @@ impl<'a> Viewport<'a> {
             0, // Binary so will be ignored
             wait_timestamp,
         ];
-        let signal_semaphores = [self.render_finished[frame].get()];
+        let submit_signal_semaphores = [self.render_finished[frame].get(), viewport_semaphore];
         let command_buffers = [self.commands[frame]];
 
-        let mut timeline_info =
-            vk::TimelineSemaphoreSubmitInfo::default().wait_semaphore_values(&wait_values);
+        // We want to forward the timestamp value when we complete so we wait and submit the same value
+        let mut timeline_info = vk::TimelineSemaphoreSubmitInfo::default()
+            .wait_semaphore_values(&wait_values)
+            .signal_semaphore_values(&wait_values);
 
         let submit_info = vk::SubmitInfo::default()
             .wait_semaphores(&wait_semaphores)
             .wait_dst_stage_mask(&wait_stages)
             .command_buffers(&command_buffers)
-            .signal_semaphores(&signal_semaphores)
+            .signal_semaphores(&submit_signal_semaphores)
             .push(&mut timeline_info);
 
         unsafe {
@@ -479,12 +496,17 @@ impl<'a> Viewport<'a> {
                 self.in_flight_fences[frame].get(),
             )?
         };
+        let present_wait_semaphores = [self.render_finished[frame].get()];
+
         let swapchains = [self.swapchain_stuff.get_swapchain()];
         let image_indices = [swapchain_index];
         let present_info = vk::PresentInfoKHR::default()
-            .wait_semaphores(&signal_semaphores)
+            .wait_semaphores(&present_wait_semaphores)
             .swapchains(&swapchains)
             .image_indices(&image_indices);
+
+        // Tell the window that we are about to present so that it can prepare
+        self.window.write().unwrap().pre_present_notify();
 
         match unsafe {
             self.swapchain_stuff
@@ -536,6 +558,16 @@ impl<'a> Viewport<'a> {
                 }
             }
         };
+
+        match self.window.write() {
+            Ok(v) => {
+                // TODO: Find a way to avoid the window panicking at cleanup
+                if let Err(e) = std::panic::catch_unwind(|| v.request_redraw()) {
+                    log::error!("Request redraw panicked: {:?}", e);
+                }
+            }
+            Err(e) => log::error!("Viewport failed to write to window: {e}"),
+        }
         Ok(true)
     }
     fn recreate_swap_chain(&mut self) {
@@ -568,6 +600,12 @@ impl<'a> Viewport<'a> {
                 0,
                 self.timestamps.len() as u32,
             );
+            self.device.cmd_write_timestamp(
+                self.commands[frame_index],
+                vk::PipelineStageFlags::TOP_OF_PIPE,
+                self.query_pool_timestamps.get(),
+                0,
+            );
         }
 
         let clear_value = vk::ClearValue {
@@ -591,25 +629,35 @@ impl<'a> Viewport<'a> {
                 extent: self.swapchain_stuff.extent,
             });
 
-        transition_image_layout(
-            &self.device,
-            self.command_pool.get(),
-            self.queue,
-            self.swapchain_stuff.images[swapchain_index],
-            vk::ImageLayout::UNDEFINED,
-            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-            vk::PipelineStageFlags::TOP_OF_PIPE,
-            vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-        )?;
+        let barrier = [vk::ImageMemoryBarrier::default()
+            .old_layout(vk::ImageLayout::UNDEFINED)
+            .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .image(self.swapchain_stuff.images[swapchain_index])
+            .subresource_range(vk::ImageSubresourceRange {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                base_mip_level: 0,
+                level_count: 1,
+                base_array_layer: 0,
+                layer_count: 1,
+            })
+            .src_access_mask(vk::AccessFlags::empty())
+            .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)];
 
         unsafe {
-            self.device.cmd_write_timestamp(
+            self.device.cmd_pipeline_barrier(
                 self.commands[frame_index],
                 vk::PipelineStageFlags::TOP_OF_PIPE,
-                self.query_pool_timestamps.get(),
-                0,
+                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &barrier,
             );
+        }
 
+        unsafe {
             self.device
                 .cmd_begin_rendering(self.commands[frame_index], &rendering_info);
             self.device.cmd_bind_pipeline(
@@ -664,26 +712,40 @@ impl<'a> Viewport<'a> {
                 0,
             );
 
+            self.device.cmd_end_rendering(self.commands[frame_index]);
+
+            let barrier = [vk::ImageMemoryBarrier::default()
+                .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
+                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .image(self.swapchain_stuff.images[swapchain_index])
+                .subresource_range(vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                })
+                .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
+                .dst_access_mask(vk::AccessFlags::empty())];
+
+            self.device.cmd_pipeline_barrier(
+                self.commands[frame_index],
+                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &barrier,
+            );
+
             self.device.cmd_write_timestamp(
                 self.commands[frame_index],
                 vk::PipelineStageFlags::BOTTOM_OF_PIPE,
                 self.query_pool_timestamps.get(),
                 1,
             );
-
-            self.device.cmd_end_rendering(self.commands[frame_index]);
-
-            transition_image_layout(
-                &self.device,
-                self.command_pool.get(),
-                self.queue,
-                self.swapchain_stuff.images[swapchain_index],
-                vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-                vk::ImageLayout::PRESENT_SRC_KHR,
-                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                vk::PipelineStageFlags::BOTTOM_OF_PIPE,
-            )?;
-
             self.device.end_command_buffer(self.commands[frame_index])?;
         };
 
