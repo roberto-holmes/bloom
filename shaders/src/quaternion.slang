@@ -3,7 +3,7 @@ __import helpers;
 // Based on https://gist.github.com/mattatz/40a91588d5fb38240403f198a938a593
 // by mattatz
 
-const static float4 QUATERNION_IDENTITY = float4(0, 0, 0, 1);
+const static float4 QUATERNION_IDENTITY = float4(0, 0, 0, 1);  // x, y, z, w
 
 // Quaternion multiplication
 // http://mathworld.wolfram.com/Quaternion.html

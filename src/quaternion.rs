@@ -22,6 +22,21 @@ impl Quaternion {
         let c = half_angle.cos();
         Self::new(c, s * axis.x(), s * axis.y(), s * axis.z())
     }
+    pub fn from_euler(pitch: f32, roll: f32, yaw: f32) -> Self {
+        let cr = f32::cos(pitch * 0.5);
+        let sr = f32::sin(pitch * 0.5);
+        let cp = f32::cos(yaw * 0.5);
+        let sp = f32::sin(yaw * 0.5);
+        let cy = f32::cos(roll * 0.5);
+        let sy = f32::sin(roll * 0.5);
+
+        Self::new(
+            cr * cp * cy + sr * sp * sy,
+            sr * cp * cy - cr * sp * sy,
+            cr * sp * cy + sr * cp * sy,
+            cr * cp * sy - sr * sp * cy,
+        )
+    }
     // TODO:
     // pub fn from_arc(
     //     src: Vec3,
@@ -82,17 +97,49 @@ impl Quaternion {
     pub fn mz(&mut self) -> &mut f32 {
         &mut self.0[2]
     }
+    fn conjugate(&self) -> Self {
+        Self::new(self.w(), -self.x(), -self.y(), -self.z())
+    }
+    fn vec(&self) -> Vec3 {
+        let v = Vec3::new(self.x(), self.y(), self.z());
+        if ulps_eq!(v, Vec3::zero()) {
+            Vec3::zero()
+        } else {
+            v.normalized()
+        }
+    }
+    fn magnitude2(&self) -> f32 {
+        self.w() * self.w() + self.x() * self.x() + self.y() * self.y() + self.z() * self.z()
+    }
+    fn magnitude(&self) -> f32 {
+        self.magnitude2().sqrt()
+    }
+    pub fn normalise(&mut self) {
+        let magnitude = self.magnitude();
+        for i in &mut self.0 {
+            *i /= magnitude
+        }
+    }
+    pub fn apply(&self, v: Vec3) -> Vec3 {
+        let quat_v = self.vec();
+        2.0 * quat_v.dot(v) * quat_v
+            + (self.w() * self.w() - quat_v.dot(quat_v)) * v
+            + 2.0 * self.w() * quat_v.cross(v)
+    }
     pub fn rotate_x(&mut self, rad: f32) {
         let half = rad / 2.0;
         *self *= Self::new(half.cos(), half.sin(), 0.0, 0.0);
+        self.normalise();
     }
     pub fn rotate_y(&mut self, rad: f32) {
         let half = rad / 2.0;
         *self *= Self::new(half.cos(), 0.0, half.sin(), 0.0);
+        self.normalise();
     }
     pub fn rotate_z(&mut self, rad: f32) {
         let half = rad / 2.0;
         *self *= Self::new(half.cos(), 0.0, 0.0, half.sin());
+        self.normalise();
     }
 }
 
@@ -137,57 +184,57 @@ macro_rules! impl_binary_op {
 
 // TODO:
 impl_binary_op!(Add : add => (lhs: Quaternion, rhs: Quaternion) -> Quaternion {
-    Quaternion([
+    Quaternion::new(
         lhs.w() + rhs.w(),
         lhs.x() + rhs.x(),
         lhs.y() + rhs.y(),
         lhs.z() + rhs.z(),
-    ])
+    )
 });
 
 impl_binary_op!(Sub : sub => (lhs: Quaternion, rhs: Quaternion) -> Quaternion {
-    Quaternion([
+    Quaternion::new(
         lhs.w() - rhs.w(),
         lhs.x() - rhs.x(),
         lhs.y() - rhs.y(),
         lhs.z() - rhs.z(),
-    ])
+    )
 });
 
 impl_binary_op!(Mul : mul => (lhs: Quaternion, rhs: Quaternion) -> Quaternion {
-    Quaternion([
+    Quaternion::new(
             lhs.w() * rhs.w() - lhs.x() * rhs.x() - lhs.y() * rhs.y() - lhs.z() * rhs.z(),
             lhs.w() * rhs.x() + lhs.x() * rhs.w() + lhs.y() * rhs.z() - lhs.z() * rhs.y(),
             lhs.w() * rhs.y() + lhs.y() * rhs.w() + lhs.z() * rhs.x() - lhs.x() * rhs.z(),
             lhs.w() * rhs.z() + lhs.z() * rhs.w() + lhs.x() * rhs.y() - lhs.y() * rhs.x(),
-    ])
+    )
 });
 
 impl_binary_op!(Mul : mul => (lhs: Quaternion, rhs: f32) -> Quaternion {
-    Quaternion([
+    Quaternion::new(
         lhs.w() * rhs,
         lhs.x() * rhs,
         lhs.y() * rhs,
         lhs.z() * rhs,
-    ])
+    )
 });
 
 impl_binary_op!(Mul : mul => (lhs: f32, rhs: Quaternion) -> Quaternion {
-    Quaternion([
+    Quaternion::new(
         rhs.w() * lhs,
         rhs.x() * lhs,
         rhs.y() * lhs,
         rhs.z() * lhs,
-    ])
+    )
 });
 
 impl_binary_op!(Div : div => (lhs: Quaternion, rhs: f32) -> Quaternion {
-    Quaternion([
+    Quaternion::new(
         lhs.w() / rhs,
         lhs.x() / rhs,
         lhs.y() / rhs,
         lhs.z() / rhs,
-    ])
+    )
 });
 
 impl ops::AddAssign for Quaternion {
@@ -223,7 +270,19 @@ impl ops::DivAssign<f32> for Quaternion {
 impl ops::Neg for Quaternion {
     type Output = Quaternion;
     fn neg(self) -> Self::Output {
-        Quaternion([-self.w(), -self.x(), -self.y(), -self.z()])
+        Quaternion::new(-self.w(), -self.x(), -self.y(), -self.z())
+    }
+}
+
+impl Into<[f32; 4]> for Quaternion {
+    fn into(self) -> [f32; 4] {
+        [self.x(), self.y(), self.z(), self.w()]
+    }
+}
+
+impl Into<(f32, f32, f32, f32)> for Quaternion {
+    fn into(self) -> (f32, f32, f32, f32) {
+        (self.x(), self.y(), self.z(), self.w())
     }
 }
 
@@ -242,7 +301,7 @@ impl Into<cgmath::Quaternion<f32>> for Quaternion {
 
 impl From<cgmath::Quaternion<f32>> for Quaternion {
     fn from(q: cgmath::Quaternion<f32>) -> Self {
-        Self([q.s, q.v.x, q.v.y, q.v.z])
+        Self::new(q.s, q.v.x, q.v.y, q.v.z)
     }
 }
 
@@ -308,11 +367,61 @@ impl std::fmt::Display for Quaternion {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "({}, {}i, {}j, {}k)",
+            "({:.3}, {:.3}i, {:.3}j, {:.3}k)",
             self.w(),
             self.x(),
             self.y(),
             self.z()
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use approx::assert_ulps_eq;
+    use num::Float;
+
+    use super::*;
+
+    #[test]
+    fn create_x_90() {
+        let q = Quaternion::from_axis_angle(Vec3::unit_x(), std::f32::consts::FRAC_PI_2);
+
+        assert_ulps_eq!(
+            q,
+            Quaternion::new(2.0.sqrt() / 2.0, 2.0.sqrt() / 2.0, 0.0, 0.0)
+        );
+    }
+    #[test]
+    fn rotate_x_90() {
+        let mut q = Quaternion::identity();
+        // Rotate by 90 degrees
+        q.rotate_x(std::f32::consts::FRAC_PI_2);
+
+        assert_ulps_eq!(
+            q,
+            Quaternion::new(2.0.sqrt() / 2.0, 2.0.sqrt() / 2.0, 0.0, 0.0)
+        );
+    }
+    #[test]
+    fn rotate_y_90() {
+        let mut q = Quaternion::identity();
+        // Rotate by 90 degrees
+        q.rotate_y(std::f32::consts::FRAC_PI_2);
+        println!("Q is now {q}");
+        assert_ulps_eq!(
+            q,
+            Quaternion::new(2.0.sqrt() / 2.0, 0.0, 2.0.sqrt() / 2.0, 0.0)
+        );
+    }
+    #[test]
+    fn rotate_z_90() {
+        let mut q = Quaternion::identity();
+        // Rotate by 90 degrees
+        q.rotate_z(std::f32::consts::FRAC_PI_2);
+        assert_ulps_eq!(
+            q,
+            Quaternion::new(2.0.sqrt() / 2.0, 0.0, 0.0, 2.0.sqrt() / 2.0)
+        );
     }
 }

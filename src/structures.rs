@@ -262,12 +262,12 @@ impl SwapChainSupportDetails {
 
     /// Select the conditions for 'swapping' images to the screen
     pub fn choose_swap_present_mode(&self) -> vk::PresentModeKHR {
-        for available_mode in &self.present_modes {
-            // Mailbox is good if energy efficiency is not an issue (mobile should probably use FIFO)
-            if *available_mode == vk::PresentModeKHR::MAILBOX {
-                return *available_mode;
-            }
-        }
+        // for available_mode in &self.present_modes {
+        //     // Mailbox is good if energy efficiency is not an issue (mobile should probably use FIFO)
+        //     if *available_mode == vk::PresentModeKHR::MAILBOX {
+        //         return *available_mode;
+        //     }
+        // }
         vk::PresentModeKHR::FIFO // The only mode that is guaranteed to be available
     }
 }

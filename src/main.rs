@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::f32;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -33,6 +34,9 @@ struct Demo {
     is_mouse_grabbed: bool,
     is_quaternion_updated: bool,
 
+    pitch_rad: f32,
+    yaw_rad: f32,
+
     pos: Vec3,
     quat: Quaternion,
 }
@@ -47,6 +51,9 @@ impl Demo {
             is_mouse_grabbed: false,
             is_quaternion_updated: false,
 
+            pitch_rad: 0.0,
+            yaw_rad: 0.0,
+
             pos: Vec3::default(),
             quat: Quaternion::identity(),
         }
@@ -55,13 +62,33 @@ impl Demo {
         self.api.as_mut().unwrap()
     }
     pub fn translate(&mut self, dx: f32, dy: f32) {
-        *self.pos.mx() += dx;
-        *self.pos.mz() += dy;
+        let delta = Vec3::new(dx, 0.0, dy);
+        let quat = Quaternion::from_euler(0.0, 0.0, self.yaw_rad);
+        self.pos += quat.apply(delta);
         self.api.as_ref().unwrap().update_camera_position(self.pos);
     }
     pub fn look(&mut self, dx_rad: f32, dy_rad: f32) {
-        self.quat.rotate_x(dx_rad);
-        self.quat.rotate_y(dy_rad);
+        self.yaw_rad += dx_rad;
+        self.pitch_rad += dy_rad;
+
+        if self.pitch_rad > std::f32::consts::FRAC_PI_2 {
+            self.pitch_rad = std::f32::consts::FRAC_PI_2;
+        } else if self.pitch_rad < -std::f32::consts::FRAC_PI_2 {
+            self.pitch_rad = -std::f32::consts::FRAC_PI_2;
+        }
+
+        if self.yaw_rad > std::f32::consts::PI * 2.0 {
+            self.yaw_rad -= std::f32::consts::PI * 2.0;
+        } else if self.yaw_rad < -std::f32::consts::PI * 2.0 {
+            self.yaw_rad += std::f32::consts::PI * 2.0;
+        }
+        log::debug!(
+            "looking by pitch:{:.2}° [{dy_rad}], yaw:{:.2}° [{dx_rad}]",
+            self.pitch_rad.to_degrees(),
+            self.yaw_rad.to_degrees()
+        );
+        self.quat = Quaternion::from_euler(self.pitch_rad, 0.0, self.yaw_rad);
+
         self.is_quaternion_updated = true;
     }
 }
@@ -195,14 +222,16 @@ impl Bloomable for Demo {
             WindowEvent::CursorMoved { position, .. } => {
                 self.mouse_state.update_position(position);
                 let (mut dx, mut dy) = self.mouse_state.get_pos_delta();
-                dx *= -0.01;
+                dx *= 0.01;
                 dy *= 0.01;
 
-                if self.mouse_state.left_pressed {
-                    // let _ = self.look(dx, dy);
-                    // scene.api.camera.orbit(dx, dy);
-                    // api.uniform.reset_samples();
+                if self.is_mouse_grabbed {
+                    let _ = self.look(dx, dy);
                 }
+                // if self.mouse_state.left_pressed {
+                // scene.api.camera.orbit(dx, dy);
+                // api.uniform.reset_samples();
+                // }
                 // else if self.mouse_state.middle_pressed {
                 //     api.camera.pan(dx, dy);
                 //     api.uniform.reset_samples();
@@ -254,17 +283,17 @@ impl Bloomable for Demo {
                         Ok(w) => {
                             if self.is_mouse_grabbed {
                                 log::info!("Releasing mouse");
-                                match w.set_cursor_grab(winit::window::CursorGrabMode::None) {
-                                    Ok(()) => {}
-                                    Err(e) => log::error!("Failed to ungrab mouse: {e}"),
-                                };
+                                // match w.set_cursor_grab(winit::window::CursorGrabMode::None) {
+                                //     Ok(()) => {}
+                                //     Err(e) => log::error!("Failed to ungrab mouse: {e}"),
+                                // };
                                 w.set_cursor_visible(true);
                             } else {
                                 log::info!("Grabbing mouse");
-                                match w.set_cursor_grab(winit::window::CursorGrabMode::Confined) {
-                                    Ok(()) => {}
-                                    Err(e) => log::error!("Failed to grab mouse: {e}"),
-                                };
+                                // match w.set_cursor_grab(winit::window::CursorGrabMode::Confined) {
+                                //     Ok(()) => {}
+                                //     Err(e) => log::error!("Failed to grab mouse: {e}"),
+                                // };
                                 w.set_cursor_visible(false);
                             }
                             self.is_mouse_grabbed = !self.is_mouse_grabbed;
