@@ -1,6 +1,6 @@
 use std::{
     collections::HashSet,
-    sync::{mpsc, RwLock},
+    sync::{mpsc, Arc, RwLock},
     time::Duration,
 };
 
@@ -32,6 +32,8 @@ pub trait Bloomable {
 pub struct BloomAPI {
     add_material: mpsc::Sender<material::Material>,
     update_physics: mpsc::Sender<physics::UpdatePhysics>,
+    update_camera_pos: Arc<RwLock<Vec3>>,
+    update_camera_quat: Arc<RwLock<Quaternion>>,
 
     mat_ids: Vec<u32>,
     obj_ids: HashSet<u64>,
@@ -42,6 +44,8 @@ impl BloomAPI {
     pub fn new(
         add_material: mpsc::Sender<material::Material>,
         update_physics: mpsc::Sender<physics::UpdatePhysics>,
+        update_camera_pos: Arc<RwLock<Vec3>>,
+        update_camera_quat: Arc<RwLock<Quaternion>>,
     ) -> Self {
         // let camera = Camera::look_at(
         //     Vec3::new(9., 6., 9.),
@@ -54,6 +58,8 @@ impl BloomAPI {
         Self {
             add_material,
             update_physics,
+            update_camera_pos,
+            update_camera_quat,
             mat_ids: Vec::with_capacity(100),
             obj_ids: HashSet::with_capacity(100),
             ins_ids: HashSet::with_capacity(100),
@@ -109,20 +115,16 @@ impl BloomAPI {
         Ok(id)
     }
     pub fn update_camera_position(&self, pos: Vec3) {
-        if let Err(e) = self
-            .update_physics
-            .send(UpdatePhysics::Camera(physics::Camera::Position(pos)))
-        {
-            log::error!("Failed to send new camera position: {e}");
-        };
+        match self.update_camera_pos.write() {
+            Ok(mut v) => *v = pos,
+            Err(e) => log::error!("Position is poisoned: {e}"),
+        }
     }
     pub fn update_camera_quaternion(&self, q: Quaternion) {
-        if let Err(e) = self
-            .update_physics
-            .send(UpdatePhysics::Camera(physics::Camera::Quaternion(q)))
-        {
-            log::error!("Failed to send new camera quaternion: {e}");
-        };
+        match self.update_camera_quat.write() {
+            Ok(mut v) => *v = q,
+            Err(e) => log::error!("Quaternion is poisoned: {e}"),
+        }
     }
 }
 
@@ -139,7 +141,10 @@ mod tests {
 
         let (add_material_sender, add_material_receiver) = mpsc::channel();
         let (update_scene_sender, _) = mpsc::channel();
-        let mut api = BloomAPI::new(add_material_sender, update_scene_sender);
+        let cam_pos = Arc::new(RwLock::new(Vec3::zero()));
+        let cam_quat = Arc::new(RwLock::new(Quaternion::identity()));
+
+        let mut api = BloomAPI::new(add_material_sender, update_scene_sender, cam_pos, cam_quat);
 
         for _ in 0..test_material_count {
             api.add_material(test_material)?;
@@ -173,7 +178,10 @@ mod tests {
 
         let (add_material_sender, _) = mpsc::channel();
         let (update_scene_sender, update_scene_receiver) = mpsc::channel();
-        let mut api = BloomAPI::new(add_material_sender, update_scene_sender);
+        let cam_pos = Arc::new(RwLock::new(Vec3::zero()));
+        let cam_quat = Arc::new(RwLock::new(Quaternion::identity()));
+
+        let mut api = BloomAPI::new(add_material_sender, update_scene_sender, cam_pos, cam_quat);
 
         for _ in 0..test_obj_count {
             api.add_obj(test_obj.clone())?;

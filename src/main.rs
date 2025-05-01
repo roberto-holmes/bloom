@@ -82,11 +82,11 @@ impl Demo {
         } else if self.yaw_rad < -std::f32::consts::PI * 2.0 {
             self.yaw_rad += std::f32::consts::PI * 2.0;
         }
-        log::debug!(
-            "looking by pitch:{:.2}° [{dy_rad}], yaw:{:.2}° [{dx_rad}]",
-            self.pitch_rad.to_degrees(),
-            self.yaw_rad.to_degrees()
-        );
+        // log::debug!(
+        //     "looking by pitch:{:.2}° [{dy_rad}], yaw:{:.2}° [{dx_rad}]",
+        //     self.pitch_rad.to_degrees(),
+        //     self.yaw_rad.to_degrees()
+        // );
         self.quat = Quaternion::from_euler(self.pitch_rad, 0.0, self.yaw_rad);
 
         self.is_quaternion_updated = true;

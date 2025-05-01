@@ -20,30 +20,27 @@ pub enum UpdateScene {
     RemoveInstance(u64),
     /// ID of the instance to move and its new transformation matrix
     MoveInstance(u64, Matrix4<f32>),
-}
-
-pub enum Camera {
-    /// Change the position of the camera
-    Position(Vec3),
-    /// Change the rotation of the camera
-    Quaternion(Quaternion),
-    // TODO: Describe the shape of the camera for physics purposes and if it should be collidable
-    // Shape,
+    // TODO: Attach the camera to an instance
+    // AttachCameraToInstance(u64),
     // RelativePosition(Vec3),
+    // TODO: Adjust if objects should it should be collidable and if they should be affected by physics
     // Collidable(bool)
+    // Physical(bool)
 }
 
 pub enum UpdatePhysics {
     Scene(UpdateScene),
-    Camera(Camera),
 }
 
 pub fn thread<T: Bloomable>(
     update_period: Duration,
     should_threads_die: Arc<RwLock<bool>>,
     update_channel: mpsc::Receiver<UpdatePhysics>,
+    camera_pos_in: Arc<RwLock<Vec3>>,
+    camera_quat_in: Arc<RwLock<Quaternion>>,
+    camera_pos_out: Arc<RwLock<Vec3>>,
+    camera_quat_out: Arc<RwLock<Quaternion>>,
     update_acceleration_structure: mpsc::Sender<UpdateScene>,
-    uniforms: mpsc::Sender<uniforms::Event>,
 
     user_app: Arc<RwLock<T>>,
 ) {
@@ -80,24 +77,35 @@ pub fn thread<T: Bloomable>(
                     break;
                 }
             }
-            Ok(UpdatePhysics::Camera(Camera::Position(pos))) => {
-                // TODO: Collision detection
-                if let Err(e) = uniforms.send(uniforms::Event::UpdateCameraPosition(pos)) {
-                    log::error!("Failed to send new camera position: {e}");
-                    break;
-                }
-            }
-            Ok(UpdatePhysics::Camera(Camera::Quaternion(q))) => {
-                // TODO: Collision detection
-                if let Err(e) = uniforms.send(uniforms::Event::UpdateCameraQuaternion(q)) {
-                    log::error!("Failed to send new camera quaternion: {e}");
-                    break;
-                }
-            }
             Err(mpsc::TryRecvError::Empty) => {}
             Err(mpsc::TryRecvError::Disconnected) => {
                 log::error!("Character control channel has disconnected");
                 break;
+            }
+        }
+
+        // Pass camera orientation onto the uniforms
+        // TODO: Incorporate into collision detection
+        match camera_pos_in.read() {
+            Ok(v) => match camera_pos_out.write() {
+                Ok(mut v_out) => *v_out = *v,
+                Err(e) => {
+                    log::error!("Camera position between physics and uniforms is poisoned: {e}")
+                }
+            },
+            Err(e) => {
+                log::error!("Camera position between physics and user is poisoned: {e}")
+            }
+        }
+        match camera_quat_in.read() {
+            Ok(v) => match camera_quat_out.write() {
+                Ok(mut v_out) => *v_out = *v,
+                Err(e) => {
+                    log::error!("Camera quaterninon between physics and uniforms is poisoned: {e}")
+                }
+            },
+            Err(e) => {
+                log::error!("Camera quaterninon between physics and user is poisoned: {e}")
             }
         }
 

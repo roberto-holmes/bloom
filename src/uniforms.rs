@@ -9,8 +9,6 @@ use crate::{camera::Camera, quaternion::Quaternion, vec::Vec3, vulkan};
 
 pub enum Event {
     RayTick,
-    UpdateCameraPosition(Vec3),
-    UpdateCameraQuaternion(Quaternion),
     ResetSamples,
     Resize(PhysicalSize<u32>),
 }
@@ -49,11 +47,21 @@ impl UniformBufferObject {
         self.ray_frame_num = 0;
         self.ray_frame_num_out = 0;
     }
-    pub fn update_camera_position(&mut self, position: Vec3) {
-        self.camera.position = position;
+    pub fn update_camera_position(&mut self, position: Vec3) -> bool {
+        // Return true if the value has changed
+        if self.camera.position != position {
+            self.camera.position = position;
+            return true;
+        }
+        return false;
     }
-    pub fn update_camera_quaternion(&mut self, quaternion: Quaternion) {
-        self.camera.quaternion = quaternion;
+    pub fn update_camera_quaternion(&mut self, quaternion: Quaternion) -> bool {
+        // Return true if the value has changed
+        if self.camera.quaternion != quaternion {
+            self.camera.quaternion = quaternion;
+            return true;
+        }
+        return false;
     }
     pub fn refresh_random_number(&mut self) {
         self.random_num = rand::random();
@@ -66,6 +74,8 @@ pub fn thread(
     mut latest_ray_frame_index: single_value_channel::Receiver<usize>,
     mut latest_viewport_frame_index: single_value_channel::Receiver<usize>,
     should_threads_die: Arc<RwLock<bool>>,
+    camera_pos_in: Arc<RwLock<Vec3>>,
+    camera_quat_in: Arc<RwLock<Quaternion>>,
 
     mut ray_ubo_buffer: [vulkan::Buffer; 2],
     mut viewport_ubo_buffer: [vulkan::Buffer; 2],
@@ -100,7 +110,27 @@ pub fn thread(
                 break;
             }
         }
-        match channel.recv_timeout(Duration::new(0, 1_000_000)) {
+        match camera_pos_in.read() {
+            Ok(v) => {
+                if ubo.update_camera_position(*v) {
+                    reset_samples(&mut ubo, &mut total_ray_frames);
+                }
+            }
+            Err(e) => {
+                log::error!("Uniform's camera pos arc is poisoned: {e}");
+            }
+        }
+        match camera_quat_in.read() {
+            Ok(v) => {
+                if ubo.update_camera_quaternion(*v) {
+                    reset_samples(&mut ubo, &mut total_ray_frames);
+                }
+            }
+            Err(e) => {
+                log::error!("Uniform's camera pos arc is poisoned: {e}");
+            }
+        }
+        match channel.recv_timeout(Duration::from_millis(1)) {
             Ok(Event::RayTick) => ubo.tick_ray(),
             Ok(Event::ResetSamples) => {
                 total_ray_frames += ubo.ray_frame_num_out;
@@ -109,18 +139,6 @@ pub fn thread(
             Ok(Event::Resize(size)) => {
                 ubo.width = size.width;
                 ubo.height = size.height;
-                total_ray_frames += ubo.ray_frame_num_out;
-                ubo.reset_samples();
-            }
-            Ok(Event::UpdateCameraPosition(position)) => {
-                // log::info!("Updating position to {position}");
-                ubo.update_camera_position(position);
-                total_ray_frames += ubo.ray_frame_num_out;
-                ubo.reset_samples();
-            }
-            Ok(Event::UpdateCameraQuaternion(quaternion)) => {
-                // log::info!("Updating quaternion to {quaternion}");
-                ubo.update_camera_quaternion(quaternion);
                 total_ray_frames += ubo.ray_frame_num_out;
                 ubo.reset_samples();
             }
@@ -145,6 +163,11 @@ pub fn thread(
             Err(e) => log::warn!("Failed to populate Uniforms Buffer: {e}"),
         };
     }
+}
+
+fn reset_samples(ubo: &mut UniformBufferObject, total_ray_frames: &mut u32) {
+    *total_ray_frames += ubo.ray_frame_num_out;
+    ubo.reset_samples();
 }
 
 #[cfg(test)]

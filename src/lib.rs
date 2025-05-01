@@ -321,6 +321,16 @@ impl<T: Bloomable + Sync + Send + 'static> VulkanApp<T> {
         let (ray_update_uniforms_sender, update_uniforms_receiver) = mpsc::channel();
         let (update_scene_sender, update_scene_receiver) = mpsc::channel();
 
+        let cam_pos_user = Arc::new(RwLock::new(vec::Vec3::zero()));
+        let cam_pos_physics_in = cam_pos_user.clone();
+        let cam_pos_physics_out = Arc::new(RwLock::new(vec::Vec3::zero()));
+        let cam_pos_uniforms = cam_pos_physics_out.clone();
+
+        let cam_quat_user = Arc::new(RwLock::new(quaternion::Quaternion::identity()));
+        let cam_quat_physics_in = cam_quat_user.clone();
+        let cam_quat_physics_out = Arc::new(RwLock::new(quaternion::Quaternion::identity()));
+        let cam_quat_uniforms = cam_quat_physics_out.clone();
+
         // Need to create a rendezvouz channel to ensure we have updated the frame count in the uniform before we send the viewport to work
         let (ray_frame_count_sender, ray_frame_count_receiver) = mpsc::sync_channel(0);
         // let (ray_frame_count_sender, ray_frame_count_receiver) = mpsc::channel();
@@ -350,8 +360,6 @@ impl<T: Bloomable + Sync + Send + 'static> VulkanApp<T> {
 
         let viewport_transfer_resize_sender = ray_transfer_resize_sender.clone();
         let transfer_uniforms_sender = ray_update_uniforms_sender.clone();
-        // let viewport_update_uniforms_sender = ray_update_uniforms_sender.clone();
-        let physics_update_uniforms_sender = ray_update_uniforms_sender.clone();
 
         let transfer_semaphore = Destructor::new(
             device.get(),
@@ -371,7 +379,12 @@ impl<T: Bloomable + Sync + Send + 'static> VulkanApp<T> {
         let ray_viewport_semaphore = viewport_semaphore.get().clone();
         let viewport_viewport_semaphore = viewport_semaphore.get().clone();
 
-        let api = BloomAPI::new(add_material_sender, update_scene_sender);
+        let api = BloomAPI::new(
+            add_material_sender,
+            update_scene_sender,
+            cam_pos_user,
+            cam_quat_user,
+        );
 
         match user_app.write() {
             Ok(mut a) => a.init(api)?,
@@ -388,8 +401,11 @@ impl<T: Bloomable + Sync + Send + 'static> VulkanApp<T> {
                         Duration::from_millis(10),
                         should_physics_die_out,
                         update_scene_receiver,
+                        cam_pos_physics_in,
+                        cam_quat_physics_in,
+                        cam_pos_physics_out,
+                        cam_quat_physics_out,
                         update_acceleration_structure_sender,
-                        physics_update_uniforms_sender,
                         physics_user_app,
                     );
                 }) {
@@ -472,6 +488,8 @@ impl<T: Bloomable + Sync + Send + 'static> VulkanApp<T> {
                         ray_latest_frame_index_receiver,
                         viewport_latest_frame_index_receiver,
                         should_uniforms_die_out,
+                        cam_pos_uniforms,
+                        cam_quat_uniforms,
                         ray_uniform_buffers,
                         viewport_uniform_buffers,
                     );

@@ -23,6 +23,7 @@ impl Quaternion {
         Self::new(c, s * axis.x(), s * axis.y(), s * axis.z())
     }
     pub fn from_euler(pitch: f32, roll: f32, yaw: f32) -> Self {
+        // https://en.wikipedia.org/wiki/Conversion_between_quaternions_and_Euler_angles
         let cr = f32::cos(pitch * 0.5);
         let sr = f32::sin(pitch * 0.5);
         let cp = f32::cos(yaw * 0.5);
@@ -121,6 +122,7 @@ impl Quaternion {
         }
     }
     pub fn apply(&self, v: Vec3) -> Vec3 {
+        // https://gamedev.stackexchange.com/questions/28395/rotating-vector3-by-a-quaternion
         let quat_v = self.vec();
         2.0 * quat_v.dot(v) * quat_v
             + (self.w() * self.w() - quat_v.dot(quat_v)) * v
