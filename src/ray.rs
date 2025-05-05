@@ -19,6 +19,12 @@ pub enum TransferCommand {
     Pause(u64),
 }
 
+#[derive(Debug, Default)]
+pub struct Update {
+    pub current_frame_index: u8,
+    pub accumulated_frames: u32,
+}
+
 pub fn thread(
     device: ash::Device,
 
@@ -33,11 +39,11 @@ pub fn thread(
     transfer_sender: mpsc::Sender<transfer::ResizedSource>,
     transfer_commands: mpsc::Receiver<TransferCommand>,
     mut resize: single_value_channel::Receiver<PhysicalSize<u32>>,
-    notify_complete_frame: single_value_channel::Updater<(u8, u32)>,
+    notify_complete_frame: Arc<RwLock<Update>>,
     update_as: mpsc::Receiver<physics::UpdateScene>,
     add_material: mpsc::Receiver<material::Material>,
     uniform: mpsc::Sender<uniforms::Event>,
-    latest_frame_index: single_value_channel::Updater<usize>,
+    latest_frame_index: Arc<RwLock<usize>>,
 ) {
     log::trace!("Creating thread");
     let mut allocator_create_info =
@@ -96,7 +102,8 @@ pub fn thread(
 
     let mut is_minimised = false;
 
-    let mut current_frame_count = 1;
+    let mut accumulated_frames = 0;
+    let mut final_accumulation = false;
 
     loop {
         // Check if we should end the thread
@@ -148,17 +155,33 @@ pub fn thread(
                 Ok(()) => {}
             }
 
+            if final_accumulation {
+                accumulated_frames = 0;
+                final_accumulation = false;
+            }
+
+            accumulated_frames += 1;
+
             // Send current frame to transfer thread so that it knows where it can get a valid frame from
-            match notify_complete_frame.update((current_frame_index as u8, current_frame_count)) {
+            match notify_complete_frame.write() {
+                Ok(mut v) => {
+                    *v = Update {
+                        current_frame_index,
+                        accumulated_frames,
+                    }
+                }
                 Err(e) => {
-                    log::error!("Failed to notify transfer channel: {e}");
+                    log::error!("Ray failed to notify transfer channel: {e}");
                     break;
                 }
-                Ok(()) => {}
             }
-            current_frame_count += 1;
+            if let Err(e) = ray.uniform.send(uniforms::Event::RayTick) {
+                log::error!("Ray failed to update Uniform's frame count: {e}");
+                break;
+            };
+
             current_frame_index += 1;
-            current_frame_index %= MAX_FRAMES_IN_FLIGHT;
+            current_frame_index %= MAX_FRAMES_IN_FLIGHT as u8;
         }
 
         while ray.need_resize(*size) {
@@ -188,17 +211,20 @@ pub fn thread(
             );
             size = resize.latest();
         }
-        // std::thread::sleep(std::time::Duration::from_millis(1000));
 
         // Check if transfer is actively using our images and we need to wait for it to finish
         // or if the window has been resized and we need to change our images
         match transfer_commands.try_recv() {
             Err(mpsc::TryRecvError::Empty) => {
                 // Nothing to wait for, we can go on as planned
+                // log::debug!("Can go for another accumulation");
             }
             Ok(TransferCommand::Pause(v)) => {
+                // log::debug!("Pausing until {v}");
                 // We have been told to not do any work until a new timeline has been reached
                 current_transfer_timestamp = v;
+                // Schedule frame count for resetting as we only accumulate between viewport frames
+                final_accumulation = true;
             }
             Err(mpsc::TryRecvError::Disconnected) => {
                 log::error!("Failed to receive a notification from transfer");
@@ -218,7 +244,7 @@ pub fn thread(
         // Perform a render
         // TODO: Measure time taken
         match ray.ray_trace(
-            current_frame_index,
+            current_frame_index as usize,
             transfer_semaphore,
             current_transfer_timestamp,
             current_timestamp,
@@ -227,11 +253,10 @@ pub fn thread(
             Err(e) => {
                 log::error!("Failed to perform compute: {e}")
             }
-            Ok(()) => {
-                if let Err(e) = latest_frame_index.update(current_frame_index) {
-                    log::error!("Failed to send latest frame index to uniforms: {e}")
-                }
-            }
+            Ok(()) => match latest_frame_index.write() {
+                Ok(mut v) => *v = current_frame_index as usize,
+                Err(e) => log::error!("Failed to send latest frame index to uniforms: {e}"),
+            },
         };
         if first_run {
             log::info!("No longer first run");
@@ -413,7 +438,9 @@ impl<'a> Ray<'a> {
             self.physical_device,
             self.command_pool.get(),
             self.queue,
-            vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::TRANSFER_SRC,
+            vk::ImageUsageFlags::STORAGE
+                | vk::ImageUsageFlags::TRANSFER_SRC
+                | vk::ImageUsageFlags::TRANSFER_DST,
             size,
             vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
         )?);
@@ -475,12 +502,12 @@ impl<'a> Ray<'a> {
             for (i, &descriptor_set) in self.descriptor_sets.unwrap().iter().enumerate() {
                 // Now need to update the descriptor to reference the new image
                 let read_image_descriptor = [vk::DescriptorImageInfo {
-                    image_view: self.images.as_ref().unwrap()[i].view(),
+                    image_view: self.images.as_ref().unwrap()[(i + 1) % 2].view(),
                     image_layout: vk::ImageLayout::GENERAL,
                     ..Default::default()
                 }];
                 let write_image_descriptor = [vk::DescriptorImageInfo {
-                    image_view: self.images.as_ref().unwrap()[(i + 1) % 2].view(),
+                    image_view: self.images.as_ref().unwrap()[i].view(),
                     image_layout: vk::ImageLayout::GENERAL,
                     ..Default::default()
                 }];
@@ -528,8 +555,6 @@ impl<'a> Ray<'a> {
         Ok(raw_images)
     }
     pub fn update(&mut self) -> Result<()> {
-        let mut changed = false;
-
         loop {
             match self.add_material.try_recv() {
                 Ok(m) => {
@@ -550,11 +575,9 @@ impl<'a> Ray<'a> {
         loop {
             match self.update_as.try_recv() {
                 Ok(physics::UpdateScene::Add(id, obj)) => {
-                    changed = true;
                     log::warn!("TODO: Implement adding objects")
                 }
                 Ok(physics::UpdateScene::Remove(id)) => {
-                    changed = true;
                     log::warn!("TODO: Implement removing objects")
                 }
                 Ok(physics::UpdateScene::AddInstance(
@@ -562,15 +585,12 @@ impl<'a> Ray<'a> {
                     primitive_id,
                     transformation,
                 )) => {
-                    changed = true;
                     log::warn!("TODO: Implement adding instances")
                 }
                 Ok(physics::UpdateScene::RemoveInstance(instance_id)) => {
-                    changed = true;
                     log::warn!("TODO: Implement removing instances")
                 }
                 Ok(physics::UpdateScene::MoveInstance(instance_id, transformation)) => {
-                    changed = true;
                     log::warn!("TODO: Implement moving instances")
                 }
                 Err(mpsc::TryRecvError::Empty) => {
@@ -583,9 +603,6 @@ impl<'a> Ray<'a> {
                     ));
                 }
             }
-        }
-        if changed {
-            self.uniform.send(uniforms::Event::ResetSamples)?;
         }
         Ok(())
     }
@@ -632,7 +649,6 @@ impl<'a> Ray<'a> {
             self.device
                 .queue_submit(self.queue, &submit_info, vk::Fence::null())
         }?;
-        self.uniform.send(uniforms::Event::RayTick)?;
         Ok(())
     }
 }
@@ -1163,12 +1179,12 @@ fn create_descriptor_sets(
                 .acceleration_structures(&structures);
 
         let read_image_descriptor = [vk::DescriptorImageInfo {
-            image_view: storage_images[i].view(),
+            image_view: storage_images[(i + 1) % 2].view(),
             image_layout: vk::ImageLayout::GENERAL,
             ..Default::default()
         }];
         let write_image_descriptor = [vk::DescriptorImageInfo {
-            image_view: storage_images[(i + 1) % 2].view(),
+            image_view: storage_images[i].view(),
             image_layout: vk::ImageLayout::GENERAL,
             ..Default::default()
         }];

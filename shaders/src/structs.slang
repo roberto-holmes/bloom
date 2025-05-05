@@ -105,7 +105,6 @@ public struct Camera {
 public struct UBO {
 	public Camera camera;
 	public uint ray_frame_num;
-	public uint ray_frame_num_out;
 	public uint width;
 	public uint height;
 	public uint random_num;

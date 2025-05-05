@@ -1,4 +1,4 @@
-__import helpers;
+__import constants;
 
 // Based on https://gist.github.com/mattatz/40a91588d5fb38240403f198a938a593
 // by mattatz

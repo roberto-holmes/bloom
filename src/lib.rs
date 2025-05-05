@@ -310,11 +310,13 @@ impl<T: Bloomable + Sync + Send + 'static> VulkanApp<T> {
         // TODO: Replace mpsc with crossbeam?
 
         let (ray_transfer_resize_sender, transfer_resize_receiver) = mpsc::channel();
-        let (ray_transfer_command_sender, ray_transfer_command_receiver) = mpsc::channel();
+        let (ray_transfer_command_sender, ray_transfer_command_receiver) = mpsc::sync_channel(0);
         let (viewport_transfer_command_sender, viewport_transfer_command_receiver) =
             mpsc::sync_channel(1);
-        let (ray_frame_complete_receiver, ray_frame_complete_sender) =
-            single_value_channel::channel_starting_with((0_u8, 0_u32));
+
+        let ray_frame_complete_receiver = Arc::new(RwLock::new(ray::Update::default()));
+        let ray_frame_complete_sender = ray_frame_complete_receiver.clone();
+
         let (update_acceleration_structure_sender, update_acceleration_structure_receiver) =
             mpsc::channel();
         let (add_material_sender, add_material_receiver) = mpsc::channel();
@@ -331,10 +333,6 @@ impl<T: Bloomable + Sync + Send + 'static> VulkanApp<T> {
         let cam_quat_physics_out = Arc::new(RwLock::new(quaternion::Quaternion::identity()));
         let cam_quat_uniforms = cam_quat_physics_out.clone();
 
-        // Need to create a rendezvouz channel to ensure we have updated the frame count in the uniform before we send the viewport to work
-        let (ray_frame_count_sender, ray_frame_count_receiver) = mpsc::sync_channel(0);
-        // let (ray_frame_count_sender, ray_frame_count_receiver) = mpsc::channel();
-
         let (resize_receiver, resize_sender) =
             single_value_channel::channel_starting_with(PhysicalSize {
                 width: WINDOW_WIDTH,
@@ -342,10 +340,11 @@ impl<T: Bloomable + Sync + Send + 'static> VulkanApp<T> {
             });
         let (draw_sender, draw_receiver) = mpsc::sync_channel(1);
 
-        let (ray_latest_frame_index_receiver, ray_latest_frame_index_sender) =
-            single_value_channel::channel_starting_with(0_usize);
-        let (viewport_latest_frame_index_receiver, viewport_latest_frame_index_sender) =
-            single_value_channel::channel_starting_with(0_usize);
+        let ray_latest_frame_index_receiver = Arc::new(RwLock::new(0_usize));
+        let ray_latest_frame_index_sender = ray_latest_frame_index_receiver.clone();
+
+        let viewport_latest_frame_index_receiver = Arc::new(RwLock::new(0_usize));
+        let viewport_latest_frame_index_sender = viewport_latest_frame_index_receiver.clone();
 
         let (ray_resize_receiver, ray_resize_updater) =
             single_value_channel::channel_starting_with(PhysicalSize {
@@ -431,7 +430,6 @@ impl<T: Bloomable + Sync + Send + 'static> VulkanApp<T> {
                         transfer_transfer_semaphore,
                         should_transfer_die_out,
                         ray_frame_complete_receiver,
-                        ray_frame_count_sender,
                         draw_receiver,
                         resize_receiver,
                         transfer_resize_receiver,
@@ -484,7 +482,6 @@ impl<T: Bloomable + Sync + Send + 'static> VulkanApp<T> {
                 .spawn(move || {
                     uniforms::thread(
                         update_uniforms_receiver,
-                        ray_frame_count_receiver,
                         ray_latest_frame_index_receiver,
                         viewport_latest_frame_index_receiver,
                         should_uniforms_die_out,

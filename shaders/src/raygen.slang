@@ -17,11 +17,6 @@ void main() {
 	uint3 LaunchID = DispatchRaysIndex();
 	uint3 LaunchSize = DispatchRaysDimensions();
 
-	if (ubo.ray_frame_num > MAX_SAMPLES) {
-		write_image[int2(LaunchID.xy)] = read_image[int2(LaunchID.xy)];
-		return;
-	}
-
 	const float aspect_ratio = float(ubo.width) / float(ubo.height);
 
 	init_rng(DispatchRaysIndex().xy, ubo.width, ubo.ray_frame_num + DispatchRaysIndex().x + DispatchRaysIndex().y + ubo.random_num);
@@ -52,7 +47,7 @@ void main() {
 	// 	printf("dir: %v3f\n", payload.direction);
 	// }
 
-	float3 sample = 0.0;
+	float3 sample = read_image[int2(LaunchID.xy)].rgb;
 	float3 throughput = 1.0;
 
 	for (int depth = 0; depth < 16; depth++) {
@@ -76,11 +71,5 @@ void main() {
 		}
 	}
 	sample += throughput * payload.radiance;
-	if (ubo.ray_frame_num > 1) {
-		sample += read_image[int2(LaunchID.xy)].rgb;
-	}
-
 	write_image[int2(LaunchID.xy)] = float4(sample, 0.0);
-	// write_image[int2(LaunchID.xy)] = float4(0.0, 1.0, 1.0, 0.0);
-	// write_image[int2(LaunchID.xy)] = float4(float(frame_num) / 100, 0.0, 0.0, 0.0);
 }

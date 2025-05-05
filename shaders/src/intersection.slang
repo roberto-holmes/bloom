@@ -1,5 +1,6 @@
 __import structs;
 __import helpers;
+__import constants;
 
 [[vk::binding(3)]]
 ConstantBuffer<UBO> ubo;

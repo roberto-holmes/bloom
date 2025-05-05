@@ -9,7 +9,6 @@ use crate::{camera::Camera, quaternion::Quaternion, vec::Vec3, vulkan};
 
 pub enum Event {
     RayTick,
-    ResetSamples,
     Resize(PhysicalSize<u32>),
 }
 
@@ -18,7 +17,6 @@ pub enum Event {
 pub struct UniformBufferObject {
     camera: Camera,
     ray_frame_num: u32,
-    ray_frame_num_out: u32,
     width: u32,
     height: u32,
     random_num: u32,
@@ -29,7 +27,6 @@ impl UniformBufferObject {
         Self {
             camera: Camera::default(),
             ray_frame_num: 0,
-            ray_frame_num_out: 0,
             width: 0,
             height: 0,
             random_num: rand::random(),
@@ -38,14 +35,6 @@ impl UniformBufferObject {
     pub fn tick_ray(&mut self) {
         // log::trace!("Ray frame num is now {}", self.ray_frame_num);
         self.ray_frame_num += 1;
-    }
-    pub fn set_ray(&mut self, new_value: u32) {
-        log::trace!("Ray frame out is now {}", self.ray_frame_num);
-        self.ray_frame_num_out = new_value;
-    }
-    pub fn reset_samples(&mut self) {
-        self.ray_frame_num = 0;
-        self.ray_frame_num_out = 0;
     }
     pub fn update_camera_position(&mut self, position: Vec3) -> bool {
         // Return true if the value has changed
@@ -70,9 +59,8 @@ impl UniformBufferObject {
 
 pub fn thread(
     channel: mpsc::Receiver<Event>,
-    ray_frame_count: mpsc::Receiver<u32>,
-    mut latest_ray_frame_index: single_value_channel::Receiver<usize>,
-    mut latest_viewport_frame_index: single_value_channel::Receiver<usize>,
+    latest_ray_frame_index: Arc<RwLock<usize>>,
+    latest_viewport_frame_index: Arc<RwLock<usize>>,
     should_threads_die: Arc<RwLock<bool>>,
     camera_pos_in: Arc<RwLock<Vec3>>,
     camera_quat_in: Arc<RwLock<Quaternion>>,
@@ -81,7 +69,6 @@ pub fn thread(
     mut viewport_ubo_buffer: [vulkan::Buffer; 2],
 ) {
     let mut ubo = UniformBufferObject::new();
-    let mut total_ray_frames = 0;
     loop {
         // Check if we should end the thread
         match should_threads_die.read() {
@@ -94,27 +81,9 @@ pub fn thread(
                 log::error!("Transfer rwlock is poisoned, ending thread: {}", e)
             }
         }
-        match ray_frame_count.try_recv() {
-            Ok(v) => {
-                // Ray frame count will always increase so we need to figure out the resets ourselves
-                ubo.set_ray(v - total_ray_frames);
-                // log::warn!(
-                //     "Updating frame count to {v} - {total_ray_frames} = {}",
-                //     v - total_ray_frames
-                // );
-                // continue;
-            }
-            Err(mpsc::TryRecvError::Empty) => {}
-            Err(mpsc::TryRecvError::Disconnected) => {
-                log::error!("Ray frame channel has disconnected");
-                break;
-            }
-        }
         match camera_pos_in.read() {
             Ok(v) => {
-                if ubo.update_camera_position(*v) {
-                    reset_samples(&mut ubo, &mut total_ray_frames);
-                }
+                let _ = ubo.update_camera_position(*v);
             }
             Err(e) => {
                 log::error!("Uniform's camera pos arc is poisoned: {e}");
@@ -122,9 +91,7 @@ pub fn thread(
         }
         match camera_quat_in.read() {
             Ok(v) => {
-                if ubo.update_camera_quaternion(*v) {
-                    reset_samples(&mut ubo, &mut total_ray_frames);
-                }
+                let _ = ubo.update_camera_quaternion(*v);
             }
             Err(e) => {
                 log::error!("Uniform's camera pos arc is poisoned: {e}");
@@ -132,15 +99,9 @@ pub fn thread(
         }
         match channel.recv_timeout(Duration::from_millis(1)) {
             Ok(Event::RayTick) => ubo.tick_ray(),
-            Ok(Event::ResetSamples) => {
-                total_ray_frames += ubo.ray_frame_num_out;
-                ubo.reset_samples();
-            }
             Ok(Event::Resize(size)) => {
                 ubo.width = size.width;
                 ubo.height = size.height;
-                total_ray_frames += ubo.ray_frame_num_out;
-                ubo.reset_samples();
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => {
@@ -151,8 +112,20 @@ pub fn thread(
 
         ubo.refresh_random_number();
 
-        let ray_index = *latest_ray_frame_index.latest();
-        let viewport_index = *latest_viewport_frame_index.latest();
+        let ray_index = match latest_ray_frame_index.read() {
+            Ok(v) => *v,
+            Err(e) => {
+                log::error!("Uniforms failed to get the latest ray frame index: {e}");
+                break;
+            }
+        };
+        let viewport_index = match latest_viewport_frame_index.read() {
+            Ok(v) => *v,
+            Err(e) => {
+                log::error!("Uniforms failed to get the latest viewport frame index: {e}");
+                break;
+            }
+        };
 
         match ray_ubo_buffer[ray_index].populate_mapped(&ubo, 1) {
             Ok(()) => {}
@@ -165,11 +138,6 @@ pub fn thread(
     }
 }
 
-fn reset_samples(ubo: &mut UniformBufferObject, total_ray_frames: &mut u32) {
-    *total_ray_frames += ubo.ray_frame_num_out;
-    ubo.reset_samples();
-}
-
 #[cfg(test)]
 mod tests {
 
@@ -179,26 +147,9 @@ mod tests {
     fn new_ubo() {
         let ubo = UniformBufferObject::new();
         assert_eq!(ubo.ray_frame_num, 0);
-        assert_eq!(ubo.ray_frame_num_out, 0);
         assert_eq!(ubo.width, 0);
         assert_eq!(ubo.height, 0);
     }
-
-    // #[test]
-    // fn tick_viewport() {
-    //     let frames = 19_165;
-    //     let mut ubo = UniformBufferObject::new();
-    //     ubo.tick();
-    //     assert_eq!(ubo.frame_num, 1);
-    //     for _ in 1..frames {
-    //         ubo.tick();
-    //     }
-    //     assert_eq!(ubo.frame_num, frames);
-    //     // for _ in frames..u32::MAX {
-    //     //     ubo.tick();
-    //     // }
-    //     // assert_eq!(ubo.frame_num, u32::MAX);
-    // }
 
     #[test]
     fn tick_ray() {
@@ -214,30 +165,6 @@ mod tests {
         //     ubo.tick_ray();
         // }
         // assert_eq!(ubo.ray_frame_num, u32::MAX);
-    }
-
-    #[test]
-    fn set_output_ray() {
-        let mut ubo = UniformBufferObject::new();
-        assert_eq!(ubo.ray_frame_num_out, 0);
-        ubo.set_ray(1);
-        assert_eq!(ubo.ray_frame_num_out, 1);
-        ubo.set_ray(762_436);
-        assert_eq!(ubo.ray_frame_num_out, 762_436);
-        ubo.set_ray(u32::MAX);
-        assert_eq!(ubo.ray_frame_num_out, u32::MAX);
-    }
-
-    #[test]
-    fn reset_samples() {
-        let mut ubo = UniformBufferObject::new();
-        for _ in 0..26 {
-            ubo.tick_ray();
-        }
-        ubo.set_ray(1_136_455);
-        ubo.reset_samples();
-        assert_eq!(ubo.ray_frame_num_out, 0);
-        assert_eq!(ubo.ray_frame_num, 0);
     }
 
     #[test]

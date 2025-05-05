@@ -11,23 +11,37 @@ use memoffset::offset_of;
 use winit::{dpi::PhysicalSize, window::Window};
 
 use crate::{
-    core::{self, transition_image_layout},
+    core,
     structures::{self, SwapChainStuff},
     tools::read_shader_code,
     transfer,
-    uniforms::{self, UniformBufferObject},
+    uniforms::UniformBufferObject,
     vulkan::{self, Destructor},
     MAX_FRAMES_IN_FLIGHT,
 };
 
-pub enum TransferCommand {
-    Ready(u64, usize), // Timeline semaphore timestamp
+pub struct TransferCommand {
+    pub timestamp: u64,
+    pub frame_index: usize,
+    pub accumulated_frame_count: u32,
 }
 
 #[derive(Debug, Copy, Clone)]
 #[repr(C)]
 pub struct Vertex {
     pos: [f32; 3],
+}
+
+#[derive(Debug, Default)]
+#[repr(C)]
+struct PushConstants {
+    accumulated_frames: u32,
+}
+
+impl PushConstants {
+    pub fn as_slice(&self) -> &[u8; size_of::<PushConstants>()] {
+        unsafe { &*(self as *const Self as *const [u8; size_of::<PushConstants>()]) }
+    }
 }
 
 impl Vertex {
@@ -82,7 +96,7 @@ pub fn thread(
     should_threads_die: Arc<RwLock<bool>>,
     event_receiver: mpsc::Receiver<TransferCommand>,
     mut resize_receiver: single_value_channel::Receiver<PhysicalSize<u32>>,
-    latest_frame_index: single_value_channel::Updater<usize>,
+    latest_frame_index: Arc<RwLock<usize>>,
 ) {
     log::trace!("Creating thread");
     let mut allocator_create_info =
@@ -172,20 +186,27 @@ pub fn thread(
                 break;
             }
 
-            Ok(TransferCommand::Ready(timestamp, frame)) => {
-                active_frame_index = frame;
-                match viewport.draw(transfer_semaphore, timestamp, viewport_semaphore, frame) {
+            Ok(v) => {
+                active_frame_index = v.frame_index;
+                match viewport.draw(
+                    transfer_semaphore,
+                    v.timestamp,
+                    viewport_semaphore,
+                    v.frame_index,
+                    v.accumulated_frame_count,
+                ) {
                     Err(e) => {
                         log::error!("Failed to draw frame: {e}");
                         break;
                     }
                     Ok(false) => log::warn!("Need to redraw"),
-                    Ok(true) => {
-                        if let Err(e) = latest_frame_index.update(frame) {
+                    Ok(true) => match latest_frame_index.write() {
+                        Ok(mut o) => *o = v.frame_index,
+                        Err(e) => {
                             log::error!("Failed to send latest frame index to uniforms: {e}");
                             break;
                         }
-                    }
+                    },
                 }
             }
         }
@@ -202,6 +223,7 @@ struct Viewport<'a> {
 
     vertex_buffer: vulkan::Buffer,
     index_buffer: vulkan::Buffer,
+    push_constants: PushConstants,
 
     queue_family_indices: structures::QueueFamilyIndices,
     queue: vk::Queue,
@@ -304,6 +326,7 @@ impl<'a> Viewport<'a> {
             image_available,
             render_finished,
             in_flight_fences,
+            push_constants: PushConstants::default(),
             window,
         })
     }
@@ -418,6 +441,7 @@ impl<'a> Viewport<'a> {
         wait_timestamp: u64,
         viewport_semaphore: vk::Semaphore,
         frame: usize,
+        accumulated_frames: u32,
     ) -> Result<bool> {
         let start = std::time::Instant::now();
         if self.images.is_none() {
@@ -463,6 +487,7 @@ impl<'a> Viewport<'a> {
                 .reset_fences(&[self.in_flight_fences[frame].get()])?
         };
 
+        self.push_constants.accumulated_frames = accumulated_frames;
         self.record_commands(swapchain_index as usize, frame)?;
 
         let wait_semaphores = [self.image_available[frame].get(), transfer_semaphore];
@@ -605,6 +630,13 @@ impl<'a> Viewport<'a> {
                 vk::PipelineStageFlags::TOP_OF_PIPE,
                 self.query_pool_timestamps.get(),
                 0,
+            );
+            self.device.cmd_push_constants(
+                self.commands[frame_index],
+                self.pipeline_layout.get(),
+                vk::ShaderStageFlags::FRAGMENT,
+                0,
+                self.push_constants.as_slice(),
             );
         }
 
@@ -909,7 +941,15 @@ pub fn create_pipeline(
     let mut pipeline_rendering_create_info =
         vk::PipelineRenderingCreateInfo::default().color_attachment_formats(&format);
 
-    let pipeline_layout_info = vk::PipelineLayoutCreateInfo::default().set_layouts(&set_layouts);
+    let push_constants = [vk::PushConstantRange {
+        stage_flags: vk::ShaderStageFlags::FRAGMENT,
+        size: size_of::<PushConstants>() as u32,
+        offset: 0,
+    }];
+
+    let pipeline_layout_info = vk::PipelineLayoutCreateInfo::default()
+        .set_layouts(&set_layouts)
+        .push_constant_ranges(&push_constants);
 
     let pipeline_layout = Destructor::new(
         device,
@@ -983,6 +1023,7 @@ pub fn create_descriptor_sets(
 
     // TODO: Target 4 descriptors (apparently this is the guaranteed supported amount and more can be slow)
     for (i, &descriptor_set) in descriptor_sets.iter().enumerate() {
+        // TODO: Consider removing viewport's access to the UBO
         let buffer_info = [vk::DescriptorBufferInfo::default()
             .buffer(uniforms_buffers[i])
             .offset(0)

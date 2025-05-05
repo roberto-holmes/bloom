@@ -23,15 +23,13 @@ pub fn thread(
     semaphore: vk::Semaphore,
     should_threads_die: Arc<RwLock<bool>>,
 
-    mut ray_frame_done: single_value_channel::Receiver<(u8, u32)>,
-    // ray_frame_count_sender: mpsc::Sender<u32>,
-    ray_frame_count_sender: mpsc::SyncSender<u32>,
+    ray_frame_done: Arc<RwLock<ray::Update>>,
     draw_request: mpsc::Receiver<bool>,
     mut resize_request: single_value_channel::Receiver<PhysicalSize<u32>>,
     resized: mpsc::Receiver<ResizedSource>,
 
     ubo: mpsc::Sender<uniforms::Event>,
-    ray: mpsc::Sender<ray::TransferCommand>,
+    ray: mpsc::SyncSender<ray::TransferCommand>,
     viewport: mpsc::SyncSender<viewport::TransferCommand>,
     ray_resize: single_value_channel::Updater<PhysicalSize<u32>>,
     viewport_resize: single_value_channel::Updater<PhysicalSize<u32>>,
@@ -136,23 +134,21 @@ pub fn thread(
                     }
                     Ok(()) => {}
                 }
-                let (ray_frame, ray_frame_num) = *ray_frame_done.latest();
-                // log::debug!("Sending new frame count of {ray_frame_num}");
-                match ray_frame_count_sender.send(ray_frame_num) {
+
+                let (ray_frame, accumulated_frame_count) = match ray_frame_done.read() {
+                    Ok(v) => (v.current_frame_index, v.accumulated_frames),
                     Err(e) => {
-                        log::error!(
-                            "Transfer failed to notify uniform of new ray frame number: {e}"
-                        );
-                        break;
+                        log::error!("Transfer failed to receive lastest frame from ray: {e}");
+                        return;
                     }
-                    Ok(()) => {}
-                }
-                // log::debug!("\t{ray_frame_num} done");
+                };
+
                 // Let the viewport know when the data will be ready and which frame to use
-                match viewport.send(viewport::TransferCommand::Ready(
-                    timestamp + 1,
-                    output_frame_index,
-                )) {
+                match viewport.send(viewport::TransferCommand {
+                    timestamp: timestamp + 1,
+                    frame_index: output_frame_index,
+                    accumulated_frame_count,
+                }) {
                     Err(e) => {
                         log::error!("Transfer failed to notify graphics channel: {e}");
                         break;
@@ -227,7 +223,6 @@ impl Transfer {
         timestamp_to_wait: u64,
         timestamp_to_signal: u64,
     ) -> Result<()> {
-        // unsafe { self.device.queue_wait_idle(self.queue)? };
         let wait_timestamps = [timestamp_to_wait];
         let signal_timestamps = [timestamp_to_signal];
         let semaphores = [self.semaphore];
@@ -309,13 +304,13 @@ impl Transfer {
     ) -> Result<()> {
         let command_buffer = self.commands[viewport_frame_index << 1 | ray_frame_index];
 
-        let subresource_range = vk::ImageSubresourceRange {
+        let subresource_range = [vk::ImageSubresourceRange {
             aspect_mask: vk::ImageAspectFlags::COLOR,
             base_mip_level: 0,
             level_count: 1,
             base_array_layer: 0,
             layer_count: 1,
-        };
+        }];
 
         let mut ray_barrier = vk::ImageMemoryBarrier::default()
             .old_layout(vk::ImageLayout::GENERAL)
@@ -323,7 +318,7 @@ impl Transfer {
             .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
             .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
             .image(ray_images[ray_frame_index])
-            .subresource_range(subresource_range)
+            .subresource_range(subresource_range[0])
             .src_access_mask(vk::AccessFlags::SHADER_READ)
             .dst_access_mask(vk::AccessFlags::TRANSFER_READ);
         let mut viewport_barrier = vk::ImageMemoryBarrier::default()
@@ -332,7 +327,7 @@ impl Transfer {
             .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
             .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
             .image(viewport_images[viewport_frame_index])
-            .subresource_range(subresource_range)
+            .subresource_range(subresource_range[0])
             .src_access_mask(vk::AccessFlags::SHADER_READ)
             .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE);
 
@@ -374,7 +369,8 @@ impl Transfer {
                 .begin_command_buffer(command_buffer, &begin_info)?;
             self.device.cmd_pipeline_barrier(
                 command_buffer,
-                vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
+                vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR
+                    | vk::PipelineStageFlags::FRAGMENT_SHADER,
                 vk::PipelineStageFlags::TRANSFER,
                 vk::DependencyFlags::empty(),
                 &[],
@@ -406,12 +402,27 @@ impl Transfer {
             self.device.cmd_pipeline_barrier(
                 command_buffer,
                 vk::PipelineStageFlags::TRANSFER,
-                vk::PipelineStageFlags::FRAGMENT_SHADER,
+                vk::PipelineStageFlags::FRAGMENT_SHADER
+                    | vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
                 vk::DependencyFlags::empty(),
                 &[],
                 &[],
                 &image_memory_barriers,
             );
+
+            let clear_value = vk::ClearColorValue {
+                float32: [0.0, 0.0, 0.0, 1.0],
+            };
+
+            // Clear old ray image
+            self.device.cmd_clear_color_image(
+                command_buffer,
+                ray_images[ray_frame_index],
+                vk::ImageLayout::GENERAL,
+                &clear_value,
+                &subresource_range,
+            );
+
             self.device.end_command_buffer(command_buffer)?;
         }
 
