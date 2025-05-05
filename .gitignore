@@ -1,2 +1,9 @@
 /target/
 /vendor/
+
+/shaders/spv/constants.slang.spv
+/shaders/spv/helpers.slang.spv
+/shaders/spv/quaternion.slang.spv
+/shaders/spv/rng.slang.spv
+/shaders/spv/scatter.slang.spv
+/shaders/spv/structs.slang.spv
