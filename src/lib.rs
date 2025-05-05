@@ -181,6 +181,16 @@ impl<T: Bloomable + Sync + Send + 'static> ApplicationHandler for App<T> {
                         Duration::default()
                     }
                 };
+                // Limit FPS
+                if delta_time < Duration::from_micros((1_000_000.0 / 60.0) as u64) {
+                    match self.window.as_ref().unwrap().write() {
+                        Ok(v) => {
+                            v.request_redraw();
+                            return;
+                        }
+                        Err(e) => log::error!("Failed to delat redraw: {e}"),
+                    }
+                }
                 log::trace!(
                     "Wanting frame time of {} μs [{:.2} fps]",
                     delta_time.as_micros(),
