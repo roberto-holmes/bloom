@@ -101,9 +101,6 @@ impl Bloomable for Demo {
     fn init(&mut self, api_in: BloomAPI) -> Result<()> {
         self.api = Some(api_in);
         let scene = self.get_api();
-        // let mut api = scene.lock().unwrap();
-
-        // let scene = &mut api.scene;
 
         let red =
             scene.add_material(material::Material::new_basic(Vec3::new(1.0, 0.0, 0.0), 0.))?;
@@ -131,7 +128,6 @@ impl Bloomable for Demo {
                 );
             }
         }
-        log::info!("Material has id {yellow}");
         let cube = Model::new_cube(red)?;
         let cube_id = scene.add_obj(Primitive::Model(cube))?;
 

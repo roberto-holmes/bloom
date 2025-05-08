@@ -1691,12 +1691,16 @@ fn create_blas(
                     None,
                     None,
                 )?);
-                primitive_map.insert(id, (primitives::Primitive::Model(o), blass.len() - 1));
+                if primitive_map.insert(id, (primitives::Primitive::Model(o), blass.len() - 1))
+                    != None
+                {
+                    log::warn!("Failed to add model to primitive map");
+                }
             }
             Ok(physics::UpdateScene::Add(id, primitives::Primitive::Lentil(mut o))) => {
                 log::trace!("{} - Adding a lentil", line!());
                 o.allocate(allocator, device, command_pool, queue)?;
-                primitive_map.insert(id, (primitives::Primitive::Lentil(o), blass.len() - 1));
+                primitive_map.insert(id, (primitives::Primitive::Lentil(o), blass.len()));
                 add_aabb(
                     allocator,
                     device,
@@ -1713,7 +1717,7 @@ fn create_blas(
             Ok(physics::UpdateScene::Add(id, primitives::Primitive::Sphere(mut o))) => {
                 log::trace!("{} - Adding a sphere", line!());
                 o.allocate(allocator, device, command_pool, queue)?;
-                primitive_map.insert(id, (primitives::Primitive::Sphere(o), blass.len() - 1));
+                primitive_map.insert(id, (primitives::Primitive::Sphere(o), blass.len()));
                 add_aabb(
                     allocator,
                     device,
