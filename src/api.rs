@@ -24,6 +24,7 @@ pub trait Bloomable {
     fn init_window(&mut self, window: std::sync::Arc<RwLock<winit::window::Window>>);
     fn init(&mut self, api: BloomAPI) -> Result<()>;
     fn input(&mut self, event: winit::event::WindowEvent);
+    fn raw_input(&mut self, device_id: winit::event::DeviceId, event: winit::event::DeviceEvent);
     fn resize(&mut self, width: u32, height: u32);
     fn display_tick(&mut self);
     fn physics_tick(&mut self, delta_time: Duration);

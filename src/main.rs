@@ -13,6 +13,7 @@ use bloom::{
     vec::Vec3,
 };
 use cgmath::Matrix4;
+use winit::event::DeviceEvent;
 use winit::{
     dpi::PhysicalPosition,
     event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent},
@@ -216,18 +217,24 @@ impl Bloomable for Demo {
         Ok(())
     }
     fn resize(&mut self, _width: u32, _height: u32) {}
+    fn raw_input(&mut self, _device_id: winit::event::DeviceId, event: winit::event::DeviceEvent) {
+        match event {
+            DeviceEvent::MouseMotion { mut delta } => {
+                delta.0 *= 0.01;
+                delta.1 *= 0.01;
+                if self.is_mouse_grabbed {
+                    let _ = self.look(delta.0 as f32, delta.1 as f32);
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn input(&mut self, event: winit::event::WindowEvent) {
         // let api = self.get_api();
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.mouse_state.update_position(position);
-                let (mut dx, mut dy) = self.mouse_state.get_pos_delta();
-                dx *= 0.01;
-                dy *= 0.01;
-
-                if self.is_mouse_grabbed {
-                    let _ = self.look(dx, dy);
-                }
                 // if self.mouse_state.left_pressed {
                 // scene.api.camera.orbit(dx, dy);
                 // api.uniform.reset_samples();
@@ -283,17 +290,17 @@ impl Bloomable for Demo {
                         Ok(w) => {
                             if self.is_mouse_grabbed {
                                 log::info!("Releasing mouse");
-                                // match w.set_cursor_grab(winit::window::CursorGrabMode::None) {
-                                //     Ok(()) => {}
-                                //     Err(e) => log::error!("Failed to ungrab mouse: {e}"),
-                                // };
+                                match w.set_cursor_grab(winit::window::CursorGrabMode::None) {
+                                    Ok(()) => {}
+                                    Err(e) => log::error!("Failed to release mouse: {e}"),
+                                };
                                 w.set_cursor_visible(true);
                             } else {
                                 log::info!("Grabbing mouse");
-                                // match w.set_cursor_grab(winit::window::CursorGrabMode::Confined) {
-                                //     Ok(()) => {}
-                                //     Err(e) => log::error!("Failed to grab mouse: {e}"),
-                                // };
+                                match w.set_cursor_grab(winit::window::CursorGrabMode::Confined) {
+                                    Ok(()) => {}
+                                    Err(e) => log::error!("Failed to grab mouse: {e}"),
+                                };
                                 w.set_cursor_visible(false);
                             }
                             self.is_mouse_grabbed = !self.is_mouse_grabbed;

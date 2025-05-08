@@ -32,7 +32,7 @@ use vulkan::Destructor;
 use winit::{
     application::ApplicationHandler,
     dpi::PhysicalSize,
-    event::{ElementState, KeyEvent, WindowEvent},
+    event::{DeviceEvent, DeviceId, ElementState, KeyEvent, WindowEvent},
     event_loop::{self, ActiveEventLoop, EventLoop},
     keyboard::{KeyCode, PhysicalKey},
     window::{Window, WindowId},
@@ -215,6 +215,18 @@ impl<T: Bloomable + Sync + Send + 'static> ApplicationHandler for App<T> {
                 Ok(mut app) => app.input(e),
                 Err(e) => log::error!("Failed to give user app the window event: {e}"),
             },
+        }
+    }
+
+    fn device_event(
+        &mut self,
+        _event_loop: &ActiveEventLoop,
+        device_id: DeviceId,
+        event: DeviceEvent,
+    ) {
+        match self.user_app.write() {
+            Ok(mut app) => app.raw_input(device_id, event),
+            Err(e) => log::error!("Failed to give user app the device event: {e}"),
         }
     }
 }
