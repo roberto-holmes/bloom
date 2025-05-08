@@ -321,7 +321,7 @@ impl Bloomable for Demo {
     }
     fn display_tick(&mut self) {}
     fn physics_tick(&mut self, delta_time: Duration) {
-        let delta = 0.001 * delta_time.as_millis() as f32;
+        let delta = 0.005 * delta_time.as_millis() as f32;
         let mut movement = (0.0, 0.0);
         if self.keyboard_state.is_pressed(KeyCode::KeyW) {
             movement.1 += delta;

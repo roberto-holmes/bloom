@@ -102,12 +102,13 @@ impl Quaternion {
         Self::new(self.w(), -self.x(), -self.y(), -self.z())
     }
     fn vec(&self) -> Vec3 {
-        let v = Vec3::new(self.x(), self.y(), self.z());
-        if ulps_eq!(v, Vec3::zero()) {
-            Vec3::zero()
-        } else {
-            v.normalized()
-        }
+        Vec3::new(self.x(), self.y(), self.z())
+        // let v = Vec3::new(self.x(), self.y(), self.z());
+        // if ulps_eq!(v, Vec3::zero()) {
+        //     Vec3::zero()
+        // } else {
+        //     v.normalized()
+        // }
     }
     fn magnitude2(&self) -> f32 {
         self.w() * self.w() + self.x() * self.x() + self.y() * self.y() + self.z() * self.z()
@@ -127,6 +128,7 @@ impl Quaternion {
         2.0 * quat_v.dot(v) * quat_v
             + (self.w() * self.w() - quat_v.dot(quat_v)) * v
             + 2.0 * self.w() * quat_v.cross(v)
+        // ((self * Quaternion::from(v)) * self.conjugate()).vec()
     }
     pub fn rotate_x(&mut self, rad: f32) {
         let half = rad / 2.0;
@@ -184,7 +186,6 @@ macro_rules! impl_binary_op {
     };
 }
 
-// TODO:
 impl_binary_op!(Add : add => (lhs: Quaternion, rhs: Quaternion) -> Quaternion {
     Quaternion::new(
         lhs.w() + rhs.w(),
@@ -307,6 +308,12 @@ impl From<cgmath::Quaternion<f32>> for Quaternion {
     }
 }
 
+impl From<Vec3> for Quaternion {
+    fn from(v: Vec3) -> Self {
+        Self::new(0.0, v.x(), v.y(), v.z())
+    }
+}
+
 impl approx::AbsDiffEq for Quaternion {
     //? Not sure why we need to add `as ...`
     type Epsilon = <f32 as approx::AbsDiffEq>::Epsilon;
@@ -404,6 +411,22 @@ mod tests {
             q,
             Quaternion::new(2.0.sqrt() / 2.0, 2.0.sqrt() / 2.0, 0.0, 0.0)
         );
+    }
+    #[test]
+    fn apply_x_to_z() {
+        let input = Vec3::unit_x();
+        let q = Quaternion::from_euler(0.0, 0.0, -std::f32::consts::FRAC_PI_2);
+
+        println!("{q}");
+
+        assert_ulps_eq!(q.apply(input), Vec3::unit_z());
+    }
+    #[test]
+    fn apply_x_to_y() {
+        let input = Vec3::unit_x();
+        let q = Quaternion::from_euler(0.0, std::f32::consts::FRAC_PI_2, 0.0);
+        println!("{q}");
+        assert_ulps_eq!(q.apply(input), Vec3::unit_y());
     }
     #[test]
     fn rotate_y_90() {
