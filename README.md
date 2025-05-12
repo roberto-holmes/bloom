@@ -17,7 +17,6 @@ Vulkan app to demonstrate path traced lenses
 
 - Minimising
 - Adding lots of cubes/materials/instances causes a crash
-- Release build tries to use debug extensions
 
 ## Future
 

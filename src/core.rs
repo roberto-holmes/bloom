@@ -29,8 +29,11 @@ pub fn create_instance(entry: &ash::Entry, window: &Window) -> Result<vulkan::In
 
     let mut extension_names =
         ash_window::enumerate_required_extensions(window.display_handle()?.as_raw())?.to_vec();
-    extension_names.push(ash::ext::debug_utils::NAME.as_ptr());
-    extension_names.push(ash::ext::layer_settings::NAME.as_ptr());
+
+    if VALIDATION.is_enable {
+        extension_names.push(ash::ext::debug_utils::NAME.as_ptr());
+        extension_names.push(ash::ext::layer_settings::NAME.as_ptr());
+    }
 
     #[cfg(any(target_os = "macos", target_os = "ios"))]
     {
@@ -55,7 +58,6 @@ pub fn create_instance(entry: &ash::Entry, window: &Window) -> Result<vulkan::In
         .map(|layer_name| layer_name.as_ptr())
         .collect();
 
-    let mut debug_utils_create_info = populate_debug_messenger_create_info();
     let mut create_info = vk::InstanceCreateInfo::default()
         .application_info(&app_info)
         .enabled_extension_names(&extension_names)
@@ -66,11 +68,14 @@ pub fn create_instance(entry: &ash::Entry, window: &Window) -> Result<vulkan::In
         .enabled_validation_features(&validation_feature_enables);
 
     if VALIDATION.is_enable {
+        let mut debug_utils_create_info = populate_debug_messenger_create_info();
         create_info = create_info.push(&mut debug_utils_create_info);
         create_info.pp_enabled_layer_names = enable_layer_names.as_ptr();
         create_info.enabled_layer_count = enable_layer_names.len() as u32;
 
         create_info = create_info.push(&mut validation_features);
+        // We need to return inside this scope so that `debug_utils_create_info` doesn't get dropped before
+        return Ok(vulkan::Instance::new(entry, create_info)?);
     }
     Ok(vulkan::Instance::new(entry, create_info)?)
 }
