@@ -12,7 +12,8 @@ use bloom::{
     quaternion::Quaternion,
     vec::Vec3,
 };
-use cgmath::Matrix4;
+use cgmath::{Matrix4, SquareMatrix};
+use rand::Rng;
 use winit::event::DeviceEvent;
 use winit::{
     dpi::PhysicalPosition,
@@ -40,6 +41,9 @@ struct Demo {
 
     pos: Vec3,
     quat: Quaternion,
+
+    lentil: u64,
+    lentil_position: cgmath::Matrix4<f32>,
 }
 
 impl Demo {
@@ -57,6 +61,9 @@ impl Demo {
 
             pos: Vec3::default(),
             quat: Quaternion::identity(),
+
+            lentil: 0,
+            lentil_position: Matrix4::identity(),
         }
     }
     fn get_api(&mut self) -> &mut BloomAPI {
@@ -210,6 +217,7 @@ impl Bloomable for Demo {
                     0.0      , 0.0      , 0.0      , 1.0,
                 ),
         );
+        self.lentil = scene.add_instance(lentil_id, cgmath::Matrix4::identity())?;
         Ok(())
     }
     fn resize(&mut self, _width: u32, _height: u32) {}
@@ -308,6 +316,84 @@ impl Bloomable for Demo {
             WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {
+                        state: ElementState::Pressed,
+                        physical_key: PhysicalKey::Code(KeyCode::KeyQ),
+                        ..
+                    },
+                ..
+            } => {
+                let green = match self
+                    .get_api()
+                    .add_material(material::Material::new_basic(Vec3::new(0.0, 1.0, 0.0), 0.))
+                {
+                    Ok(v) => v,
+                    Err(e) => {
+                        log::error!("Failed to add material: {e}");
+                        return;
+                    }
+                };
+                log::warn!("Green is ID {green}");
+                let cube = match Model::new_cube(green) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        log::error!("Failed to create cube: {e}");
+                        return;
+                    }
+                };
+                let cube_id = match self.get_api().add_obj(Primitive::Model(cube)) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        log::error!("Failed to add model: {e}");
+                        return;
+                    }
+                };
+                let mut rng = rand::rng();
+                if let Err(e) = self.get_api().add_instance(
+                    cube_id,
+                    Matrix4::from_translation(cgmath::Vector3 {
+                        x: rng.random_range(-10.0..10.0),
+                        y: rng.random_range(-10.0..10.0),
+                        z: rng.random_range(-10.0..10.0),
+                    }),
+                ) {
+                    log::error!("Failed to add cube: {e}");
+                }
+            }
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        state: ElementState::Pressed,
+                        physical_key: PhysicalKey::Code(KeyCode::KeyZ),
+                        ..
+                    },
+                ..
+            } => {
+                let l = self.lentil;
+                self.lentil_position.w.y += 0.05;
+                let pos = self.lentil_position;
+                if let Err(e) = self.get_api().move_instance_to(l, pos) {
+                    log::error!("Failed to move lentil up: {e}");
+                }
+            }
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        state: ElementState::Pressed,
+                        physical_key: PhysicalKey::Code(KeyCode::KeyX),
+                        ..
+                    },
+                ..
+            } => {
+                let l = self.lentil;
+                self.lentil_position.w.y -= 0.05;
+                let pos = self.lentil_position;
+                if let Err(e) = self.get_api().move_instance_to(l, pos) {
+                    log::error!("Failed to move lentil down: {e}");
+                }
+            }
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
                         state: s,
                         physical_key: PhysicalKey::Code(v),
                         ..
@@ -388,17 +474,17 @@ impl MouseState {
         self.last_position = self.current_position;
         self.current_position = position;
     }
-    pub fn get_pos_delta(&self) -> (f32, f32) {
-        (
-            (self.current_position.x - self.last_position.x) as f32,
-            (self.current_position.y - self.last_position.y) as f32,
-        )
-    }
-    pub fn get_click_delta(&self) -> f32 {
-        // We just need an approximation to decide if the mouse has moved too much to ignore the click
-        ((self.current_position.x - self.click_position.x).abs()
-            + (self.current_position.y - self.click_position.y).abs()) as f32
-    }
+    // pub fn get_pos_delta(&self) -> (f32, f32) {
+    //     (
+    //         (self.current_position.x - self.last_position.x) as f32,
+    //         (self.current_position.y - self.last_position.y) as f32,
+    //     )
+    // }
+    // pub fn get_click_delta(&self) -> f32 {
+    //     // We just need an approximation to decide if the mouse has moved too much to ignore the click
+    //     ((self.current_position.x - self.click_position.x).abs()
+    //         + (self.current_position.y - self.click_position.y).abs()) as f32
+    // }
 }
 
 #[derive(Debug, Default)]

@@ -284,6 +284,7 @@ impl<'a> Viewport<'a> {
             vk::BufferUsageFlags::VERTEX_BUFFER,
             VERTICES.as_ptr(),
             VERTICES.len(),
+            VERTICES.len(),
         )?;
 
         let index_buffer = vulkan::Buffer::new_populated_staged(
@@ -293,6 +294,7 @@ impl<'a> Viewport<'a> {
             &allocator,
             vk::BufferUsageFlags::INDEX_BUFFER,
             INDICES.as_ptr(),
+            INDICES.len(),
             INDICES.len(),
         )?;
 

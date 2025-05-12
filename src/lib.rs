@@ -437,9 +437,6 @@ impl<T: Bloomable + Sync + Send + 'static> VulkanApp<T> {
                 }
             };
 
-        // TODO: Ray either needs to be able to deal with empty scenes or wait until it has data before it builds
-        thread::sleep(Duration::from_secs(2));
-
         let transfer_thread =
             match thread::Builder::new()
                 .name("Transfer".to_string())

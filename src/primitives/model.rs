@@ -291,6 +291,7 @@ impl Objectionable for Model {
                 | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR,
             self.vertices.as_ptr(),
             self.vertices.len(),
+            self.vertices.len(),
         )?);
         self.index_buffer = Some(vulkan::Buffer::new_populated_staged(
             device,
@@ -302,6 +303,7 @@ impl Objectionable for Model {
                 | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR,
             self.indices.as_ptr(),
             self.indices.len(),
+            self.indices.len(),
         )?);
         self.mat_index_buffer = Some(vulkan::Buffer::new_populated_staged(
             device,
@@ -310,6 +312,7 @@ impl Objectionable for Model {
             allocator,
             vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS | vk::BufferUsageFlags::STORAGE_BUFFER,
             self.material_indices.as_ptr(),
+            self.material_indices.len(),
             self.material_indices.len(),
         )?);
 
@@ -339,6 +342,7 @@ impl Objectionable for Model {
             allocator,
             vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
             self.primitive_data.as_ref().unwrap(),
+            1,
             1,
         )?);
 

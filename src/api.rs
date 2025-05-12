@@ -115,6 +115,21 @@ impl BloomAPI {
         log::debug!("Added an instance");
         Ok(id)
     }
+    pub fn move_instance_to(&mut self, id: u64, transformation: Matrix4<f32>) -> Result<()> {
+        if !self.ins_ids.contains(&id) {
+            return Err(anyhow!("Tried to move an instance that doesn't exist {id}"));
+        }
+        if let Err(e) = self
+            .update_physics
+            .send(UpdatePhysics::Scene(UpdateScene::MoveInstance(
+                id,
+                transformation,
+            )))
+        {
+            return Err(anyhow!("Failed to send new instance: {e}"));
+        };
+        Ok(())
+    }
     pub fn update_camera_position(&self, pos: Vec3) {
         match self.update_camera_pos.write() {
             Ok(mut v) => *v = pos,

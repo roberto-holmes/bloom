@@ -4,16 +4,22 @@ use std::path::Path;
 use std::sync::{mpsc, Arc, RwLock};
 
 use anyhow::{anyhow, Result};
+use ash::vk::AccelerationStructureInstanceKHR;
 use ash::{vk, RawPtr};
 use vk_mem;
 use winit::dpi::PhysicalSize;
 
-use crate::primitives::{Addressable, Extrema, ObjectType, Objectionable, Primitive, AABB};
+use crate::material::Material;
+use crate::primitives::{
+    Addressable, ObjectType, Objectionable, Primitive, PrimitiveAddresses, AABB,
+};
 use crate::uniforms::{self, UniformBufferObject};
 use crate::vulkan::Destructor;
 use crate::{
     core, material, physics, primitives, structures, tools, transfer, vulkan, MAX_FRAMES_IN_FLIGHT,
 };
+
+const RESERVED_SIZE: usize = 100;
 
 pub enum TransferCommand {
     Pause(u64),
@@ -23,6 +29,12 @@ pub enum TransferCommand {
 pub struct Update {
     pub current_frame_index: u8,
     pub accumulated_frames: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum TlasProcess {
+    Build,
+    Update,
 }
 
 pub fn thread(
@@ -291,13 +303,20 @@ struct Ray<'a> {
     descriptor_pool: Destructor<vk::DescriptorPool>,
     descriptor_sets: Option<[vk::DescriptorSet; 2]>,
 
+    instance_id_location_map: HashMap<u64, usize>,
+    /// Map the IDs of objects to their position in the blass vector and store the object
     primitive_id_location_map: HashMap<u64, (Primitive, usize)>,
+    primitive_addresses: Vec<PrimitiveAddresses>,
     materials_buffer: vulkan::Buffer,
     aabbs_buffers: Vec<vulkan::Buffer>,
-
     buffer_references: vulkan::Buffer,
+    instances_buffer: vulkan::Buffer,
+
+    materials: Vec<Material>,
+    aabbs: Vec<AABB>,
     blass: Vec<AccelerationStructure>,
-    top_level_as: AccelerationStructure,
+    blas_instances: Vec<AccelerationStructureInstanceKHR>,
+    tlas: AccelerationStructure,
 
     allocator: Arc<vk_mem::Allocator>,
     physical_device: vk::PhysicalDevice,
@@ -329,41 +348,34 @@ impl<'a> Ray<'a> {
 
         let (command_pool, commands) = create_empty_commands(&device, queue_family_indices)?;
 
-        let materials_buffer = create_materials(
-            &device,
-            command_pool.get(),
-            queue,
+        let materials_buffer = vulkan::Buffer::new_gpu(
             &allocator,
-            &add_material,
+            (size_of::<Material>() * RESERVED_SIZE) as u64,
+            vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
+                | vk::BufferUsageFlags::STORAGE_BUFFER
+                | vk::BufferUsageFlags::TRANSFER_DST,
         )?;
-
-        let (primitive_id_location_map, blass, blas_instances, primitive_addresses, aabbs_buffers) =
-            create_blas(
-                &allocator,
-                &device,
-                &as_device,
-                command_pool.get(),
-                queue,
-                &update_as,
-            )?;
 
         // Get a reference to where all the parts of each model are on the GPU
-        let buffer_references = create_buffer_references(
-            &device,
-            command_pool.get(),
-            queue,
+        let buffer_references = vulkan::Buffer::new_gpu(
             &allocator,
-            &primitive_addresses,
+            (size_of::<primitives::PrimitiveAddresses>() * RESERVED_SIZE) as u64,
+            vk::BufferUsageFlags::STORAGE_BUFFER
+                | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
+                | vk::BufferUsageFlags::TRANSFER_DST,
+        )?;
+        let instances_buffer = vulkan::Buffer::new_generic(
+            &allocator,
+            (size_of::<vk::AccelerationStructureInstanceKHR>() * RESERVED_SIZE) as u64,
+            vk_mem::MemoryUsage::Auto,
+            vk_mem::AllocationCreateFlags::HOST_ACCESS_SEQUENTIAL_WRITE,
+            vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
+                | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
         )?;
 
-        let top_level_as = create_top_level_acceleration_structure(
-            &device,
-            &allocator,
-            &as_device,
-            &blas_instances,
-            queue,
-            command_pool.get(),
-        )?;
+        let blas_instances = Vec::with_capacity(RESERVED_SIZE);
+
+        let tlas = AccelerationStructure::new(&as_device);
 
         log::trace!("Creating pipeline");
         let (descriptor_set_layout, shader_groups, pipeline_layout, pipeline) =
@@ -409,15 +421,21 @@ impl<'a> Ray<'a> {
             miss_shader_binding_table,
             hit_shader_binding_table,
             uniform_buffers,
-            top_level_as,
+            tlas,
             buffer_references,
-            blass,
+            materials: Vec::with_capacity(RESERVED_SIZE),
+            aabbs: Vec::with_capacity(RESERVED_SIZE),
+            blass: Vec::with_capacity(RESERVED_SIZE),
+            blas_instances,
             materials_buffer,
-            aabbs_buffers,
-            primitive_id_location_map,
+            primitive_addresses: Vec::with_capacity(RESERVED_SIZE),
+            aabbs_buffers: Vec::with_capacity(RESERVED_SIZE),
+            instance_id_location_map: HashMap::with_capacity(RESERVED_SIZE),
+            primitive_id_location_map: HashMap::with_capacity(RESERVED_SIZE),
             update_as,
             add_material,
             uniform,
+            instances_buffer,
         })
     }
     pub fn need_resize(&self, size: PhysicalSize<u32>) -> bool {
@@ -431,6 +449,7 @@ impl<'a> Ray<'a> {
     }
     pub fn initial_size(&mut self, size: PhysicalSize<u32>) -> Result<[vk::Image; 2]> {
         log::trace!("Creating initial images and commands");
+        self.create_top_level_acceleration_structure(TlasProcess::Build)?;
         self.images = Some(core::create_storage_image_pair(
             &self.device,
             &self.instance,
@@ -448,7 +467,7 @@ impl<'a> Ray<'a> {
             &self.device,
             self.descriptor_set_layout.get(),
             self.descriptor_pool.get(),
-            &self.top_level_as,
+            &self.tlas,
             self.images.as_ref().unwrap(),
             &self.uniform_buffers,
             &self.buffer_references,
@@ -555,10 +574,37 @@ impl<'a> Ray<'a> {
         Ok(raw_images)
     }
     pub fn update(&mut self) -> Result<()> {
+        let mut need_new_references = false;
         loop {
             match self.add_material.try_recv() {
                 Ok(m) => {
-                    log::warn!("TODO: Implement adding materials")
+                    self.materials.push(m);
+                    if self.materials_buffer.check_available_space::<Material>(1) {
+                        self.materials_buffer.append_staged(
+                            &self.device,
+                            self.command_pool.get(),
+                            self.queue,
+                            &self.allocator,
+                            &m,
+                            1,
+                        )?
+                    } else {
+                        log::trace!("Materials buffer is full, creating a new, bigger one");
+                        // Create a new buffer with the old data
+                        self.materials_buffer = vulkan::Buffer::new_populated_staged(
+                            &self.device,
+                            self.command_pool.get(),
+                            self.queue,
+                            &self.allocator,
+                            vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
+                                | vk::BufferUsageFlags::STORAGE_BUFFER,
+                            self.materials.as_ptr(),
+                            self.materials.len(),
+                            self.materials.len() + RESERVED_SIZE,
+                        )?;
+                        // Update reference that shader sees
+                        need_new_references = true;
+                    }
                 }
                 Err(mpsc::TryRecvError::Empty) => {
                     // Nothing to wait for, we can go on as planned
@@ -572,26 +618,125 @@ impl<'a> Ray<'a> {
             }
         }
 
+        let mut primitives_changed = false;
+        let mut need_rebuild: Option<TlasProcess> = None;
+
         loop {
             match self.update_as.try_recv() {
-                Ok(physics::UpdateScene::Add(id, obj)) => {
-                    log::warn!("TODO: Implement adding objects")
+                Ok(physics::UpdateScene::Add(id, primitives::Primitive::Model(mut o))) => {
+                    log::trace!("{} - Adding a model", line!());
+                    o.allocate(
+                        &self.allocator,
+                        &self.device,
+                        self.command_pool.get(),
+                        self.queue,
+                    )?;
+                    self.primitive_addresses
+                        .push(o.get_addresses(&self.device)?);
+                    self.blass.push(create_bottom_level_acceleration_structure(
+                        &self.device,
+                        &self.allocator,
+                        &self.as_device,
+                        self.command_pool.get(),
+                        self.queue,
+                        vk::GeometryTypeKHR::TRIANGLES,
+                        Some(&o),
+                        None,
+                        None,
+                    )?);
+                    if self
+                        .primitive_id_location_map
+                        .insert(id, (primitives::Primitive::Model(o), self.blass.len() - 1))
+                        != None
+                    {
+                        log::warn!("Failed to add model to primitive map");
+                    }
+                    primitives_changed = true;
                 }
-                Ok(physics::UpdateScene::Remove(id)) => {
-                    log::warn!("TODO: Implement removing objects")
+                Ok(physics::UpdateScene::Add(id, primitives::Primitive::Lentil(mut o))) => {
+                    log::trace!("{} - Adding a lentil", line!());
+                    o.allocate(
+                        &self.allocator,
+                        &self.device,
+                        self.command_pool.get(),
+                        self.queue,
+                    )?;
+                    self.primitive_id_location_map
+                        .insert(id, (primitives::Primitive::Lentil(o), self.blass.len()));
+                    self.add_aabb(id)?;
+                    primitives_changed = true;
+                }
+                Ok(physics::UpdateScene::Add(id, primitives::Primitive::Sphere(mut o))) => {
+                    log::trace!("{} - Adding a sphere", line!());
+                    o.allocate(
+                        &self.allocator,
+                        &self.device,
+                        self.command_pool.get(),
+                        self.queue,
+                    )?;
+                    self.primitive_id_location_map
+                        .insert(id, (primitives::Primitive::Sphere(o), self.blass.len()));
+                    self.add_aabb(id)?;
+                    primitives_changed = true;
+                }
+                Ok(physics::UpdateScene::Remove(_id)) => {
+                    log::warn!("TODO: Implement removing objects");
+                    primitives_changed = true;
                 }
                 Ok(physics::UpdateScene::AddInstance(
                     instance_id,
                     primitive_id,
                     transformation,
                 )) => {
-                    log::warn!("TODO: Implement adding instances")
+                    log::trace!("{} - Adding an instance", line!());
+                    // TODO: How are we keeping track of instance_id?
+                    let (primitive, location_in_blas) =
+                        match self.primitive_id_location_map.get(&primitive_id) {
+                            Some(v) => v,
+                            None => {
+                                return Err(anyhow!(
+                                    "Failed to find primitive {} in the blas",
+                                    primitive_id
+                                ))
+                            }
+                        };
+                    let primitive_type = match primitive {
+                        &Primitive::Model(_) => ObjectType::Triangle,
+                        &Primitive::Sphere(_) => ObjectType::Sphere,
+                        &Primitive::Lentil(_) => ObjectType::Lentil,
+                    };
+                    self.instance_id_location_map
+                        .insert(instance_id, self.blas_instances.len());
+                    // Create a Bottom Level Acceleration structure for each instance
+                    self.blas_instances.push(create_blas_instance(
+                        &self.as_device,
+                        &mut self.blass,
+                        *location_in_blas,
+                        transformation,
+                        primitive_type,
+                    )?);
+                    need_rebuild = Some(TlasProcess::Build);
                 }
-                Ok(physics::UpdateScene::RemoveInstance(instance_id)) => {
-                    log::warn!("TODO: Implement removing instances")
+                Ok(physics::UpdateScene::RemoveInstance(_instance_id)) => {
+                    log::warn!("TODO: Implement removing instances");
+                    need_rebuild = Some(TlasProcess::Build);
                 }
-                Ok(physics::UpdateScene::MoveInstance(instance_id, transformation)) => {
-                    log::warn!("TODO: Implement moving instances")
+                Ok(physics::UpdateScene::MoveInstance(instance_id, transform)) => {
+                    let instance_index = match self.instance_id_location_map.get(&instance_id) {
+                        None => {
+                            log::warn!("Failed to find instance in active BLAS instances");
+                            continue;
+                        }
+                        Some(v) => *v,
+                    };
+                    need_rebuild = Some(TlasProcess::Update);
+                    #[rustfmt::skip]
+                    let transform_matrix = vk::TransformMatrixKHR {matrix:[
+                        transform.x[0], transform.y[0], transform.z[0], transform.w[0],
+                        transform.x[1], transform.y[1], transform.z[1], transform.w[1],
+                        transform.x[2], transform.y[2], transform.z[2], transform.w[2]],
+                    };
+                    self.blas_instances[instance_index].transform = transform_matrix;
                 }
                 Err(mpsc::TryRecvError::Empty) => {
                     // Nothing to wait for, we can go on as planned
@@ -604,6 +749,50 @@ impl<'a> Ray<'a> {
                 }
             }
         }
+
+        if primitives_changed {
+            if self
+                .buffer_references
+                .check_available_space::<PrimitiveAddresses>(self.primitive_addresses.len())
+            {
+                self.buffer_references.populate_staged(
+                    &self.device,
+                    self.command_pool.get(),
+                    self.queue,
+                    &self.allocator,
+                    self.primitive_addresses.as_ptr(),
+                    self.primitive_addresses.len(),
+                )?;
+            } else {
+                // Grow the buffer by creating a new one (overwriting the old one and causing it to drop and cleanup)
+                self.buffer_references = vulkan::Buffer::new_populated_staged(
+                    &self.device,
+                    self.command_pool.get(),
+                    self.queue,
+                    &self.allocator,
+                    vk::BufferUsageFlags::STORAGE_BUFFER
+                        | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
+                        | vk::BufferUsageFlags::TRANSFER_DST,
+                    self.primitive_addresses.as_ptr(),
+                    self.primitive_addresses.len(),
+                    self.primitive_addresses.len() + RESERVED_SIZE,
+                )?;
+                need_new_references = true;
+            }
+        }
+        match need_rebuild {
+            None => {}
+            Some(v) => {
+                self.create_top_level_acceleration_structure(v)?;
+            }
+        }
+
+        if let Some(TlasProcess::Build) = need_rebuild {
+            self.rebuild_references()?;
+        } else if need_new_references {
+            self.rebuild_references()?;
+        }
+
         Ok(())
     }
     pub fn ray_trace(
@@ -649,6 +838,264 @@ impl<'a> Ray<'a> {
             self.device
                 .queue_submit(self.queue, &submit_info, vk::Fence::null())
         }?;
+        Ok(())
+    }
+
+    fn create_top_level_acceleration_structure(
+        &mut self,
+        process: TlasProcess,
+    ) -> Result<()> {
+        log::trace!("Making a TLAS with {} instances", self.blas_instances.len());
+
+        match process {
+            TlasProcess::Build => {
+                if !self
+                    .instances_buffer
+                    .check_available_space::<AccelerationStructureInstanceKHR>(
+                        self.blas_instances.len(),
+                    )
+                {
+                    self.instances_buffer = vulkan::Buffer::new_generic(
+                        &self.allocator,
+                        (size_of::<vk::AccelerationStructureInstanceKHR>() * RESERVED_SIZE) as u64,
+                        vk_mem::MemoryUsage::Auto,
+                        vk_mem::AllocationCreateFlags::HOST_ACCESS_SEQUENTIAL_WRITE,
+                        vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
+                            | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+                    )?;
+                }
+            }
+            TlasProcess::Update => {
+                if self.instances_buffer.get_populated_bytes()
+                    != (size_of::<vk::AccelerationStructureInstanceKHR>()
+                        * self.blas_instances.len()) as u64
+                {
+                    log::warn!(
+                        "Updating the TLAS with a different number of BLAS {} != {}x{}={}",
+                        self.instances_buffer.get_populated_bytes(),
+                        size_of::<vk::AccelerationStructureInstanceKHR>(),
+                        self.blas_instances.len(),
+                        (size_of::<vk::AccelerationStructureInstanceKHR>()
+                            * self.blas_instances.len())
+                    );
+                    return Ok(());
+                }
+            }
+        }
+        log::trace!(
+            "Populating instances with {}x{}={} Bytes",
+            size_of::<vk::AccelerationStructureInstanceKHR>(),
+            self.blas_instances.len(),
+            (size_of::<vk::AccelerationStructureInstanceKHR>() * self.blas_instances.len())
+        );
+        self.instances_buffer
+            .populate(self.blas_instances.as_ptr(), self.blas_instances.len())?;
+
+        let instance_data_device_address = vk::DeviceOrHostAddressConstKHR {
+            device_address: get_buffer_device_address(&self.device, self.instances_buffer.get()),
+        };
+
+        // The top level acceleration structure contains (bottom level) instances as the input geometry
+        let as_geometries = [vk::AccelerationStructureGeometryKHR {
+            geometry_type: vk::GeometryTypeKHR::INSTANCES,
+            flags: vk::GeometryFlagsKHR::OPAQUE,
+            geometry: vk::AccelerationStructureGeometryDataKHR {
+                instances: vk::AccelerationStructureGeometryInstancesDataKHR {
+                    array_of_pointers: vk::FALSE,
+                    data: instance_data_device_address,
+                    ..Default::default()
+                },
+            },
+            ..Default::default()
+        }];
+
+        // Get the size requirements for buffers involved in the acceleration structure build process
+        let mut as_build_geometry_info = vk::AccelerationStructureBuildGeometryInfoKHR {
+            ty: vk::AccelerationStructureTypeKHR::TOP_LEVEL,
+            flags: vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE
+                | vk::BuildAccelerationStructureFlagsKHR::ALLOW_UPDATE,
+            ..Default::default()
+        };
+        as_build_geometry_info = as_build_geometry_info.geometries(&as_geometries);
+
+        let primitive_count = [self.blas_instances.len() as u32];
+
+        let mut as_build_sizes_info = vk::AccelerationStructureBuildSizesInfoKHR::default();
+        unsafe {
+            self.as_device.get_acceleration_structure_build_sizes(
+                vk::AccelerationStructureBuildTypeKHR::DEVICE,
+                &as_build_geometry_info,
+                &primitive_count,
+                &mut as_build_sizes_info,
+            )
+        };
+
+        match process {
+            TlasProcess::Build => {
+                self.tlas
+                    .grow_buffer(&self.allocator, as_build_sizes_info)?;
+                let as_create_info = vk::AccelerationStructureCreateInfoKHR {
+                    buffer: self.tlas.get_buffer(),
+                    size: as_build_sizes_info.acceleration_structure_size,
+                    ty: vk::AccelerationStructureTypeKHR::TOP_LEVEL,
+                    ..Default::default()
+                };
+                let old_tlas = self.tlas.handle;
+                self.tlas.handle = unsafe {
+                    self.as_device
+                        .create_acceleration_structure(&as_create_info, None)
+                }?;
+                unsafe {
+                    self.as_device
+                        .destroy_acceleration_structure(old_tlas, None)
+                };
+            }
+            TlasProcess::Update => {}
+        }
+        // The actual build process starts here
+
+        // Create a scratch buffer as a temporary storage for the acceleration structure build
+        log::trace!(
+            "Scratch buffer needs to be {} B",
+            as_build_sizes_info.build_scratch_size
+        );
+        let scratch_buffer = ScratchBuffer::new(
+            &self.device,
+            &self.allocator,
+            as_build_sizes_info.build_scratch_size,
+        )?;
+
+        let as_build_geometry_infos = [vk::AccelerationStructureBuildGeometryInfoKHR {
+            ty: vk::AccelerationStructureTypeKHR::TOP_LEVEL,
+            flags: vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE
+                | vk::BuildAccelerationStructureFlagsKHR::ALLOW_UPDATE,
+            mode: match process {
+                TlasProcess::Build => vk::BuildAccelerationStructureModeKHR::BUILD,
+                TlasProcess::Update => vk::BuildAccelerationStructureModeKHR::UPDATE,
+            },
+            src_acceleration_structure: match process {
+                TlasProcess::Build => vk::AccelerationStructureKHR::default(),
+                TlasProcess::Update => self.tlas.handle,
+            },
+            dst_acceleration_structure: self.tlas.handle,
+            scratch_data: vk::DeviceOrHostAddressKHR {
+                device_address: scratch_buffer.device_address,
+            },
+            ..Default::default()
+        }
+        .geometries(&as_geometries)];
+
+        let as_build_range_infos = [vk::AccelerationStructureBuildRangeInfoKHR::default()
+            .primitive_count(primitive_count[0])];
+
+        // Build the acceleration structure on the device via a one-time command buffer submission
+        // Some implementations may support acceleration structure building on the host (VkPhysicalDeviceAccelerationStructureFeaturesKHR->accelerationStructureHostCommands), but we prefer device builds
+        let command_buffer =
+            core::begin_single_time_commands(&self.device, self.command_pool.get())?;
+        log::trace!("Actually building TLAS");
+        unsafe {
+            self.as_device.cmd_build_acceleration_structures(
+                command_buffer,
+                &as_build_geometry_infos,
+                &[&as_build_range_infos],
+            );
+        }
+        core::end_single_time_command(
+            &self.device,
+            self.command_pool.get(),
+            self.queue,
+            command_buffer,
+        )?;
+        log::trace!("TLAS built");
+
+        Ok(())
+    }
+
+    fn add_aabb(&mut self, id: u64) -> Result<()> {
+        let obj = &self.primitive_id_location_map.get(&id).unwrap().0;
+        self.aabbs.push(primitives::AABB::new(obj));
+        self.primitive_addresses
+            .push(obj.get_addresses(&self.device)?);
+        self.aabbs_buffers
+            .push(vulkan::Buffer::new_populated_staged(
+                &self.device,
+                self.command_pool.get(),
+                self.queue,
+                &self.allocator,
+                vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
+                    | vk::BufferUsageFlags::STORAGE_BUFFER
+                    | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR,
+                self.aabbs.last().unwrap(),
+                1,
+                1,
+            )?);
+        self.blass.push(create_bottom_level_acceleration_structure(
+            &self.device,
+            &self.allocator,
+            &self.as_device,
+            self.command_pool.get(),
+            self.queue,
+            vk::GeometryTypeKHR::AABBS,
+            None,
+            Some(&self.aabbs_buffers.last().unwrap()),
+            Some(1),
+        )?);
+        Ok(())
+    }
+
+    fn rebuild_references(&mut self) -> Result<()> {
+        // Update descriptor sets with new TLAS and potentially new buffers
+        let structures = [self.tlas.handle];
+        for descriptor_set in self.descriptor_sets.unwrap() {
+            let mut descriptor_acceleration_structure_info =
+                vk::WriteDescriptorSetAccelerationStructureKHR::default()
+                    .acceleration_structures(&structures);
+            let scene_descriptor = [self.buffer_references.create_descriptor()];
+            let material_descriptor = [self.materials_buffer.create_descriptor()];
+
+            let descriptor_writes = [
+                vk::WriteDescriptorSet {
+                    dst_set: descriptor_set,
+                    dst_binding: 0,
+                    descriptor_count: 1,
+                    descriptor_type: vk::DescriptorType::ACCELERATION_STRUCTURE_KHR,
+                    ..Default::default()
+                }
+                .push(&mut descriptor_acceleration_structure_info), // Chain the AS descriptor
+                vk::WriteDescriptorSet {
+                    dst_set: descriptor_set,
+                    dst_binding: 4,
+                    descriptor_count: 1,
+                    descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
+                    ..Default::default()
+                }
+                .buffer_info(&scene_descriptor),
+                vk::WriteDescriptorSet {
+                    dst_set: descriptor_set,
+                    dst_binding: 5,
+                    descriptor_count: 1,
+                    descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
+                    ..Default::default()
+                }
+                .buffer_info(&material_descriptor),
+            ];
+            unsafe { self.device.update_descriptor_sets(&descriptor_writes, &[]) };
+        }
+        // Create new commands with new descriptor sets
+        build_command_buffers(
+            &self.device,
+            &self.rt_device,
+            self.images.as_ref().unwrap()[0].width,
+            self.images.as_ref().unwrap()[0].height,
+            self.descriptor_sets.unwrap(),
+            self.commands,
+            &self.ray_tracing_pipeline_properties,
+            &self.raygen_shader_binding_table,
+            &self.miss_shader_binding_table,
+            &self.hit_shader_binding_table,
+            self.pipeline.get(),
+            self.pipeline_layout.get(),
+        )?;
         Ok(())
     }
 }
@@ -719,11 +1166,35 @@ impl AccelerationStructure {
         log::trace!("Creating AS buffer");
         self.buffer = Some(vulkan::Buffer::new_gpu(
             allocator,
-            build_size_info.acceleration_structure_size,
+            build_size_info.acceleration_structure_size * 2,
             vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR
                 | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
         )?);
         Ok(())
+    }
+    pub fn grow_buffer(
+        &mut self,
+        allocator: &vk_mem::Allocator,
+        build_size_info: vk::AccelerationStructureBuildSizesInfoKHR,
+    ) -> Result<bool> {
+        match self.buffer.as_mut() {
+            None => {
+                self.create_buffer(allocator, build_size_info)?;
+                return Ok(true);
+            }
+            Some(b) => {
+                // If the current buffer doesn't have enough space for the new acceleration structure,
+                // create a new buffer to overwrite it
+                if !b.check_available_space::<u8>(
+                    build_size_info.acceleration_structure_size as usize,
+                ) {
+                    self.create_buffer(allocator, build_size_info)?;
+                    return Ok(true);
+                }
+            }
+        }
+        // The current buffer is good enough
+        Ok(false)
     }
     pub fn get_buffer(&self) -> vk::Buffer {
         match &self.buffer {
@@ -738,7 +1209,7 @@ impl AccelerationStructure {
 
 impl Drop for AccelerationStructure {
     fn drop(&mut self) {
-        log::trace!("Dropping Acceleration Structure");
+        log::trace!("Dropping Acceleration Structure {:?}", self.handle);
         unsafe { (self.destructor)(self.device, self.handle, None.as_raw_ptr()) };
     }
 }
@@ -757,10 +1228,12 @@ fn create_bottom_level_acceleration_structure(
     queue: vk::Queue,
     geometry_type: vk::GeometryTypeKHR,
     // Either Model (triangles) or AABB buffer and number of primitives
+    // TODO: Replace options with enum?
     obj: Option<&primitives::model::Model>,
     aabb: Option<&vulkan::Buffer>,
     prim_count: Option<u32>,
 ) -> Result<AccelerationStructure> {
+    log::trace!("Creating a BLAS");
     #[rustfmt::skip]
     let transform_matrix = vk::TransformMatrixKHR { matrix: [
 		1.0, 0.0, 0.0, 0.0, 
@@ -825,6 +1298,7 @@ fn create_bottom_level_acceleration_structure(
             ))
         }
     }
+    // TODO: Set flags to vk::BuildAccelerationStructureFlagsKHR::ALLOW_UPDATE | PREFER_FAST_BUILD if this object will be modified
     let as_build_geometry_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
         .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
         .flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE)
@@ -870,6 +1344,7 @@ fn create_bottom_level_acceleration_structure(
         ScratchBuffer::new(device, allocator, as_build_sizes_info.build_scratch_size)?;
 
     // TODO: Compaction (https://nvpro-samples.github.io/vk_raytracing_tutorial_KHR/#accelerationstructure/bottom-levelaccelerationstructure/helperdetails:raytracingbuilder::buildblas())
+    // TODO: Set flags to vk::BuildAccelerationStructureFlagsKHR::ALLOW_UPDATE | PREFER_FAST_BUILD if this object will be modified
     let mut as_build_geometry_infos = [vk::AccelerationStructureBuildGeometryInfoKHR::default()
         .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
         .flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE)
@@ -900,112 +1375,6 @@ fn create_bottom_level_acceleration_structure(
         unsafe { as_device.get_acceleration_structure_device_address(&as_device_address_info) };
 
     Ok(bottom_level_as)
-}
-
-fn create_top_level_acceleration_structure(
-    device: &ash::Device,
-    allocator: &vk_mem::Allocator,
-    as_device: &ash::khr::acceleration_structure::Device,
-    blas_instances: &Vec<vk::AccelerationStructureInstanceKHR>,
-    queue: vk::Queue,
-    command_pool: vk::CommandPool,
-) -> Result<AccelerationStructure> {
-    log::debug!("Making a TLAS with {} instances", blas_instances.len());
-    let instances_buffer = vulkan::Buffer::new_populated(
-        allocator,
-        vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
-            | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-        blas_instances.as_ptr(),
-        blas_instances.len(),
-    )?;
-
-    let instance_data_device_address = vk::DeviceOrHostAddressConstKHR {
-        device_address: get_buffer_device_address(device, instances_buffer.get()),
-    };
-
-    // The top level acceleration structure contains (bottom level) instances as the input geometry
-    let as_geometries = [vk::AccelerationStructureGeometryKHR {
-        geometry_type: vk::GeometryTypeKHR::INSTANCES,
-        flags: vk::GeometryFlagsKHR::OPAQUE,
-        geometry: vk::AccelerationStructureGeometryDataKHR {
-            instances: vk::AccelerationStructureGeometryInstancesDataKHR {
-                array_of_pointers: vk::FALSE,
-                data: instance_data_device_address,
-                ..Default::default()
-            },
-        },
-        ..Default::default()
-    }];
-
-    // Get the size requirements for buffers involved in the acceleration structure build process
-    let mut as_build_geometry_info = vk::AccelerationStructureBuildGeometryInfoKHR {
-        ty: vk::AccelerationStructureTypeKHR::TOP_LEVEL,
-        flags: vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE,
-        ..Default::default()
-    };
-    as_build_geometry_info = as_build_geometry_info.geometries(&as_geometries);
-
-    let primitive_count = [blas_instances.len() as u32];
-
-    let mut as_build_sizes_info = vk::AccelerationStructureBuildSizesInfoKHR::default();
-    unsafe {
-        as_device.get_acceleration_structure_build_sizes(
-            vk::AccelerationStructureBuildTypeKHR::DEVICE,
-            &as_build_geometry_info,
-            &primitive_count,
-            &mut as_build_sizes_info,
-        )
-    };
-
-    let mut top_level_as = AccelerationStructure::new(as_device);
-    // Create a buffer to hold the acceleration structure
-    top_level_as.create_buffer(allocator, as_build_sizes_info)?;
-
-    // Create the acceleration structure
-    let as_create_info = vk::AccelerationStructureCreateInfoKHR {
-        buffer: top_level_as.get_buffer(),
-        size: as_build_sizes_info.acceleration_structure_size,
-        ty: vk::AccelerationStructureTypeKHR::TOP_LEVEL,
-        ..Default::default()
-    };
-    top_level_as.handle =
-        unsafe { as_device.create_acceleration_structure(&as_create_info, None) }?;
-
-    // The actual build process starts here
-
-    // Create a scratch buffer as a temporary storage for the acceleration structure build
-    let scratch_buffer =
-        ScratchBuffer::new(device, allocator, as_build_sizes_info.build_scratch_size)?;
-
-    let as_build_geometry_infos = [vk::AccelerationStructureBuildGeometryInfoKHR {
-        ty: vk::AccelerationStructureTypeKHR::TOP_LEVEL,
-        flags: vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE,
-        mode: vk::BuildAccelerationStructureModeKHR::BUILD,
-        dst_acceleration_structure: top_level_as.handle,
-        scratch_data: vk::DeviceOrHostAddressKHR {
-            device_address: scratch_buffer.device_address,
-        },
-        ..Default::default()
-    }
-    .geometries(&as_geometries)];
-
-    let as_build_range_infos = [
-        vk::AccelerationStructureBuildRangeInfoKHR::default().primitive_count(primitive_count[0])
-    ];
-
-    // Build the acceleration structure on the device via a one-time command buffer submission
-    // Some implementations may support acceleration structure building on the host (VkPhysicalDeviceAccelerationStructureFeaturesKHR->accelerationStructureHostCommands), but we prefer device builds
-    let command_buffer = core::begin_single_time_commands(device, command_pool)?;
-    unsafe {
-        as_device.cmd_build_acceleration_structures(
-            command_buffer,
-            &as_build_geometry_infos,
-            &[&as_build_range_infos],
-        );
-    }
-    core::end_single_time_command(device, command_pool, queue, command_buffer)?;
-
-    Ok(top_level_as)
 }
 
 fn create_blas_instance(
@@ -1159,7 +1528,7 @@ fn create_descriptor_sets(
     device: &ash::Device,
     set_layout: vk::DescriptorSetLayout,
     descriptor_pool: vk::DescriptorPool,
-    top_level_as: &AccelerationStructure,
+    tlas: &AccelerationStructure,
     storage_images: &[vulkan::Image; 2],
     ubo: &[vk::Buffer; 2],
     scene: &vulkan::Buffer,
@@ -1172,7 +1541,7 @@ fn create_descriptor_sets(
 
     let descriptor_sets = unsafe { device.allocate_descriptor_sets(&allocate_info)? };
 
-    let structures = [top_level_as.handle];
+    let structures = [tlas.handle];
     for (i, &descriptor_set) in descriptor_sets.iter().enumerate() {
         let mut descriptor_acceleration_structure_info =
             vk::WriteDescriptorSetAccelerationStructureKHR::default()
@@ -1550,236 +1919,4 @@ fn create_empty_commands(
     let command_buffers = core::create_command_buffers(device, command_pool.get(), 2)?;
     let commands = [command_buffers[0], command_buffers[1]];
     Ok((command_pool, commands))
-}
-
-fn create_buffer_references(
-    device: &ash::Device,
-    command_pool: vk::CommandPool,
-    queue: vk::Queue,
-    allocator: &vk_mem::Allocator,
-    data: &Vec<primitives::PrimitiveAddresses>,
-) -> Result<vulkan::Buffer> {
-    log::trace!("Creating buffer references");
-    vulkan::Buffer::new_populated_staged(
-        device,
-        command_pool,
-        queue,
-        allocator,
-        vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-        data.as_ptr(),
-        data.len(),
-    )
-}
-
-fn create_materials(
-    device: &ash::Device,
-    command_pool: vk::CommandPool,
-    queue: vk::Queue,
-    allocator: &vk_mem::Allocator,
-    add_material: &mpsc::Receiver<material::Material>,
-) -> Result<vulkan::Buffer> {
-    log::trace!("Creating materials");
-
-    let mut materials = Vec::with_capacity(100);
-
-    // materials.push(material::Material::new_basic(Vec3::new(1.0, 0.0, 0.0), 0.));
-
-    loop {
-        match add_material.try_recv() {
-            // TODO: Material IDs so we can modify or remove materials
-            Ok(v) => materials.push(v),
-            Err(mpsc::TryRecvError::Empty) => break,
-            Err(mpsc::TryRecvError::Disconnected) => {
-                return Err(anyhow!("Material channel disconnected"))
-            }
-        }
-    }
-
-    let material_buffer = vulkan::Buffer::new_populated_staged(
-        device,
-        command_pool,
-        queue,
-        allocator,
-        vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS | vk::BufferUsageFlags::STORAGE_BUFFER,
-        materials.as_ptr(),
-        materials.len(),
-    )?;
-    log::trace!("Materials created");
-    Ok(material_buffer)
-}
-
-fn add_aabb<T: Addressable + Extrema>(
-    allocator: &vk_mem::Allocator,
-    device: &ash::Device,
-    as_device: &ash::khr::acceleration_structure::Device,
-    command_pool: vk::CommandPool,
-    queue: vk::Queue,
-    blass: &mut Vec<AccelerationStructure>,
-    primitive_addresses: &mut Vec<primitives::PrimitiveAddresses>,
-    aabbs: &mut Vec<AABB>,
-    aabbs_buffers: &mut Vec<vulkan::Buffer>,
-    obj: &T,
-) -> Result<()> {
-    aabbs.push(primitives::AABB::new(obj));
-    primitive_addresses.push(obj.get_addresses(device)?);
-    aabbs_buffers.push(vulkan::Buffer::new_populated_staged(
-        device,
-        command_pool,
-        queue,
-        allocator,
-        vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
-            | vk::BufferUsageFlags::STORAGE_BUFFER
-            | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR,
-        aabbs.last().unwrap(),
-        1,
-    )?);
-    blass.push(create_bottom_level_acceleration_structure(
-        device,
-        allocator,
-        as_device,
-        command_pool,
-        queue,
-        vk::GeometryTypeKHR::AABBS,
-        None,
-        Some(&aabbs_buffers.last().unwrap()),
-        Some(1),
-    )?);
-    Ok(())
-}
-
-fn create_blas(
-    allocator: &vk_mem::Allocator,
-    device: &ash::Device,
-    as_device: &ash::khr::acceleration_structure::Device,
-    command_pool: vk::CommandPool,
-    queue: vk::Queue,
-    update_as: &mpsc::Receiver<physics::UpdateScene>,
-) -> Result<(
-    HashMap<u64, (Primitive, usize)>,
-    Vec<AccelerationStructure>,
-    Vec<vk::AccelerationStructureInstanceKHR>,
-    Vec<primitives::PrimitiveAddresses>,
-    Vec<vulkan::Buffer>, // AABBs
-)> {
-    log::trace!("Creating BLASs and objects");
-    let mut blass = vec![];
-    let mut blas_instances = vec![];
-    let mut primitive_addresses = vec![];
-
-    let mut aabbs = vec![];
-    let mut aabbs_buffers = vec![];
-
-    // Map the IDs of objects to their position in the blass vector and store the object
-    let mut primitive_map: HashMap<u64, (Primitive, usize)> = HashMap::new();
-
-    // TODO: Somehow use ray.update instead?
-    loop {
-        // Create objects that the instances will refer to
-        match update_as.try_recv() {
-            Ok(physics::UpdateScene::Add(id, primitives::Primitive::Model(mut o))) => {
-                log::trace!("{} - Adding a model", line!());
-                o.allocate(allocator, device, command_pool, queue)?;
-                primitive_addresses.push(o.get_addresses(device)?);
-                blass.push(create_bottom_level_acceleration_structure(
-                    device,
-                    allocator,
-                    as_device,
-                    command_pool,
-                    queue,
-                    vk::GeometryTypeKHR::TRIANGLES,
-                    Some(&o),
-                    None,
-                    None,
-                )?);
-                if primitive_map.insert(id, (primitives::Primitive::Model(o), blass.len() - 1))
-                    != None
-                {
-                    log::warn!("Failed to add model to primitive map");
-                }
-            }
-            Ok(physics::UpdateScene::Add(id, primitives::Primitive::Lentil(mut o))) => {
-                log::trace!("{} - Adding a lentil", line!());
-                o.allocate(allocator, device, command_pool, queue)?;
-                primitive_map.insert(id, (primitives::Primitive::Lentil(o), blass.len()));
-                add_aabb(
-                    allocator,
-                    device,
-                    as_device,
-                    command_pool,
-                    queue,
-                    &mut blass,
-                    &mut primitive_addresses,
-                    &mut aabbs,
-                    &mut aabbs_buffers,
-                    &primitive_map.get(&id).unwrap().0,
-                )?;
-            }
-            Ok(physics::UpdateScene::Add(id, primitives::Primitive::Sphere(mut o))) => {
-                log::trace!("{} - Adding a sphere", line!());
-                o.allocate(allocator, device, command_pool, queue)?;
-                primitive_map.insert(id, (primitives::Primitive::Sphere(o), blass.len()));
-                add_aabb(
-                    allocator,
-                    device,
-                    as_device,
-                    command_pool,
-                    queue,
-                    &mut blass,
-                    &mut primitive_addresses,
-                    &mut aabbs,
-                    &mut aabbs_buffers,
-                    &primitive_map.get(&id).unwrap().0,
-                )?;
-            }
-            Ok(physics::UpdateScene::AddInstance(instance_id, primitive_id, transformation)) => {
-                log::trace!("{} - Adding an instance", line!());
-                // TODO: How are we keeping track of instance_id?
-                let (primitive, location_in_blas) = match primitive_map.get(&primitive_id) {
-                    Some(v) => v,
-                    None => {
-                        return Err(anyhow!(
-                            "Failed to find primitive {} in the blas",
-                            primitive_id
-                        ))
-                    }
-                };
-                let primitive_type = match primitive {
-                    &Primitive::Model(_) => ObjectType::Triangle,
-                    &Primitive::Sphere(_) => ObjectType::Sphere,
-                    &Primitive::Lentil(_) => ObjectType::Lentil,
-                };
-                // Create a Bottom Level Acceleration structure for each instance
-                blas_instances.push(create_blas_instance(
-                    as_device,
-                    &mut blass,
-                    *location_in_blas,
-                    transformation,
-                    primitive_type,
-                )?);
-            }
-            Ok(physics::UpdateScene::Remove(_)) => log::warn!(
-                "Asking to remove a primitive before we initial state is built - ignoring"
-            ),
-            Ok(physics::UpdateScene::RemoveInstance(_)) => log::warn!(
-                "Asking to remove an instance before we initial state is built - ignoring"
-            ),
-            Ok(physics::UpdateScene::MoveInstance(_, _)) => {
-                log::warn!("Asking to move an instance before we initial state is built - ignoring")
-            }
-            Err(mpsc::TryRecvError::Empty) => break,
-            Err(mpsc::TryRecvError::Disconnected) => {
-                return Err(anyhow!(
-                    "Update Acceleration Structure channel disconnected"
-                ))
-            }
-        }
-    }
-
-    Ok((
-        primitive_map,
-        blass,
-        blas_instances,
-        primitive_addresses,
-        aabbs_buffers,
-    ))
 }

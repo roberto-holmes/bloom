@@ -148,7 +148,8 @@ pub struct Buffer {
     buffer: vk::Buffer,
     allocation: vk_mem::Allocation,
     allocation_info: vk_mem::AllocationInfo,
-    size: vk::DeviceSize,
+    populated_size: vk::DeviceSize,
+    total_size: vk::DeviceSize,
     type_name: &'static str,
 }
 
@@ -235,7 +236,8 @@ impl Buffer {
             allocator: allocator.internal,
             buffer,
             allocation,
-            size,
+            populated_size: 0,
+            total_size: size,
             allocation_info,
             type_name: "generic",
         })
@@ -250,6 +252,7 @@ impl Buffer {
 
             vk_mem::ffi::vmaUnmapMemory(self.allocator, self.allocation.0);
         }
+        self.populated_size = (size_of::<T>() * size) as vk::DeviceSize;
         self.type_name = std::any::type_name::<T>();
         Ok(())
     }
@@ -263,6 +266,45 @@ impl Buffer {
             (self.allocation_info.mapped_data as *mut T).copy_from_nonoverlapping(data, size);
         }
         self.type_name = std::any::type_name::<T>();
+        Ok(())
+    }
+    pub fn populate_staged<T>(
+        &mut self,
+        device: &ash::Device,
+        command_pool: vk::CommandPool,
+        queue: vk::Queue,
+        allocator: &vk_mem::Allocator,
+        data: *const T,
+        data_len: usize,
+    ) -> Result<()> {
+        if !self.check_available_space::<T>(data_len) {
+            return Err(anyhow!("Tried to populate a buffer with too much data"));
+        }
+        let size = (size_of::<T>() * data_len) as u64;
+
+        let staging_buffer = Self::new_populated(
+            allocator,
+            vk::BufferUsageFlags::TRANSFER_SRC,
+            data,
+            data_len,
+        )?;
+
+        let command_buffer = core::begin_single_time_commands(device, command_pool)?;
+        unsafe {
+            let copy_region = [vk::BufferCopy::default().size(size)];
+            device.cmd_copy_buffer(
+                command_buffer,
+                staging_buffer.get(),
+                self.buffer,
+                &copy_region,
+            );
+        }
+        core::end_single_time_command(device, command_pool, queue, command_buffer)?;
+
+        self.populated_size = size;
+
+        self.type_name = std::any::type_name::<T>();
+
         Ok(())
     }
     pub fn new_populated<T>(
@@ -291,16 +333,23 @@ impl Buffer {
         usage: vk::BufferUsageFlags,
         data: *const T,
         data_len: usize,
+        reserved_len: usize,
     ) -> Result<Self> {
         let size = (size_of::<T>() * data_len) as u64;
+        let mut reserved_size = (size_of::<T>() * reserved_len) as u64;
+        reserved_size = reserved_size.max(size);
+
         let staging_buffer = Self::new_populated(
             allocator,
             vk::BufferUsageFlags::TRANSFER_SRC,
             data,
             data_len,
         )?;
-        let mut buffer =
-            Self::new_gpu(allocator, size, usage | vk::BufferUsageFlags::TRANSFER_DST)?;
+        let mut buffer = Self::new_gpu(
+            allocator,
+            reserved_size,
+            usage | vk::BufferUsageFlags::TRANSFER_DST,
+        )?;
 
         core::copy_buffer(
             device,
@@ -311,15 +360,71 @@ impl Buffer {
             queue,
         )?;
 
+        buffer.populated_size = size;
+
         buffer.type_name = std::any::type_name::<T>();
 
         Ok(buffer)
+    }
+    pub fn append_staged<T>(
+        &mut self,
+        device: &ash::Device,
+        command_pool: vk::CommandPool,
+        queue: vk::Queue,
+        allocator: &vk_mem::Allocator,
+        data: *const T,
+        data_len: usize,
+    ) -> Result<()> {
+        let size = (size_of::<T>() * data_len) as u64;
+        let available_space = self.total_size - self.populated_size;
+        if size > available_space {
+            return Err(anyhow!(
+                "Tried to append data to a buffer that is too full ({size}B > {available_space}B)"
+            ));
+        }
+        let staging_buffer = Self::new_populated(
+            allocator,
+            vk::BufferUsageFlags::TRANSFER_SRC,
+            data,
+            data_len,
+        )?;
+
+        let command_buffer = core::begin_single_time_commands(device, command_pool)?;
+        unsafe {
+            let copy_region = [vk::BufferCopy {
+                src_offset: 0,
+                dst_offset: self.populated_size,
+                size,
+            }];
+            device.cmd_copy_buffer(
+                command_buffer,
+                staging_buffer.get(),
+                self.buffer,
+                &copy_region,
+            );
+        }
+        core::end_single_time_command(device, command_pool, queue, command_buffer)?;
+
+        self.populated_size += size;
+
+        Ok(())
+    }
+    pub fn check_available_space<T>(&self, data_len: usize) -> bool {
+        // log::info!(
+        //     "Considering putting {} B of data in a space {} B big",
+        //     (size_of::<T>() * data_len),
+        //     (self.total_size - self.populated_size)
+        // );
+        (size_of::<T>() * data_len) as u64 <= (self.total_size - self.populated_size)
+    }
+    pub fn get_populated_bytes(&self) -> vk::DeviceSize {
+        self.populated_size
     }
     pub fn create_descriptor(&self) -> vk::DescriptorBufferInfo {
         vk::DescriptorBufferInfo {
             buffer: self.buffer,
             offset: 0,
-            range: self.size,
+            range: self.total_size,
         }
     }
     pub fn get_device_address(&self, device: &ash::Device) -> vk::DeviceAddress {
