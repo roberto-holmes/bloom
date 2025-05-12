@@ -1,7 +1,5 @@
 use std::ops;
 
-use approx::ulps_eq;
-
 use crate::vec::Vec3;
 
 #[derive(Debug, Copy, Clone, PartialEq)]
@@ -98,6 +96,7 @@ impl Quaternion {
     pub fn mz(&mut self) -> &mut f32 {
         &mut self.0[2]
     }
+    #[allow(unused)]
     fn conjugate(&self) -> Self {
         Self::new(self.w(), -self.x(), -self.y(), -self.z())
     }

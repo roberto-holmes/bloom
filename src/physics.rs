@@ -1,6 +1,6 @@
 use cgmath::Matrix4;
 
-use crate::{api::Bloomable, primitives::Primitive, quaternion::Quaternion, uniforms, vec::Vec3};
+use crate::{api::Bloomable, primitives::Primitive, quaternion::Quaternion, vec::Vec3};
 use std::{
     sync::{mpsc, Arc, RwLock},
     time::{Duration, Instant},
