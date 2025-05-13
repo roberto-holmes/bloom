@@ -416,7 +416,7 @@ impl<T: Bloomable + Sync + Send + 'static> VulkanApp<T> {
 
         let physics_thread =
             match thread::Builder::new()
-                .name("Character".to_string())
+                .name("Physics".to_string())
                 .spawn(move || {
                     physics::thread(
                         Duration::from_millis(10),
