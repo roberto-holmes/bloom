@@ -94,9 +94,11 @@ impl AABB {
         }
     }
     pub fn apply(&self, transformation: Matrix4<f32>) -> Self {
+        let post_min = self.min.apply_transformation(transformation);
+        let post_max = self.max.apply_transformation(transformation);
         Self {
-            min: self.min.apply_transformation(transformation),
-            max: self.max.apply_transformation(transformation),
+            min: Vec3::min_extrema(&post_min, post_max),
+            max: Vec3::max_extrema(&post_min, post_max),
         }
     }
     pub fn collides(&self, target: &Self) -> bool {

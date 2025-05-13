@@ -268,7 +268,6 @@ impl Physics {
             aabb,
             transformation,
         };
-        log::debug!("Adding object {:?}", obj);
         self.objects.insert(instance_id, obj);
 
         // Queue up this object to be sent to the acceleration structure
@@ -327,34 +326,26 @@ impl Physics {
         let new_pos = self.camera.pos + quat.apply(delta);
         if self.check_camera_collision(new_pos) {
             self.camera.pos = new_pos;
-            let cg_q: cgmath::Quaternion<f32> = self.camera.orientation.into();
+
+            let parent_orientation = Quaternion::from_euler(0.0, 0.0, self.camera.yaw_rad);
+            let cg_q: cgmath::Quaternion<f32> = parent_orientation.into();
             let rotation: cgmath::Matrix4<f32> = cg_q.into();
             // Update the position of the parent object
             match self.objects.get_mut(&self.camera.parent_id) {
                 None => log::warn!("Trying to move camera without attaching it to an object"),
                 Some(v) => {
-                    // v.transformation = Matrix4::from_translation(new_pos.into());
-                    // v.transformation =
-                    // Matrix4::from_translation(Vec3::zero().into()) * self.camera.3;
-                    // v.transformation = Matrix4::from_translation(Vec3::zero().into()) * rotation;
                     v.transformation = Matrix4::from_translation(new_pos.into())
                         * rotation
                         * self.camera.parent_base_transform;
-                    // self.camera.3 * Matrix4::from_translation(new_pos.into()) * rotation;
                     self.moved_objects.push((self.camera.parent_id, *v));
                 }
             }
         }
         // Compute position of the camera and return it
         if let Some(v) = self.objects.get(&self.camera.parent_id) {
-            // log::info!(
-            //     "Duck: {:?}, Camera: {:?}",
-            //     v.transformation,
-            //     Vec3::zero().apply_transformation(v.transformation) + self.camera.offset
-            // );
-            Vec3::zero().apply_transformation(v.transformation) + self.camera.offset
+            Some(Vec3::zero().apply_transformation(v.transformation) + self.camera.offset)
         } else {
-            Vec3::zero()
+            None
         }
     }
     /// True if there is no collisions
