@@ -317,6 +317,27 @@ impl Bloomable for Demo {
                 event:
                     KeyEvent {
                         state: ElementState::Pressed,
+                        physical_key: PhysicalKey::Code(KeyCode::KeyF),
+                        ..
+                    },
+                ..
+            } => {
+                if let Some(win) = self.window.as_ref() {
+                    match win.write() {
+                        Ok(w) => match w.fullscreen() {
+                            None => {
+                                w.set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)))
+                            }
+                            Some(_) => w.set_fullscreen(None),
+                        },
+                        Err(e) => log::error!("Window is poisoned: {e}"),
+                    }
+                }
+            }
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        state: ElementState::Pressed,
                         physical_key: PhysicalKey::Code(KeyCode::KeyQ),
                         ..
                     },
