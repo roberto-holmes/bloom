@@ -78,7 +78,8 @@ pub fn thread(
                 }
             }
             Err(e) => {
-                log::error!("Transfer rwlock is poisoned, ending thread: {}", e)
+                log::error!("Transfer rwlock is poisoned, ending thread: {}", e);
+                break;
             }
         }
         match camera_pos_in.read() {
@@ -87,6 +88,7 @@ pub fn thread(
             }
             Err(e) => {
                 log::error!("Uniform's camera pos arc is poisoned: {e}");
+                break;
             }
         }
         match camera_quat_in.read() {
@@ -95,6 +97,7 @@ pub fn thread(
             }
             Err(e) => {
                 log::error!("Uniform's camera pos arc is poisoned: {e}");
+                break;
             }
         }
         match channel.recv_timeout(Duration::from_millis(1)) {
