@@ -58,9 +58,9 @@ pub fn thread<T: Bloomable>(
     update_period: Duration,
     should_threads_die: Arc<RwLock<bool>>,
     update_channel: mpsc::Receiver<UpdatePhysics>,
-    camera_pos_in: Arc<RwLock<Vec3>>,
-    camera_quat_in: Arc<RwLock<Quaternion>>,
-    camera_pos_out: Arc<RwLock<Vec3>>,
+    camera_pos_in: Arc<RwLock<Vec3>>, // Changes in position
+    camera_quat_in: Arc<RwLock<(f32, f32, f32)>>, // Absolute pitch, roll, yaw (in rads)
+    camera_pos_out: Arc<RwLock<Vec3>>, // Absolute position
     camera_quat_out: Arc<RwLock<Quaternion>>,
     update_acceleration_structure: mpsc::Sender<UpdateScene>,
 
@@ -68,8 +68,7 @@ pub fn thread<T: Bloomable>(
 ) {
     let mut physics = Physics::new();
     let mut last_run_time = Instant::now();
-    let mut last_camera_pos = Vec3::all(f32::MAX);
-    let mut last_camera_quat = Quaternion::identity();
+    let mut last_camera_angles = (0.0, 0.0, 0.0);
     loop {
         // Check if we should end the thread
         match should_threads_die.read() {
@@ -124,13 +123,13 @@ pub fn thread<T: Bloomable>(
         }
 
         // Pass camera orientation onto the uniforms
-        // TODO: Incorporate into collision detection
         match camera_pos_in.read() {
             Ok(v) => {
-                if *v != last_camera_pos {
-                    last_camera_pos = *v;
+                if let Some(new_pos) = physics.update_camera_pos(*v) {
                     match camera_pos_out.write() {
-                        Ok(mut v_out) => *v_out = physics.update_camera_pos(*v),
+                        Ok(mut v_out) => {
+                            *v_out = new_pos;
+                        }
                         Err(e) => {
                             log::error!(
                                 "Camera position between physics and uniforms is poisoned: {e}"
@@ -145,10 +144,10 @@ pub fn thread<T: Bloomable>(
         }
         match camera_quat_in.read() {
             Ok(v) => {
-                if *v != last_camera_quat {
-                    last_camera_quat = *v;
+                if *v != last_camera_angles {
+                    last_camera_angles = *v;
                     match camera_quat_out.write() {
-                        Ok(mut v_out) => *v_out = physics.update_camera_orientation(*v),
+                        Ok(mut v_out) => *v_out = physics.update_camera_orientation(v.0, v.1, v.2),
                         Err(e) => {
                             log::error!(
                                 "Camera quaternion between physics and uniforms is poisoned: {e}"
@@ -214,6 +213,9 @@ struct Camera {
     parent_id: u64,
     pos: Vec3,
     offset: Vec3,
+    pitch_rad: f32,
+    roll_rad: f32,
+    yaw_rad: f32,
     orientation: Quaternion,
     parent_base_transform: Matrix4<f32>,
 }
@@ -224,6 +226,9 @@ impl Default for Camera {
             parent_id: u64::MAX,
             pos: Vec3::zero(),
             offset: Vec3::zero(),
+            pitch_rad: 0.0,
+            roll_rad: 0.0,
+            yaw_rad: 0.0,
             orientation: Quaternion::default(),
             parent_base_transform: Matrix4::identity(),
         }
@@ -282,27 +287,44 @@ impl Physics {
             offset,
             orientation,
             parent_base_transform,
+            pitch_rad: 0.0,
+            roll_rad: 0.0,
+            yaw_rad: 0.0,
         }
     }
-    fn update_camera_orientation(&mut self, new_orientation: Quaternion) -> Quaternion {
-        self.camera.orientation = new_orientation;
-        let cg_q: cgmath::Quaternion<f32> = new_orientation.into();
+    fn update_camera_orientation(
+        &mut self,
+        pitch_rad: f32,
+        roll_rad: f32,
+        yaw_rad: f32,
+    ) -> Quaternion {
+        self.camera.pitch_rad = pitch_rad;
+        self.camera.roll_rad = roll_rad;
+        self.camera.yaw_rad = yaw_rad;
+        self.camera.orientation =
+            Quaternion::from_euler(self.camera.pitch_rad, 0.0, self.camera.yaw_rad);
+
+        let parent_orientation = Quaternion::from_euler(0.0, 0.0, self.camera.yaw_rad);
+        let cg_q: cgmath::Quaternion<f32> = parent_orientation.into();
         let rotation: cgmath::Matrix4<f32> = cg_q.into();
         match self.objects.get_mut(&self.camera.parent_id) {
             None => log::warn!("Trying to rotate camera without attaching it to an object"),
             Some(v) => {
-                // v.transformation = Matrix4::from_translation(Vec3::zero().into()) * self.camera.3;
-                // v.transformation = Matrix4::from_translation(Vec3::zero().into()) * rotation;
                 v.transformation = Matrix4::from_translation(self.camera.pos.into())
                     * rotation
                     * self.camera.parent_base_transform;
-                // self.camera.3 * Matrix4::from_translation(self.camera.1.into()) * rotation;
                 self.moved_objects.push((self.camera.parent_id, *v));
             }
         }
-        new_orientation
+        self.camera.orientation
     }
-    fn update_camera_pos(&mut self, new_pos: Vec3) -> Vec3 {
+    fn update_camera_pos(&mut self, delta: Vec3) -> Option<Vec3> {
+        if delta == Vec3::zero() {
+            return None;
+        }
+
+        let quat = Quaternion::from_euler(0.0, 0.0, self.camera.yaw_rad);
+        let new_pos = self.camera.pos + quat.apply(delta);
         if self.check_camera_collision(new_pos) {
             self.camera.pos = new_pos;
             let cg_q: cgmath::Quaternion<f32> = self.camera.orientation.into();

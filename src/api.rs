@@ -34,7 +34,7 @@ pub struct BloomAPI {
     add_material: mpsc::Sender<material::Material>,
     update_physics: mpsc::Sender<physics::UpdatePhysics>,
     update_camera_pos: Arc<RwLock<Vec3>>,
-    update_camera_quat: Arc<RwLock<Quaternion>>,
+    update_camera_angles: Arc<RwLock<(f32, f32, f32)>>,
 
     mat_ids: Vec<u32>,
     obj_ids: HashSet<u64>,
@@ -46,7 +46,7 @@ impl BloomAPI {
         add_material: mpsc::Sender<material::Material>,
         update_physics: mpsc::Sender<physics::UpdatePhysics>,
         update_camera_pos: Arc<RwLock<Vec3>>,
-        update_camera_quat: Arc<RwLock<Quaternion>>,
+        update_camera_angles: Arc<RwLock<(f32, f32, f32)>>,
     ) -> Self {
         // let camera = Camera::look_at(
         //     Vec3::new(9., 6., 9.),
@@ -60,7 +60,7 @@ impl BloomAPI {
             add_material,
             update_physics,
             update_camera_pos,
-            update_camera_quat,
+            update_camera_angles,
             mat_ids: Vec::with_capacity(100),
             obj_ids: HashSet::with_capacity(100),
             ins_ids: HashSet::with_capacity(100),
@@ -144,13 +144,20 @@ impl BloomAPI {
             Err(e) => log::error!("Position is poisoned: {e}"),
         }
     }
-    pub fn update_camera_quaternion(&self, q: Quaternion) {
-        match self.update_camera_quat.write() {
-            Ok(mut v) => *v = q,
+    pub fn update_camera_angles(&self, pitch_rad: f32, roll_rad: f32, yaw_rad: f32) {
+        match self.update_camera_angles.write() {
+            Ok(mut v) => *v = (pitch_rad, roll_rad, yaw_rad),
             Err(e) => log::error!("Quaternion is poisoned: {e}"),
         }
     }
 }
+//     pub fn update_camera_quaternion(&self, q: Quaternion) {
+//         match self.update_camera_quat.write() {
+//             Ok(mut v) => *v = q,
+//             Err(e) => log::error!("Quaternion is poisoned: {e}"),
+//         }
+//     }
+// }
 
 #[cfg(test)]
 mod tests {
@@ -166,9 +173,14 @@ mod tests {
         let (add_material_sender, add_material_receiver) = mpsc::channel();
         let (update_scene_sender, _) = mpsc::channel();
         let cam_pos = Arc::new(RwLock::new(Vec3::zero()));
-        let cam_quat = Arc::new(RwLock::new(Quaternion::identity()));
+        let cam_angles = Arc::new(RwLock::new((0.0, 0.0, 0.0)));
 
-        let mut api = BloomAPI::new(add_material_sender, update_scene_sender, cam_pos, cam_quat);
+        let mut api = BloomAPI::new(
+            add_material_sender,
+            update_scene_sender,
+            cam_pos,
+            cam_angles,
+        );
 
         for _ in 0..test_material_count {
             api.add_material(test_material)?;
@@ -203,9 +215,14 @@ mod tests {
         let (add_material_sender, _) = mpsc::channel();
         let (update_scene_sender, update_scene_receiver) = mpsc::channel();
         let cam_pos = Arc::new(RwLock::new(Vec3::zero()));
-        let cam_quat = Arc::new(RwLock::new(Quaternion::identity()));
+        let cam_angles = Arc::new(RwLock::new((0.0, 0.0, 0.0)));
 
-        let mut api = BloomAPI::new(add_material_sender, update_scene_sender, cam_pos, cam_quat);
+        let mut api = BloomAPI::new(
+            add_material_sender,
+            update_scene_sender,
+            cam_pos,
+            cam_angles,
+        );
 
         for _ in 0..test_obj_count {
             api.add_obj(test_obj.clone())?;

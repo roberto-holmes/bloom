@@ -182,7 +182,7 @@ impl<T: Bloomable + Sync + Send + 'static> ApplicationHandler for App<T> {
                     }
                 };
                 // Limit FPS
-                if delta_time < Duration::from_micros((1_000_000.0 / 60.0) as u64) {
+                if delta_time < Duration::from_micros((1_000_000.0 / 240.0) as u64) {
                     match self.window.as_ref().unwrap().write() {
                         Ok(v) => {
                             v.request_redraw();
@@ -350,8 +350,8 @@ impl<T: Bloomable + Sync + Send + 'static> VulkanApp<T> {
         let cam_pos_physics_out = Arc::new(RwLock::new(vec::Vec3::zero()));
         let cam_pos_uniforms = cam_pos_physics_out.clone();
 
-        let cam_quat_user = Arc::new(RwLock::new(quaternion::Quaternion::identity()));
-        let cam_quat_physics_in = cam_quat_user.clone();
+        let cam_angles_user = Arc::new(RwLock::new((0.0, 0.0, 0.0)));
+        let cam_angles_physics_in = cam_angles_user.clone();
         let cam_quat_physics_out = Arc::new(RwLock::new(quaternion::Quaternion::identity()));
         let cam_quat_uniforms = cam_quat_physics_out.clone();
 
@@ -404,7 +404,7 @@ impl<T: Bloomable + Sync + Send + 'static> VulkanApp<T> {
             add_material_sender,
             update_scene_sender,
             cam_pos_user,
-            cam_quat_user,
+            cam_angles_user,
         );
 
         match user_app.write() {
@@ -423,7 +423,7 @@ impl<T: Bloomable + Sync + Send + 'static> VulkanApp<T> {
                         should_physics_die_out,
                         update_scene_receiver,
                         cam_pos_physics_in,
-                        cam_quat_physics_in,
+                        cam_angles_physics_in,
                         cam_pos_physics_out,
                         cam_quat_physics_out,
                         update_acceleration_structure_sender,

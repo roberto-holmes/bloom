@@ -34,7 +34,7 @@ struct Demo {
     keyboard_state: KeyboardState,
 
     is_mouse_grabbed: bool,
-    is_quaternion_updated: bool,
+    are_angles_updated: bool,
 
     pitch_rad: f32,
     yaw_rad: f32,
@@ -54,7 +54,7 @@ impl Demo {
             mouse_state: MouseState::default(),
             keyboard_state: KeyboardState::default(),
             is_mouse_grabbed: false,
-            is_quaternion_updated: false,
+            are_angles_updated: false,
 
             pitch_rad: 0.0,
             yaw_rad: 0.0,
@@ -75,9 +75,10 @@ impl Demo {
     }
     pub fn translate(&mut self, dx: f32, dz: f32, dy: f32) {
         let delta = Vec3::new(dx, dy, dz);
-        let quat = Quaternion::from_euler(0.0, 0.0, self.yaw_rad);
-        self.pos += quat.apply(delta);
-        self.api.as_ref().unwrap().update_camera_position(self.pos);
+        // let quat = Quaternion::from_euler(0.0, 0.0, self.yaw_rad);
+        // self.pos += quat.apply(delta);
+        // self.api.as_ref().unwrap().update_camera_position(self.pos);
+        self.api.as_ref().unwrap().update_camera_position(delta);
     }
     pub fn look(&mut self, dx_rad: f32, dy_rad: f32) {
         self.yaw_rad += dx_rad;
@@ -94,14 +95,7 @@ impl Demo {
         } else if self.yaw_rad < -std::f32::consts::PI * 2.0 {
             self.yaw_rad += std::f32::consts::PI * 2.0;
         }
-        // log::debug!(
-        //     "looking by pitch:{:.2}° [{dy_rad}], yaw:{:.2}° [{dx_rad}]",
-        //     self.pitch_rad.to_degrees(),
-        //     self.yaw_rad.to_degrees()
-        // );
-        self.quat = Quaternion::from_euler(self.pitch_rad, 0.0, self.yaw_rad);
-
-        self.is_quaternion_updated = true;
+        self.are_angles_updated = true;
     }
 }
 
@@ -492,16 +486,13 @@ impl Bloomable for Demo {
         if self.keyboard_state.is_pressed(KeyCode::ControlLeft) {
             movement.2 -= delta;
         }
-        // We only need to actually update the position if we've (tried to) move
-        if movement.0 != 0.0 || movement.1 != 0.0 || movement.2 != 0.0 {
-            self.translate(movement.0, movement.1, movement.2);
-        }
-        if self.is_quaternion_updated == true {
+        self.translate(movement.0, movement.1, movement.2);
+        if self.are_angles_updated == true {
             self.api
                 .as_ref()
                 .unwrap()
-                .update_camera_quaternion(self.quat);
-            self.is_quaternion_updated = false;
+                .update_camera_angles(self.pitch_rad, 0.0, self.yaw_rad);
+            self.are_angles_updated = false;
         }
     }
 }
