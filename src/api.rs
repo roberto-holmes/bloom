@@ -10,7 +10,7 @@ use rand::Rng;
 
 use crate::{
     material,
-    physics::{self, UpdatePhysics, UpdateScene},
+    physics::{self, UpdatePhysics},
     primitives::Primitive,
     quaternion::Quaternion,
     vec::Vec3,
@@ -80,10 +80,7 @@ impl BloomAPI {
             // Ensure we create a unique ID
             id = rng.random();
         }
-        if let Err(e) = self
-            .update_physics
-            .send(UpdatePhysics::Scene(UpdateScene::Add(id, obj)))
-        {
+        if let Err(e) = self.update_physics.send(UpdatePhysics::Add(id, obj)) {
             return Err(anyhow!("Failed to send new object: {e}"));
         };
         self.obj_ids.insert(id);
@@ -101,13 +98,9 @@ impl BloomAPI {
             // Ensure we create a unique ID
             id = rng.random();
         }
-        if let Err(e) = self
-            .update_physics
-            .send(UpdatePhysics::Scene(UpdateScene::AddInstance(
-                id,
-                object_id,
-                transformation,
-            )))
+        if let Err(e) =
+            self.update_physics
+                .send(UpdatePhysics::AddInstance(id, object_id, transformation))
         {
             return Err(anyhow!("Failed to send new instance: {e}"));
         };
@@ -121,10 +114,25 @@ impl BloomAPI {
         }
         if let Err(e) = self
             .update_physics
-            .send(UpdatePhysics::Scene(UpdateScene::MoveInstance(
+            .send(UpdatePhysics::MoveInstance(id, transformation))
+        {
+            return Err(anyhow!("Failed to send new instance: {e}"));
+        };
+        Ok(())
+    }
+    pub fn assign_camera_to(
+        &mut self,
+        id: u64,
+        offset: Vec3,
+        parent_base_transform: Matrix4<f32>,
+    ) -> Result<()> {
+        if let Err(e) = self
+            .update_physics
+            .send(UpdatePhysics::AttachCameraToInstance(
                 id,
-                transformation,
-            )))
+                offset,
+                parent_base_transform,
+            ))
         {
             return Err(anyhow!("Failed to send new instance: {e}"));
         };
@@ -208,7 +216,7 @@ mod tests {
 
         loop {
             match update_scene_receiver.recv_timeout(Duration::from_millis(10)) {
-                Ok(physics::UpdatePhysics::Scene(physics::UpdateScene::Add(id, obj))) => {
+                Ok(physics::UpdatePhysics::Add(id, obj)) => {
                     // Ensure all the IDs are unique
                     assert!(!ids.contains(&id));
                     ids.insert(id);

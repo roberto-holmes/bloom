@@ -4,6 +4,7 @@ pub mod sphere;
 
 use anyhow::Result;
 use ash::vk;
+use cgmath::Matrix4;
 
 use crate::vec::Vec3;
 
@@ -75,9 +76,11 @@ pub enum ObjectType {
     Triangle = 0,
     Sphere = 1,
     Lentil = 2,
+    // Ocean = 3,
+    // Volume = 4,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default, Clone, Copy)]
 pub struct AABB {
     pub min: Vec3,
     pub max: Vec3,
@@ -89,6 +92,20 @@ impl AABB {
             min: obj.get_extrema().0,
             max: obj.get_extrema().1,
         }
+    }
+    pub fn apply(&self, transformation: Matrix4<f32>) -> Self {
+        Self {
+            min: self.min.apply_transformation(transformation),
+            max: self.max.apply_transformation(transformation),
+        }
+    }
+    pub fn collides(&self, target: &Self) -> bool {
+        self.min.x() <= target.max.x()
+            && self.max.x() >= target.min.x()
+            && self.min.y() <= target.max.y()
+            && self.max.y() >= target.min.y()
+            && self.min.z() <= target.max.z()
+            && self.max.z() >= target.min.z()
     }
 }
 

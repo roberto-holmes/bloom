@@ -146,6 +146,12 @@ impl Quaternion {
     }
 }
 
+impl Default for Quaternion {
+    fn default() -> Self {
+        Self::identity()
+    }
+}
+
 // Macro to automatically declare operator overloads for all value and borrow type
 // combinations, using the same code block as the body.
 macro_rules! impl_binary_op {

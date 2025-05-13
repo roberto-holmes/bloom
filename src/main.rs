@@ -12,7 +12,7 @@ use bloom::{
     quaternion::Quaternion,
     vec::Vec3,
 };
-use cgmath::{Matrix4, SquareMatrix};
+use cgmath::Matrix4;
 use rand::Rng;
 use winit::event::DeviceEvent;
 use winit::{
@@ -63,14 +63,18 @@ impl Demo {
             quat: Quaternion::identity(),
 
             lentil: 0,
-            lentil_position: Matrix4::identity(),
+            lentil_position: cgmath::Matrix4::from_translation(cgmath::Vector3 {
+                x: 5.0,
+                y: 0.0,
+                z: 0.0,
+            }),
         }
     }
     fn get_api(&mut self) -> &mut BloomAPI {
         self.api.as_mut().unwrap()
     }
-    pub fn translate(&mut self, dx: f32, dy: f32) {
-        let delta = Vec3::new(dx, 0.0, dy);
+    pub fn translate(&mut self, dx: f32, dz: f32, dy: f32) {
+        let delta = Vec3::new(dx, dy, dz);
         let quat = Quaternion::from_euler(0.0, 0.0, self.yaw_rad);
         self.pos += quat.apply(delta);
         self.api.as_ref().unwrap().update_camera_position(self.pos);
@@ -123,39 +127,60 @@ impl Bloomable for Demo {
             1.0,
         ))?;
 
+        let character_material = scene.add_material(material::Material::new(
+            Vec3::new(1.0, 1.0, 1.0),
+            0.0,
+            0.0,
+            1.4,
+            1.0,
+            0.1,
+            Vec3::new(0.1, 1.0, 0.1),
+        ))?;
+
+        let mut duck = 0;
+
         let (document, buffers, _) = gltf::import("models/Duck.glb").unwrap();
         for m in document.meshes() {
             for p in m.primitives() {
-                let m = Model::new_gltf_primitive(p, &buffers, yellow);
+                let m = Model::new_gltf_primitive(p, &buffers, character_material);
                 let m_id = scene.add_obj(Primitive::Model(m))?;
-                let _ = scene.add_instance(
+                duck = scene.add_instance(
                     m_id,
-                    Matrix4::<f32>::from_translation(cgmath::Vector3::new(-50.0, -1.0, 0.0))
+                    Matrix4::<f32>::from_translation(cgmath::Vector3::new(0.0, 0.0, 0.0))
                         * Matrix4::<f32>::from_scale(1.0 / 100.0),
-                );
+                )?;
             }
         }
-        let cube = Model::new_cube(red)?;
-        let cube_id = scene.add_obj(Primitive::Model(cube))?;
+
+        scene.assign_camera_to(
+            duck,
+            Vec3::new(0.0, 2.0, 0.0),
+            Matrix4::<f32>::from_translation(cgmath::Vector3::new(0.0, -1.0, 0.0))
+                * Matrix4::from_angle_y(cgmath::Rad(-std::f32::consts::FRAC_PI_2))
+                * Matrix4::from_scale(1.0 / 100.0),
+        )?;
+
+        // let cube = Model::new_cube(red)?;
+        // let cube_id = scene.add_obj(Primitive::Model(cube))?;
 
         let plane_id = scene.add_obj(Primitive::Model(Model::new_plane(grey)?))?;
         let mirror_id = scene.add_obj(Primitive::Model(Model::new_mirror(mirror)?))?;
 
-        let _ = scene.add_instance(
-            cube_id,
-            Matrix4::from_translation(cgmath::Vector3 {
-                x: 2.0,
-                y: 3.0,
-                z: -1.0,
-            }),
-        )?;
+        // let _ = scene.add_instance(
+        //     cube_id,
+        //     Matrix4::from_translation(cgmath::Vector3 {
+        //         x: 2.0,
+        //         y: 3.0,
+        //         z: -1.0,
+        //     }),
+        // )?;
         let _ = scene.add_instance(
             plane_id,
             Matrix4::from_translation(cgmath::Vector3 {
                 x: 0.0,
                 y: -1.0,
                 z: 0.0,
-            }) * cgmath::Matrix4::from_nonuniform_scale(1.0, 1.0, 15.0),
+            }) * cgmath::Matrix4::from_nonuniform_scale(10.0, 1.0, 10.0),
         );
         let _ = scene.add_instance(
             mirror_id,
@@ -163,14 +188,23 @@ impl Bloomable for Demo {
                 x: 0.0,
                 y: 0.0,
                 z: -7.0,
-            }) * cgmath::Matrix4::from_nonuniform_scale(3.0, 5.0, 0.1),
+            }) * cgmath::Matrix4::from_nonuniform_scale(5.0, 5.0, 0.1),
+        );
+        let _ = scene.add_instance(
+            mirror_id,
+            Matrix4::from_translation(cgmath::Vector3 {
+                x: -2.5,
+                y: 0.0,
+                z: -4.5,
+            }) * Matrix4::from_angle_y(cgmath::Rad(-std::f32::consts::FRAC_PI_2))
+                * cgmath::Matrix4::from_nonuniform_scale(5.0, 5.0, 0.1),
         );
         let _ = scene.add_instance(
             mirror_id,
             Matrix4::from_translation(cgmath::Vector3 {
                 x: 0.0,
                 y: 0.0,
-                z: 7.0,
+                z: 3.0,
             }) * cgmath::Matrix4::from_nonuniform_scale(3.0, 5.0, 0.1),
         );
 
@@ -187,37 +221,44 @@ impl Bloomable for Demo {
 
         let lentil = Lentil::new(1.0, 1.0, glass).unwrap();
         let lentil_id = scene.add_obj(Primitive::Lentil(lentil))?;
-        let _ = scene.add_instance(
+        // let _ = scene.add_instance(
+        //     lentil_id,
+        //     Matrix4::from_translation(cgmath::Vector3 {
+        //         x: 2.0,
+        //         y: 0.0,
+        //         z: 0.0,
+        //     }),
+        // );
+        // let _ = scene.add_instance(
+        //     lentil_id,
+        //     Matrix4::from_translation(cgmath::Vector3 {
+        //         x: -2.0,
+        //         y: 0.0,
+        //         z: 0.0,
+        //     }),
+        // );
+        // #[rustfmt::skip]
+        // let _ = scene.add_instance(
+        //     lentil_id,
+        //     Matrix4::from_translation(cgmath::Vector3 {
+        //             x: 2.0,
+        //             y: 0.0,
+        //             z: -3.0,
+        //         }) * cgmath::Matrix4::new(
+        //             0.9182397, 0.3893702,-0.0722967, 0.0,
+        //            -0.1784285, 0.5697361, 0.8022245, 0.0,
+        //            -0.3535523,-0.7237346, 0.5926290 , 0.0,
+        //             0.0      , 0.0      , 0.0      , 1.0,
+        //         ),
+        // );
+        self.lentil = scene.add_instance(
             lentil_id,
-            Matrix4::from_translation(cgmath::Vector3 {
-                x: 2.0,
+            cgmath::Matrix4::from_translation(cgmath::Vector3 {
+                x: 5.0,
                 y: 0.0,
                 z: 0.0,
             }),
-        );
-        let _ = scene.add_instance(
-            lentil_id,
-            Matrix4::from_translation(cgmath::Vector3 {
-                x: -2.0,
-                y: 0.0,
-                z: 0.0,
-            }),
-        );
-        #[rustfmt::skip]
-        let _ = scene.add_instance(
-            lentil_id,
-            Matrix4::from_translation(cgmath::Vector3 {
-                    x: 2.0,
-                    y: 0.0,
-                    z: -3.0,
-                }) * cgmath::Matrix4::new(
-                    0.9182397, 0.3893702,-0.0722967, 0.0,
-                   -0.1784285, 0.5697361, 0.8022245, 0.0,
-                   -0.3535523,-0.7237346, 0.5926290 , 0.0,
-                    0.0      , 0.0      , 0.0      , 1.0,
-                ),
-        );
-        self.lentil = scene.add_instance(lentil_id, cgmath::Matrix4::identity())?;
+        )?;
         Ok(())
     }
     fn resize(&mut self, _width: u32, _height: u32) {}
@@ -432,7 +473,7 @@ impl Bloomable for Demo {
     fn display_tick(&mut self) {}
     fn physics_tick(&mut self, delta_time: Duration) {
         let delta = 0.005 * delta_time.as_millis() as f32;
-        let mut movement = (0.0, 0.0);
+        let mut movement = (0.0, 0.0, 0.0);
         if self.keyboard_state.is_pressed(KeyCode::KeyW) {
             movement.1 += delta;
         }
@@ -445,9 +486,15 @@ impl Bloomable for Demo {
         if self.keyboard_state.is_pressed(KeyCode::KeyD) {
             movement.0 += delta;
         }
+        if self.keyboard_state.is_pressed(KeyCode::Space) {
+            movement.2 += delta;
+        }
+        if self.keyboard_state.is_pressed(KeyCode::ControlLeft) {
+            movement.2 -= delta;
+        }
         // We only need to actually update the position if we've (tried to) move
-        if movement.0 != 0.0 || movement.1 != 0.0 {
-            self.translate(movement.0, movement.1);
+        if movement.0 != 0.0 || movement.1 != 0.0 || movement.2 != 0.0 {
+            self.translate(movement.0, movement.1, movement.2);
         }
         if self.is_quaternion_updated == true {
             self.api

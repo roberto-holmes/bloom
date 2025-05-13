@@ -1,5 +1,7 @@
 use std::ops;
 
+use cgmath::Transform;
+
 #[derive(Debug, Copy, Clone, PartialEq)]
 #[repr(C)]
 pub struct Vec3(pub [f32; 3]);
@@ -148,6 +150,10 @@ impl Vec3 {
             f32::max(f32::max(self.z(), v1.z()), f32::max(v2.z(), v3.z())),
         )
     }
+
+    pub fn apply_transformation(&self, transformation: cgmath::Matrix4<f32>) -> Vec3 {
+        Vec3::from(transformation.transform_point((*self).into()))
+    }
 }
 
 // Macro to automatically declare operator overloads for all value and borrow type
@@ -267,6 +273,22 @@ impl Into<cgmath::Vector3<f32>> for Vec3 {
             y: self.y(),
             z: self.z(),
         }
+    }
+}
+
+impl Into<cgmath::Point3<f32>> for Vec3 {
+    fn into(self) -> cgmath::Point3<f32> {
+        cgmath::Point3::<f32> {
+            x: self.x(),
+            y: self.y(),
+            z: self.z(),
+        }
+    }
+}
+
+impl From<cgmath::Point3<f32>> for Vec3 {
+    fn from(v: cgmath::Point3<f32>) -> Self {
+        Self([v.x, v.y, v.z])
     }
 }
 
