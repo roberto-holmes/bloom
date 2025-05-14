@@ -11,7 +11,7 @@ bool is_reflective_schlick(float cosine, float refractive_index) {
 }
 
 void reflect_ray(inout Payload ray, float3 pos, float3 normal, Material material) {
-	let lambertian_reflection = normal + generate_random_unit_vector();
+	let lambertian_reflection = normalize(normal + generate_random_unit_vector());
 	let metallic_reflection = reflect(WorldRayDirection(), normal);
 	ray.direction = lerp(lambertian_reflection, metallic_reflection, material.smoothness);
 	// Bump the start of the reflected ray a little bit off the surface to
