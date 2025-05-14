@@ -24,6 +24,8 @@ Vulkan app to demonstrate path traced lenses
 - [Text](https://youtu.be/SO83KQuuZvg)
 - [Ocean](https://youtu.be/yPfagLeUa7k)
 - [Audio](https://youtu.be/u6EuAUjq92k)
+- [Proper PBR](https://pbr-book.org/4ed/)
+- Support for curved displays
 
 # Used Resources
 

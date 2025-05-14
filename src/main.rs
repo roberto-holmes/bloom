@@ -12,7 +12,8 @@ use bloom::{
     quaternion::Quaternion,
     vec::Vec3,
 };
-use cgmath::Matrix4;
+use cgmath::{Matrix4, SquareMatrix};
+use maze_generator::prelude::Generator;
 use rand::Rng;
 use winit::event::DeviceEvent;
 use winit::{
@@ -39,8 +40,10 @@ struct Demo {
     pitch_rad: f32,
     yaw_rad: f32,
 
-    pos: Vec3,
-    quat: Quaternion,
+    goal: u64,
+    goal_pos: Matrix4<f32>,
+    goal_scale: Matrix4<f32>,
+    goal_yaw_rad: f32,
 
     lentil: u64,
     lentil_position: cgmath::Matrix4<f32>,
@@ -59,8 +62,10 @@ impl Demo {
             pitch_rad: 0.0,
             yaw_rad: 0.0,
 
-            pos: Vec3::default(),
-            quat: Quaternion::identity(),
+            goal: 0,
+            goal_pos: Matrix4::<f32>::identity(),
+            goal_scale: Matrix4::<f32>::from_scale(1.0 / 100.0),
+            goal_yaw_rad: 0.0,
 
             lentil: 0,
             lentil_position: cgmath::Matrix4::from_translation(cgmath::Vector3 {
@@ -114,10 +119,17 @@ impl Bloomable for Demo {
         let yellow =
             scene.add_material(material::Material::new_basic(Vec3::new(1.0, 0.8, 0.0), 0.))?;
         let glass = scene.add_material(material::Material::new_clear(Vec3::new(0.9, 1.0, 1.0)))?;
-        let mirror =
-            scene.add_material(material::Material::new_basic(Vec3::new(1.0, 1.0, 0.9), 1.0))?;
+        let mirror = scene.add_material(material::Material::new_basic(
+            Vec3::new(1.0, 1.0, 1.0),
+            // 0.5,
+            0.995,
+        ))?;
         let light = scene.add_material(material::Material::new_emissive(
             Vec3::new(0.9, 0.3, 0.1),
+            1.0,
+        ))?;
+        let goal_colour = scene.add_material(material::Material::new_emissive(
+            Vec3::new(1.0, 1.0, 1.0),
             1.0,
         ))?;
 
@@ -131,17 +143,33 @@ impl Bloomable for Demo {
             Vec3::new(0.1, 1.0, 0.1),
         ))?;
 
+        let scale = 5.0;
+        let width = 7;
+        let height = 7;
+
         let mut duck = 0;
+        let mut goal = 0;
+        let goal_position = Matrix4::<f32>::from_translation(cgmath::Vector3::new(
+            (width as f32 / 2.0 - 0.5) * scale,
+            0.0,
+            (height as f32 / 2.0 - 0.5) * scale,
+        ));
 
         let (document, buffers, _) = gltf::import("models/Duck.glb").unwrap();
         for m in document.meshes() {
             for p in m.primitives() {
-                let m = Model::new_gltf_primitive(p, &buffers, character_material);
+                let m = Model::new_gltf_primitive(p.clone(), &buffers, character_material);
                 let m_id = scene.add_obj(Primitive::Model(m))?;
                 duck = scene.add_instance(
                     m_id,
                     Matrix4::<f32>::from_translation(cgmath::Vector3::new(0.0, 0.0, 0.0))
                         * Matrix4::<f32>::from_scale(1.0 / 100.0),
+                )?;
+                let g = Model::new_gltf_primitive(p, &buffers, goal_colour);
+                let g_id = scene.add_obj(Primitive::Model(g))?;
+                goal = scene.add_instance(
+                    g_id,
+                    goal_position * Matrix4::<f32>::from_scale(1.0 / 100.0),
                 )?;
             }
         }
@@ -154,53 +182,124 @@ impl Bloomable for Demo {
                 * Matrix4::from_scale(1.0 / 100.0),
         )?;
 
-        // let cube = Model::new_cube(red)?;
-        // let cube_id = scene.add_obj(Primitive::Model(cube))?;
-
         let plane_id = scene.add_obj(Primitive::Model(Model::new_plane(grey)?))?;
+        let blank_mirror_id = scene.add_obj(Primitive::Model(Model::new_mirror(grey)?))?;
         let mirror_id = scene.add_obj(Primitive::Model(Model::new_mirror(mirror)?))?;
 
-        // let _ = scene.add_instance(
-        //     cube_id,
-        //     Matrix4::from_translation(cgmath::Vector3 {
-        //         x: 2.0,
-        //         y: 3.0,
-        //         z: -1.0,
-        //     }),
-        // )?;
+        // Create a maze
+        // Each maze unit is 10 of our units
+        let mut generator =
+            maze_generator::recursive_backtracking::RbGenerator::new(Some(rand::random()));
+
+        let maze = generator.generate(width, height).unwrap();
+
+        let north = maze_generator::prelude::Direction::North;
+        let south = maze_generator::prelude::Direction::South;
+        let east = maze_generator::prelude::Direction::East;
+        let west = maze_generator::prelude::Direction::West;
+
+        // Create the floor
         let _ = scene.add_instance(
             plane_id,
             Matrix4::from_translation(cgmath::Vector3 {
                 x: 0.0,
                 y: -1.0,
                 z: 0.0,
-            }) * cgmath::Matrix4::from_nonuniform_scale(10.0, 1.0, 10.0),
+            }) * cgmath::Matrix4::from_nonuniform_scale(
+                width as f32 * scale / 2.0,
+                1.0,
+                height as f32 * scale / 2.0,
+            ),
         );
-        let _ = scene.add_instance(
-            mirror_id,
-            Matrix4::from_translation(cgmath::Vector3 {
-                x: 0.0,
-                y: 0.0,
-                z: -7.0,
-            }) * cgmath::Matrix4::from_nonuniform_scale(5.0, 5.0, 0.1),
-        );
-        let _ = scene.add_instance(
-            mirror_id,
-            Matrix4::from_translation(cgmath::Vector3 {
-                x: -2.5,
-                y: 0.0,
-                z: -4.5,
-            }) * Matrix4::from_angle_y(cgmath::Rad(-std::f32::consts::FRAC_PI_2))
-                * cgmath::Matrix4::from_nonuniform_scale(5.0, 5.0, 0.1),
-        );
-        let _ = scene.add_instance(
-            mirror_id,
-            Matrix4::from_translation(cgmath::Vector3 {
-                x: 0.0,
-                y: 0.0,
-                z: 3.0,
-            }) * cgmath::Matrix4::from_nonuniform_scale(3.0, 5.0, 0.1),
-        );
+
+        log::debug!("Creating maze \n{:?}", maze);
+
+        // let mirror_scale = cgmath::Matrix4::from_nonuniform_scale(scale as f32, scale as f32, 0.1);
+
+        // Loop through every tile of the maze
+        for maze_y in 0..height {
+            for maze_x in 0..width {
+                let coords = maze_generator::prelude::Coordinates::new(maze_x, maze_y);
+                let tile = maze.get_field(&coords).unwrap();
+                // For each cardinal direction, add a wall if necessary
+                // 0, 0 in maze coordinates maps to -(width/2-0.5) * scale), -(height/2-0.5) * scale)
+                let x = (maze_x as f32 - (width as f32 / 2.0 - 0.5)) * scale;
+                let z = (maze_y as f32 - (height as f32 / 2.0 - 0.5)) * scale;
+
+                let id = if rand::random_bool(0.3) {
+                    blank_mirror_id
+                } else {
+                    mirror_id
+                };
+
+                if !tile.has_passage(&north) {
+                    let _ = scene.add_instance(
+                        id,
+                        Matrix4::from_translation(cgmath::Vector3 {
+                            x: x,
+                            y: 0.0,
+                            z: z - scale / 2.0,
+                        }) * cgmath::Matrix4::from_nonuniform_scale(scale, scale, 0.1),
+                    );
+                }
+                if !tile.has_passage(&south) {
+                    let _ = scene.add_instance(
+                        id,
+                        Matrix4::from_translation(cgmath::Vector3 {
+                            x: x,
+                            y: 0.0,
+                            z: z + scale / 2.0,
+                        }) * cgmath::Matrix4::from_nonuniform_scale(scale, scale, 0.1),
+                    );
+                }
+                if !tile.has_passage(&east) {
+                    let _ = scene.add_instance(
+                        id,
+                        Matrix4::from_translation(cgmath::Vector3 {
+                            x: x + scale / 2.0,
+                            y: 0.0,
+                            z: z,
+                        }) * cgmath::Matrix4::from_nonuniform_scale(0.1, scale, scale),
+                    );
+                }
+                if !tile.has_passage(&west) {
+                    let _ = scene.add_instance(
+                        id,
+                        Matrix4::from_translation(cgmath::Vector3 {
+                            x: x - scale / 2.0,
+                            y: 0.0,
+                            z: z,
+                        }) * cgmath::Matrix4::from_nonuniform_scale(0.1, scale, scale),
+                    );
+                }
+            }
+        }
+
+        // let _ = scene.add_instance(
+        //     mirror_id,
+        //     Matrix4::from_translation(cgmath::Vector3 {
+        //         x: 0.0,
+        //         y: 0.0,
+        //         z: -7.0,
+        //     }) * cgmath::Matrix4::from_nonuniform_scale(5.0, 5.0, 0.1),
+        // );
+        // let _ = scene.add_instance(
+        //     mirror_id,
+        //     Matrix4::from_translation(cgmath::Vector3 {
+        //         x: -2.5,
+        //         y: 0.0,
+        //         z: -4.5,
+        //     }) * Matrix4::from_angle_y(cgmath::Rad(-std::f32::consts::FRAC_PI_2))
+        //         * cgmath::Matrix4::from_nonuniform_scale(5.0, 5.0, 0.1),
+        // );
+        // let _ = scene.add_instance(
+        //     mirror_id,
+        //     Matrix4::from_translation(cgmath::Vector3 {
+        //         x: 0.0,
+        //         y: 0.0,
+        //         z: 3.0,
+        //     }) * cgmath::Matrix4::from_nonuniform_scale(3.0, 5.0, 0.1),
+        // );
 
         let sphere = Sphere::new(1.0, light).unwrap();
         let sphere_id = scene.add_obj(Primitive::Sphere(sphere))?;
@@ -208,7 +307,7 @@ impl Bloomable for Demo {
             sphere_id,
             Matrix4::from_translation(cgmath::Vector3 {
                 x: -1.0,
-                y: 5.0,
+                y: 20.0,
                 z: 3.0,
             }),
         );
@@ -253,6 +352,9 @@ impl Bloomable for Demo {
                 z: 0.0,
             }),
         )?;
+
+        self.goal = goal;
+        self.goal_pos = goal_position;
         Ok(())
     }
     fn resize(&mut self, _width: u32, _height: u32) {}
@@ -494,6 +596,12 @@ impl Bloomable for Demo {
                 .update_camera_angles(self.pitch_rad, 0.0, self.yaw_rad);
             self.are_angles_updated = false;
         }
+
+        let id = self.goal;
+        let transformation =
+            self.goal_pos * Matrix4::from_angle_y(cgmath::Rad(self.goal_yaw_rad)) * self.goal_scale;
+        let _ = self.get_api().move_instance_to(id, transformation);
+        self.goal_yaw_rad += 0.01;
     }
 }
 

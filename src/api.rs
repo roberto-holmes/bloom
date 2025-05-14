@@ -105,7 +105,7 @@ impl BloomAPI {
             return Err(anyhow!("Failed to send new instance: {e}"));
         };
         self.ins_ids.insert(id);
-        log::debug!("Added an instance");
+        // log::debug!("Added an instance");
         Ok(id)
     }
     pub fn move_instance_to(&mut self, id: u64, transformation: Matrix4<f32>) -> Result<()> {
