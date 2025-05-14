@@ -841,14 +841,13 @@ impl<'a> Ray<'a> {
         Ok(())
     }
 
-    fn create_top_level_acceleration_structure(
-        &mut self,
-        process: TlasProcess,
-    ) -> Result<()> {
-        log::trace!("Making a TLAS with {} instances", self.blas_instances.len());
-
+    fn create_top_level_acceleration_structure(&mut self, process: TlasProcess) -> Result<()> {
         match process {
             TlasProcess::Build => {
+                log::trace!(
+                    "Building a TLAS with {} instances",
+                    self.blas_instances.len()
+                );
                 if !self
                     .instances_buffer
                     .check_available_space::<AccelerationStructureInstanceKHR>(
@@ -857,7 +856,9 @@ impl<'a> Ray<'a> {
                 {
                     self.instances_buffer = vulkan::Buffer::new_generic(
                         &self.allocator,
-                        (size_of::<vk::AccelerationStructureInstanceKHR>() * RESERVED_SIZE) as u64,
+                        (size_of::<vk::AccelerationStructureInstanceKHR>()
+                            * (self.blas_instances.len() + RESERVED_SIZE))
+                            as u64,
                         vk_mem::MemoryUsage::Auto,
                         vk_mem::AllocationCreateFlags::HOST_ACCESS_SEQUENTIAL_WRITE,
                         vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
@@ -866,6 +867,10 @@ impl<'a> Ray<'a> {
                 }
             }
             TlasProcess::Update => {
+                log::trace!(
+                    "Updating a TLAS with {} instances",
+                    self.blas_instances.len()
+                );
                 if self.instances_buffer.get_populated_bytes()
                     != (size_of::<vk::AccelerationStructureInstanceKHR>()
                         * self.blas_instances.len()) as u64
@@ -1123,10 +1128,13 @@ impl ScratchBuffer {
         size: vk::DeviceSize,
     ) -> Result<Self> {
         log::trace!("Creating Scratch buffer");
-        let _buffer = vulkan::Buffer::new_gpu(
+        let _buffer = vulkan::Buffer::new_aligned(
             allocator,
             size,
+            vk_mem::MemoryUsage::Auto,
+            vk_mem::AllocationCreateFlags::empty(),
             vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+            128, // TODO: Get programatically from VkPhysicalDeviceAccelerationStructurePropertiesKHR::minAccelerationStructureScratchOffsetAlignment
         )?;
 
         let device_address = get_buffer_device_address(device, _buffer.get());

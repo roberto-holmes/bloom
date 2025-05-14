@@ -242,7 +242,49 @@ impl Buffer {
             type_name: "generic",
         })
     }
+    pub fn new_aligned(
+        allocator: &vk_mem::Allocator,
+        size: vk::DeviceSize,
+        location: vk_mem::MemoryUsage,
+        flags: vk_mem::AllocationCreateFlags,
+        usage: vk::BufferUsageFlags,
+        alignment: vk::DeviceSize,
+    ) -> Result<Self> {
+        log::trace!("Creating Aligned VMA allocated buffer");
+        if size == 0 {
+            return Err(anyhow!("Tried to create a 0 size buffer"));
+        }
+        let create_info = vk_mem::AllocationCreateInfo {
+            usage: location,
+            flags,
+            ..Default::default()
+        };
+        let (buffer, allocation) = unsafe {
+            allocator.create_buffer_with_alignment(
+                &ash::vk::BufferCreateInfo::default().size(size).usage(usage),
+                &create_info,
+                alignment,
+            )?
+        };
+        let allocation_info = allocator.get_allocation_info(&allocation);
+        Ok(Self {
+            allocator: allocator.internal,
+            buffer,
+            allocation,
+            populated_size: 0,
+            total_size: size,
+            allocation_info,
+            type_name: "aligned",
+        })
+    }
     pub fn populate<T>(&mut self, data: *const T, size: usize) -> Result<()> {
+        if !self.total_size < (size_of::<T>() * size) as u64 {
+            return Err(anyhow!(
+                "Tried to populate a buffer with too much data ({}>{})",
+                (size_of::<T>() * size),
+                self.total_size
+            ));
+        }
         unsafe {
             let mut mapped_data: *mut ::std::os::raw::c_void = ::std::ptr::null_mut();
             vk_mem::ffi::vmaMapMemory(self.allocator, self.allocation.0, &mut mapped_data)
@@ -265,6 +307,7 @@ impl Buffer {
             }
             (self.allocation_info.mapped_data as *mut T).copy_from_nonoverlapping(data, size);
         }
+        self.populated_size = (size_of::<T>() * size) as vk::DeviceSize;
         self.type_name = std::any::type_name::<T>();
         Ok(())
     }
@@ -410,10 +453,20 @@ impl Buffer {
         Ok(())
     }
     pub fn check_available_space<T>(&self, data_len: usize) -> bool {
+        if self.total_size < self.populated_size {
+            log::warn!(
+                "Populated size {} is somehow bigger than total size {}, needs investigation",
+                self.populated_size,
+                self.total_size
+            );
+            return false;
+        }
         // log::info!(
-        //     "Considering putting {} B of data in a space {} B big",
+        //     "Considering putting {} B of data in a space {}-{} B big",
         //     (size_of::<T>() * data_len),
-        //     (self.total_size - self.populated_size)
+        //     self.total_size,
+        //     self.populated_size,
+        //     // (self.total_size - self.populated_size)
         // );
         (size_of::<T>() * data_len) as u64 <= (self.total_size - self.populated_size)
     }
