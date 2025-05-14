@@ -178,7 +178,7 @@ impl Bloomable for Demo {
             duck,
             Vec3::new(0.0, 1.5, 0.8),
             Matrix4::<f32>::from_translation(cgmath::Vector3::new(0.0, -1.0, 0.0))
-                * Matrix4::from_angle_y(cgmath::Rad(-std::f32::consts::FRAC_PI_2))
+                * Matrix4::from_angle_y(cgmath::Rad(-0.23 - std::f32::consts::FRAC_PI_2))
                 * Matrix4::from_scale(1.0 / 100.0),
         )?;
 
