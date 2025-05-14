@@ -58,7 +58,7 @@ pub fn thread<T: Bloomable>(
     should_threads_die: Arc<RwLock<bool>>,
     update_channel: mpsc::Receiver<UpdatePhysics>,
     camera_pos_in: Arc<RwLock<Vec3>>, // Changes in position
-    camera_quat_in: Arc<RwLock<(f32, f32, f32)>>, // Absolute pitch, roll, yaw (in rads)
+    camera_angles_in: Arc<RwLock<(f32, f32, f32)>>, // Absolute pitch, roll, yaw (in rads)
     camera_pos_out: Arc<RwLock<Vec3>>, // Absolute position
     camera_quat_out: Arc<RwLock<Quaternion>>,
     update_acceleration_structure: mpsc::Sender<UpdateScene>,
@@ -117,6 +117,28 @@ pub fn thread<T: Bloomable>(
                     0.0,
                     0.0,
                 );
+                match camera_quat_out.write() {
+                    Ok(mut v_out) => *v_out = physics.get_camera_quat(),
+                    Err(e) => {
+                        log::error!(
+                            "Camera quaternion between physics and uniforms is poisoned: {e}"
+                        );
+                        return;
+                    }
+                }
+                match camera_pos_out.write() {
+                    Ok(mut v_out) => {
+                        if let Some(pos) = physics.get_camera_pos() {
+                            *v_out = pos;
+                        }
+                    }
+                    Err(e) => {
+                        log::error!(
+                            "Camera position between physics and uniforms is poisoned: {e}"
+                        );
+                        return;
+                    }
+                }
             }
             Err(mpsc::TryRecvError::Empty) => {}
             Err(mpsc::TryRecvError::Disconnected) => {
@@ -146,7 +168,7 @@ pub fn thread<T: Bloomable>(
                 return;
             }
         }
-        match camera_quat_in.read() {
+        match camera_angles_in.read() {
             Ok(v) => {
                 if *v != last_camera_angles {
                     last_camera_angles = *v;
@@ -367,6 +389,9 @@ impl Physics {
         } else {
             None
         }
+    }
+    fn get_camera_quat(&self) -> Quaternion {
+        self.camera.orientation
     }
     /// True if there is no collisions
     fn check_camera_collision(&self, pos: Vec3) -> bool {

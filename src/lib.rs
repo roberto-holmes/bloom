@@ -188,7 +188,7 @@ impl<T: Bloomable + Sync + Send + 'static> ApplicationHandler for App<T> {
                             v.request_redraw();
                             return;
                         }
-                        Err(e) => log::error!("Failed to delat redraw: {e}"),
+                        Err(e) => log::error!("Failed to delay redraw: {e}"),
                     }
                 }
                 log::trace!(
