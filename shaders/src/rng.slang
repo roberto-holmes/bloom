@@ -45,9 +45,19 @@ public float rand_f32() {
 
 public float3 generate_random_unit_vector() {
 	return normalize(float3(rand_f32() * 2. - 1., rand_f32() * 2. - 1., rand_f32() * 2. - 1.));
+	// var v = float3(rand_f32() * 2. - 1., rand_f32() * 2. - 1., rand_f32() * 2. - 1.);
+	// while (length(v) > 1.0) {
+	// 	v = float3(rand_f32() * 2. - 1., rand_f32() * 2. - 1., rand_f32() * 2. - 1.);
+	// };
+	// return v;
 }
 
 public float3 get_random_in_unit_disk() {
+	// var v = float3(rand_f32() * 2. - 1., rand_f32() * 2. - 1., 0.0);
+	// while (length(v) > 1.0) {
+	// 	v = float3(rand_f32() * 2. - 1., rand_f32() * 2. - 1., 0.0);
+	// };
+	// return v;
 	let r = rand_f32() * 2. - 1.;
 	let theta = rand_f32() * TAU;
 	return float3(r * cos(theta), r * sin(theta), 0.);
