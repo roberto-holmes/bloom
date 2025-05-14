@@ -8,12 +8,11 @@ use bloom::{
     self,
     api::{BloomAPI, Bloomable},
     material,
-    primitives::{lentil::Lentil, model::Model, sphere::Sphere, Primitive},
+    primitives::{model::Model, sphere::Sphere, Primitive},
     vec::Vec3,
 };
 use cgmath::{Matrix4, SquareMatrix};
 use maze_generator::prelude::Generator;
-use rand::Rng;
 use winit::event::DeviceEvent;
 use winit::{
     dpi::PhysicalPosition,
@@ -43,9 +42,8 @@ struct Demo {
     goal_pos: Matrix4<f32>,
     goal_scale: Matrix4<f32>,
     goal_yaw_rad: f32,
-
-    lentil: u64,
-    lentil_position: cgmath::Matrix4<f32>,
+    // lentil: u64,
+    // lentil_position: cgmath::Matrix4<f32>,
 }
 
 impl Demo {
@@ -59,19 +57,18 @@ impl Demo {
             are_angles_updated: false,
 
             pitch_rad: 0.0,
-            yaw_rad: std::f32::consts::PI,
+            yaw_rad: 0.0,
 
             goal: 0,
             goal_pos: Matrix4::<f32>::identity(),
             goal_scale: Matrix4::<f32>::from_scale(1.0 / 100.0),
             goal_yaw_rad: 0.0,
-
-            lentil: 0,
-            lentil_position: cgmath::Matrix4::from_translation(cgmath::Vector3 {
-                x: 5.0,
-                y: 0.0,
-                z: 0.0,
-            }),
+            // lentil: 0,
+            // lentil_position: cgmath::Matrix4::from_translation(cgmath::Vector3 {
+            //     x: 5.0,
+            //     y: 0.0,
+            //     z: 0.0,
+            // }),
         }
     }
     fn get_api(&mut self) -> &mut BloomAPI {
@@ -111,17 +108,17 @@ impl Bloomable for Demo {
         self.api = Some(api_in);
         let scene = self.get_api();
 
-        let red =
-            scene.add_material(material::Material::new_basic(Vec3::new(1.0, 0.0, 0.0), 0.))?;
+        // let red =
+        //     scene.add_material(material::Material::new_basic(Vec3::new(1.0, 0.0, 0.0), 0.))?;
         let grey =
             scene.add_material(material::Material::new_basic(Vec3::new(0.7, 0.7, 0.7), 0.1))?;
-        let yellow =
-            scene.add_material(material::Material::new_basic(Vec3::new(1.0, 0.8, 0.0), 0.))?;
-        let glass = scene.add_material(material::Material::new_clear(Vec3::new(0.9, 1.0, 1.0)))?;
+        // let yellow =
+        //     scene.add_material(material::Material::new_basic(Vec3::new(1.0, 0.8, 0.0), 0.))?;
+        // let glass = scene.add_material(material::Material::new_clear(Vec3::new(0.9, 1.0, 1.0)))?;
         let mirror = scene.add_material(material::Material::new_basic(
             Vec3::new(1.0, 1.0, 1.0),
             // 0.5,
-            0.995,
+            0.992,
         ))?;
         let light = scene.add_material(material::Material::new_emissive(
             Vec3::new(0.9, 0.3, 0.1),
@@ -305,7 +302,7 @@ impl Bloomable for Demo {
         //     }) * cgmath::Matrix4::from_nonuniform_scale(3.0, 5.0, 0.1),
         // );
 
-        let sphere = Sphere::new(1.0, light).unwrap();
+        let sphere = Sphere::new(2.0, light).unwrap();
         let sphere_id = scene.add_obj(Primitive::Sphere(sphere))?;
         let _ = scene.add_instance(
             sphere_id,
@@ -316,8 +313,8 @@ impl Bloomable for Demo {
             }),
         );
 
-        let lentil = Lentil::new(1.0, 1.0, glass).unwrap();
-        let lentil_id = scene.add_obj(Primitive::Lentil(lentil))?;
+        // let lentil = Lentil::new(1.0, 1.0, glass).unwrap();
+        // let lentil_id = scene.add_obj(Primitive::Lentil(lentil))?;
         // let _ = scene.add_instance(
         //     lentil_id,
         //     Matrix4::from_translation(cgmath::Vector3 {
@@ -348,14 +345,14 @@ impl Bloomable for Demo {
         //             0.0      , 0.0      , 0.0      , 1.0,
         //         ),
         // );
-        self.lentil = scene.add_instance(
-            lentil_id,
-            cgmath::Matrix4::from_translation(cgmath::Vector3 {
-                x: 5.0,
-                y: 0.0,
-                z: 0.0,
-            }),
-        )?;
+        // self.lentil = scene.add_instance(
+        //     lentil_id,
+        //     cgmath::Matrix4::from_translation(cgmath::Vector3 {
+        //         x: 5.0,
+        //         y: 0.0,
+        //         z: 0.0,
+        //     }),
+        // )?;
 
         self.goal = goal;
         self.goal_pos = goal_position;
@@ -475,84 +472,83 @@ impl Bloomable for Demo {
                     }
                 }
             }
-            WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        state: ElementState::Pressed,
-                        physical_key: PhysicalKey::Code(KeyCode::KeyQ),
-                        ..
-                    },
-                ..
-            } => {
-                let green = match self
-                    .get_api()
-                    .add_material(material::Material::new_basic(Vec3::new(0.0, 1.0, 0.0), 0.))
-                {
-                    Ok(v) => v,
-                    Err(e) => {
-                        log::error!("Failed to add material: {e}");
-                        return;
-                    }
-                };
-                log::warn!("Green is ID {green}");
-                let cube = match Model::new_cube(green) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        log::error!("Failed to create cube: {e}");
-                        return;
-                    }
-                };
-                let cube_id = match self.get_api().add_obj(Primitive::Model(cube)) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        log::error!("Failed to add model: {e}");
-                        return;
-                    }
-                };
-                let mut rng = rand::rng();
-                if let Err(e) = self.get_api().add_instance(
-                    cube_id,
-                    Matrix4::from_translation(cgmath::Vector3 {
-                        x: rng.random_range(-10.0..10.0),
-                        y: rng.random_range(-10.0..10.0),
-                        z: rng.random_range(-10.0..10.0),
-                    }),
-                ) {
-                    log::error!("Failed to add cube: {e}");
-                }
-            }
-            WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        state: ElementState::Pressed,
-                        physical_key: PhysicalKey::Code(KeyCode::KeyZ),
-                        ..
-                    },
-                ..
-            } => {
-                let l = self.lentil;
-                self.lentil_position.w.y += 0.05;
-                let pos = self.lentil_position;
-                if let Err(e) = self.get_api().move_instance_to(l, pos) {
-                    log::error!("Failed to move lentil up: {e}");
-                }
-            }
-            WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        state: ElementState::Pressed,
-                        physical_key: PhysicalKey::Code(KeyCode::KeyX),
-                        ..
-                    },
-                ..
-            } => {
-                let l = self.lentil;
-                self.lentil_position.w.y -= 0.05;
-                let pos = self.lentil_position;
-                if let Err(e) = self.get_api().move_instance_to(l, pos) {
-                    log::error!("Failed to move lentil down: {e}");
-                }
-            }
+            // WindowEvent::KeyboardInput {
+            //     event:
+            //         KeyEvent {
+            //             state: ElementState::Pressed,
+            //             physical_key: PhysicalKey::Code(KeyCode::KeyQ),
+            //             ..
+            //         },
+            //     ..
+            // } => {
+            //     let green = match self
+            //         .get_api()
+            //         .add_material(material::Material::new_basic(Vec3::new(0.0, 1.0, 0.0), 0.))
+            //     {
+            //         Ok(v) => v,
+            //         Err(e) => {
+            //             log::error!("Failed to add material: {e}");
+            //             return;
+            //         }
+            //     };
+            //     let cube = match Model::new_cube(green) {
+            //         Ok(v) => v,
+            //         Err(e) => {
+            //             log::error!("Failed to create cube: {e}");
+            //             return;
+            //         }
+            //     };
+            //     let cube_id = match self.get_api().add_obj(Primitive::Model(cube)) {
+            //         Ok(v) => v,
+            //         Err(e) => {
+            //             log::error!("Failed to add model: {e}");
+            //             return;
+            //         }
+            //     };
+            //     let mut rng = rand::rng();
+            //     if let Err(e) = self.get_api().add_instance(
+            //         cube_id,
+            //         Matrix4::from_translation(cgmath::Vector3 {
+            //             x: rng.random_range(-10.0..10.0),
+            //             y: rng.random_range(-10.0..10.0),
+            //             z: rng.random_range(-10.0..10.0),
+            //         }),
+            //     ) {
+            //         log::error!("Failed to add cube: {e}");
+            //     }
+            // }
+            // WindowEvent::KeyboardInput {
+            //     event:
+            //         KeyEvent {
+            //             state: ElementState::Pressed,
+            //             physical_key: PhysicalKey::Code(KeyCode::KeyZ),
+            //             ..
+            //         },
+            //     ..
+            // } => {
+            //     let l = self.lentil;
+            //     self.lentil_position.w.y += 0.05;
+            //     let pos = self.lentil_position;
+            //     if let Err(e) = self.get_api().move_instance_to(l, pos) {
+            //         log::error!("Failed to move lentil up: {e}");
+            //     }
+            // }
+            // WindowEvent::KeyboardInput {
+            //     event:
+            //         KeyEvent {
+            //             state: ElementState::Pressed,
+            //             physical_key: PhysicalKey::Code(KeyCode::KeyX),
+            //             ..
+            //         },
+            //     ..
+            // } => {
+            //     let l = self.lentil;
+            //     self.lentil_position.w.y -= 0.05;
+            //     let pos = self.lentil_position;
+            //     if let Err(e) = self.get_api().move_instance_to(l, pos) {
+            //         log::error!("Failed to move lentil down: {e}");
+            //     }
+            // }
             WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {
@@ -586,12 +582,12 @@ impl Bloomable for Demo {
         if self.keyboard_state.is_pressed(KeyCode::KeyD) {
             movement.0 += delta;
         }
-        if self.keyboard_state.is_pressed(KeyCode::Space) {
-            movement.2 += delta;
-        }
-        if self.keyboard_state.is_pressed(KeyCode::ControlLeft) {
-            movement.2 -= delta;
-        }
+        // if self.keyboard_state.is_pressed(KeyCode::Space) {
+        //     movement.2 += delta;
+        // }
+        // if self.keyboard_state.is_pressed(KeyCode::ControlLeft) {
+        //     movement.2 -= delta;
+        // }
         self.translate(movement.0, movement.1, movement.2);
         if self.are_angles_updated == true {
             self.api

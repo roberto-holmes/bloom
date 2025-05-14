@@ -12,7 +12,6 @@ use crate::{
     material,
     physics::{self, UpdatePhysics},
     primitives::Primitive,
-    quaternion::Quaternion,
     vec::Vec3,
 };
 
