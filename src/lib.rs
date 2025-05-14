@@ -345,7 +345,7 @@ impl<T: Bloomable + Sync + Send + 'static> VulkanApp<T> {
         let (ray_update_uniforms_sender, update_uniforms_receiver) = mpsc::channel();
         let (update_scene_sender, update_scene_receiver) = mpsc::channel();
 
-        let cam_pos_user = Arc::new(RwLock::new(vec::Vec3::zero()));
+        let cam_pos_user = Arc::new(RwLock::new(vec::Vec3::new(0.1, 0.0, 0.0)));
         let cam_pos_physics_in = cam_pos_user.clone();
         let cam_pos_physics_out = Arc::new(RwLock::new(vec::Vec3::zero()));
         let cam_pos_uniforms = cam_pos_physics_out.clone();

@@ -8,7 +8,6 @@ use crate::{
 };
 use std::{
     collections::HashMap,
-    convert::identity,
     sync::{mpsc, Arc, RwLock},
     time::{Duration, Instant},
     u64,
@@ -74,11 +73,12 @@ pub fn thread<T: Bloomable>(
         match should_threads_die.read() {
             Ok(should_die) => {
                 if *should_die == true {
-                    break;
+                    return;
                 }
             }
             Err(e) => {
-                log::error!("rwlock is poisoned, ending thread: {}", e)
+                log::error!("rwlock is poisoned, ending thread: {}", e);
+                return;
             }
         }
         // Call the user's update function
@@ -94,7 +94,7 @@ pub fn thread<T: Bloomable>(
                 if let Err(e) = update_acceleration_structure.send(UpdateScene::Add(id, primitive))
                 {
                     log::error!("Failed to propagate add primitive to acceleration structure: {e}");
-                    break;
+                    return;
                 }
             }
             Ok(UpdatePhysics::AddInstance(instance_id, primitive_id, transformation)) => {
@@ -113,12 +113,15 @@ pub fn thread<T: Bloomable>(
                     offset,
                     Quaternion::identity(),
                     parent_base_transform,
+                    0.0,
+                    0.0,
+                    0.0,
                 );
             }
             Err(mpsc::TryRecvError::Empty) => {}
             Err(mpsc::TryRecvError::Disconnected) => {
                 log::error!("User to Physics channel has disconnected");
-                break;
+                return;
             }
         }
 
@@ -139,7 +142,8 @@ pub fn thread<T: Bloomable>(
                 }
             }
             Err(e) => {
-                log::error!("Camera position between physics and user is poisoned: {e}")
+                log::error!("Camera position between physics and user is poisoned: {e}");
+                return;
             }
         }
         match camera_quat_in.read() {
@@ -151,6 +155,18 @@ pub fn thread<T: Bloomable>(
                         Err(e) => {
                             log::error!(
                                 "Camera quaternion between physics and uniforms is poisoned: {e}"
+                            )
+                        }
+                    }
+                    match camera_pos_out.write() {
+                        Ok(mut v_out) => {
+                            if let Some(pos) = physics.get_camera_pos() {
+                                *v_out = pos;
+                            }
+                        }
+                        Err(e) => {
+                            log::error!(
+                                "Camera position between physics and uniforms is poisoned: {e}"
                             )
                         }
                     }
@@ -167,7 +183,7 @@ pub fn thread<T: Bloomable>(
                 .send(UpdateScene::MoveInstance(moved.0, moved.1.transformation))
             {
                 log::error!("Failed to propagate physics tick to acceleration structure: {e}");
-                break;
+                return;
             }
         }
         physics.clear_moved();
@@ -180,7 +196,7 @@ pub fn thread<T: Bloomable>(
                 obj.2.transformation,
             )) {
                 log::error!("Failed to propagate physics tick to acceleration structure: {e}");
-                break;
+                return;
             }
         }
         physics.clear_new();
@@ -279,6 +295,9 @@ impl Physics {
         offset: Vec3,
         orientation: Quaternion,
         parent_base_transform: Matrix4<f32>,
+        pitch_rad: f32,
+        roll_rad: f32,
+        yaw_rad: f32,
     ) {
         self.camera = Camera {
             parent_id,
@@ -286,10 +305,11 @@ impl Physics {
             offset,
             orientation,
             parent_base_transform,
-            pitch_rad: 0.0,
-            roll_rad: 0.0,
-            yaw_rad: 0.0,
-        }
+            pitch_rad,
+            roll_rad,
+            yaw_rad,
+        };
+        self.update_camera_parent();
     }
     fn update_camera_orientation(
         &mut self,
@@ -303,18 +323,7 @@ impl Physics {
         self.camera.orientation =
             Quaternion::from_euler(self.camera.pitch_rad, 0.0, self.camera.yaw_rad);
 
-        let parent_orientation = Quaternion::from_euler(0.0, 0.0, self.camera.yaw_rad);
-        let cg_q: cgmath::Quaternion<f32> = parent_orientation.into();
-        let rotation: cgmath::Matrix4<f32> = cg_q.into();
-        match self.objects.get_mut(&self.camera.parent_id) {
-            None => log::warn!("Trying to rotate camera without attaching it to an object"),
-            Some(v) => {
-                v.transformation = Matrix4::from_translation(self.camera.pos.into())
-                    * rotation
-                    * self.camera.parent_base_transform;
-                self.moved_objects.push((self.camera.parent_id, *v));
-            }
-        }
+        self.update_camera_parent();
         self.camera.orientation
     }
     fn update_camera_pos(&mut self, delta: Vec3) -> Option<Vec3> {
@@ -326,24 +335,35 @@ impl Physics {
         let new_pos = self.camera.pos + quat.apply(delta);
         if self.check_camera_collision(new_pos) {
             self.camera.pos = new_pos;
-
-            let parent_orientation = Quaternion::from_euler(0.0, 0.0, self.camera.yaw_rad);
-            let cg_q: cgmath::Quaternion<f32> = parent_orientation.into();
-            let rotation: cgmath::Matrix4<f32> = cg_q.into();
-            // Update the position of the parent object
-            match self.objects.get_mut(&self.camera.parent_id) {
-                None => log::warn!("Trying to move camera without attaching it to an object"),
-                Some(v) => {
-                    v.transformation = Matrix4::from_translation(new_pos.into())
-                        * rotation
-                        * self.camera.parent_base_transform;
-                    self.moved_objects.push((self.camera.parent_id, *v));
-                }
+            self.update_camera_parent();
+        }
+        // Compute position of the camera (incl offset from parent) and return it
+        self.get_camera_pos()
+    }
+    /// Update the transformation of the object that the camera is attached to and flag it for being updated in the Acceleration Structure
+    fn update_camera_parent(&mut self) {
+        // Get the rotation matrix of the object
+        let parent_orientation = Quaternion::from_euler(0.0, 0.0, self.camera.yaw_rad);
+        let cg_q: cgmath::Quaternion<f32> = parent_orientation.into();
+        let rotation: cgmath::Matrix4<f32> = cg_q.into();
+        // Update the transformation matrix of the parent object
+        match self.objects.get_mut(&self.camera.parent_id) {
+            None => log::warn!("Trying to update camera parent without attaching it to an object"),
+            Some(v) => {
+                v.transformation = Matrix4::from_translation(self.camera.pos.into())
+                    * rotation
+                    * self.camera.parent_base_transform;
+                self.moved_objects.push((self.camera.parent_id, *v));
             }
         }
-        // Compute position of the camera and return it
+    }
+    fn get_camera_pos(&self) -> Option<Vec3> {
+        let quat = Quaternion::from_euler(0.0, 0.0, self.camera.yaw_rad);
         if let Some(v) = self.objects.get(&self.camera.parent_id) {
-            Some(Vec3::zero().apply_transformation(v.transformation) + self.camera.offset)
+            Some(
+                Vec3::zero().apply_transformation(v.transformation)
+                    + quat.apply(self.camera.offset),
+            )
         } else {
             None
         }

@@ -11,12 +11,13 @@ Vulkan app to demonstrate path traced lenses
 - Camera collisions
 - Lenses
 - Player character
-- Fullscreen
 
 ### Fixes
 
 - Minimising
 - Adding lots of cubes/materials/instances causes a crash
+- Initial camera position
+- Collision AABBs (Duck can sometimes stick nose through objects)
 
 ## Future
 
