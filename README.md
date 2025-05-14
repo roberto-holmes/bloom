@@ -8,11 +8,9 @@ Vulkan app to demonstrate path traced lenses
 
 ### Features
 
-- Lenses
-
 ### Fixes
 
-- Minimising
+- Lenses
 - Collision AABBs (Duck can sometimes stick nose through objects)
 
 ## Future

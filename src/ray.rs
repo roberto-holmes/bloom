@@ -112,7 +112,7 @@ pub fn thread(
 
     let mut first_run = true;
 
-    let mut is_minimised = false;
+    let mut is_minimised;
 
     let mut accumulated_frames = 0;
     let mut final_accumulation = false;
@@ -131,6 +131,9 @@ pub fn thread(
         }
 
         let mut size = resize.latest();
+
+        // We will consider either axis being zero as being minimised because we don't need to render anything
+        is_minimised = size.width == 0 || size.height == 0;
 
         // TODO: Figure out why Ray sometimes doesn't always start until a manual resize/draw occurs
         if first_run {
@@ -196,32 +199,29 @@ pub fn thread(
             current_frame_index %= MAX_FRAMES_IN_FLIGHT as u8;
         }
 
-        while ray.need_resize(*size) {
-            if size.width == 0 || size.height == 0 {
-                is_minimised = true;
-                break;
+        if !is_minimised {
+            while ray.need_resize(*size) {
+                log::debug!("Received resize to {}x{}", size.width, size.height);
+                // We have been told to not do any work until a new timeline has been reached
+                let new_images = match ray.resize(*size) {
+                    Err(e) => {
+                        log::error!("Failed to create new output images: {e}");
+                        break;
+                    }
+                    Ok(v) => v,
+                };
+                match transfer_sender.send(transfer::ResizedSource::Ray((*size, new_images))) {
+                    Err(e) => log::error!("Failed to update transfer with new images: {e}"),
+                    Ok(()) => {}
+                };
+                log::debug!(
+                    "Images {:?} are now {}x{}",
+                    new_images,
+                    size.width,
+                    size.height
+                );
+                size = resize.latest();
             }
-            is_minimised = false;
-            // log::debug!("Received resize to {}x{}", size.width, size.height);
-            // We have been told to not do any work until a new timeline has been reached
-            let new_images = match ray.resize(*size) {
-                Err(e) => {
-                    log::error!("Failed to create new output images: {e}");
-                    break;
-                }
-                Ok(v) => v,
-            };
-            match transfer_sender.send(transfer::ResizedSource::Ray((*size, new_images))) {
-                Err(e) => log::error!("Failed to update transfer with new images: {e}"),
-                Ok(()) => {}
-            };
-            log::debug!(
-                "Images {:?} are now {}x{}",
-                new_images,
-                size.width,
-                size.height
-            );
-            size = resize.latest();
         }
 
         // Check if transfer is actively using our images and we need to wait for it to finish
