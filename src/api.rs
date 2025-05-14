@@ -125,6 +125,7 @@ impl BloomAPI {
         id: u64,
         offset: Vec3,
         parent_base_transform: Matrix4<f32>,
+        initial_position: Vec3,
     ) -> Result<()> {
         if let Err(e) = self
             .update_physics
@@ -132,6 +133,7 @@ impl BloomAPI {
                 id,
                 offset,
                 parent_base_transform,
+                initial_position,
             ))
         {
             return Err(anyhow!("Failed to send new instance: {e}"));

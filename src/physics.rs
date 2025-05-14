@@ -46,8 +46,8 @@ pub enum UpdatePhysics {
     AddInstance(u64, u64, Matrix4<f32>),
     /// ID of the instance to move and its new transformation matrix
     MoveInstance(u64, Matrix4<f32>),
-    /// Attach the camera to an instance with a given offset from the center
-    AttachCameraToInstance(u64, Vec3, Matrix4<f32>),
+    /// Attach the camera to an instance with a given offset from the center and an initial position
+    AttachCameraToInstance(u64, Vec3, Matrix4<f32>, Vec3),
     // TODO: Adjust if objects should it should be collidable and if they should be affected by physics
     // Collidable(bool)
     // Physical(bool)
@@ -107,6 +107,7 @@ pub fn thread<T: Bloomable>(
                 instance_id,
                 offset,
                 parent_base_transform,
+                initial_position,
             )) => {
                 physics.add_camera(
                     instance_id,
@@ -116,6 +117,7 @@ pub fn thread<T: Bloomable>(
                     0.0,
                     0.0,
                     0.0,
+                    initial_position,
                 );
                 match camera_quat_out.write() {
                     Ok(mut v_out) => *v_out = physics.get_camera_quat(),
@@ -320,10 +322,11 @@ impl Physics {
         pitch_rad: f32,
         roll_rad: f32,
         yaw_rad: f32,
+        initial_position: Vec3,
     ) {
         self.camera = Camera {
             parent_id,
-            pos: Vec3::zero(),
+            pos: initial_position,
             offset,
             orientation,
             parent_base_transform,

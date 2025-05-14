@@ -9,7 +9,6 @@ use bloom::{
     api::{BloomAPI, Bloomable},
     material,
     primitives::{lentil::Lentil, model::Model, sphere::Sphere, Primitive},
-    quaternion::Quaternion,
     vec::Vec3,
 };
 use cgmath::{Matrix4, SquareMatrix};
@@ -60,7 +59,7 @@ impl Demo {
             are_angles_updated: false,
 
             pitch_rad: 0.0,
-            yaw_rad: 0.0,
+            yaw_rad: std::f32::consts::PI,
 
             goal: 0,
             goal_pos: Matrix4::<f32>::identity(),
@@ -143,16 +142,16 @@ impl Bloomable for Demo {
             Vec3::new(0.1, 1.0, 0.1),
         ))?;
 
-        let scale = 5.0;
-        let width = 7;
-        let height = 7;
+        const MAZE_SCALE: f32 = 5.0;
+        const MAZE_WIDTH: i32 = 7;
+        const MAZE_HEIGHT: i32 = 7;
 
         let mut duck = 0;
         let mut goal = 0;
         let goal_position = Matrix4::<f32>::from_translation(cgmath::Vector3::new(
-            (width as f32 / 2.0 - 0.5) * scale,
+            (MAZE_WIDTH as f32 / 2.0 - 0.5) * MAZE_SCALE,
             0.0,
-            (height as f32 / 2.0 - 0.5) * scale,
+            (MAZE_HEIGHT as f32 / 2.0 - 0.5) * MAZE_SCALE,
         ));
 
         let (document, buffers, _) = gltf::import("models/Duck.glb").unwrap();
@@ -180,6 +179,11 @@ impl Bloomable for Demo {
             Matrix4::<f32>::from_translation(cgmath::Vector3::new(0.0, -1.0, 0.0))
                 * Matrix4::from_angle_y(cgmath::Rad(-0.23 - std::f32::consts::FRAC_PI_2))
                 * Matrix4::from_scale(1.0 / 100.0),
+            Vec3::new(
+                -(MAZE_WIDTH as f32 / 2.0 - 0.5) * MAZE_SCALE,
+                0.0,
+                -(MAZE_HEIGHT as f32 / 2.0 - 0.5) * MAZE_SCALE,
+            ),
         )?;
 
         let plane_id = scene.add_obj(Primitive::Model(Model::new_plane(grey)?))?;
@@ -191,7 +195,7 @@ impl Bloomable for Demo {
         let mut generator =
             maze_generator::recursive_backtracking::RbGenerator::new(Some(rand::random()));
 
-        let maze = generator.generate(width, height).unwrap();
+        let maze = generator.generate(MAZE_WIDTH, MAZE_HEIGHT).unwrap();
 
         let north = maze_generator::prelude::Direction::North;
         let south = maze_generator::prelude::Direction::South;
@@ -206,9 +210,9 @@ impl Bloomable for Demo {
                 y: -1.0,
                 z: 0.0,
             }) * cgmath::Matrix4::from_nonuniform_scale(
-                width as f32 * scale / 2.0,
+                MAZE_WIDTH as f32 * MAZE_SCALE / 2.0,
                 1.0,
-                height as f32 * scale / 2.0,
+                MAZE_HEIGHT as f32 * MAZE_SCALE / 2.0,
             ),
         );
 
@@ -217,14 +221,14 @@ impl Bloomable for Demo {
         // let mirror_scale = cgmath::Matrix4::from_nonuniform_scale(scale as f32, scale as f32, 0.1);
 
         // Loop through every tile of the maze
-        for maze_y in 0..height {
-            for maze_x in 0..width {
+        for maze_y in 0..MAZE_HEIGHT {
+            for maze_x in 0..MAZE_WIDTH {
                 let coords = maze_generator::prelude::Coordinates::new(maze_x, maze_y);
                 let tile = maze.get_field(&coords).unwrap();
                 // For each cardinal direction, add a wall if necessary
                 // 0, 0 in maze coordinates maps to -(width/2-0.5) * scale), -(height/2-0.5) * scale)
-                let x = (maze_x as f32 - (width as f32 / 2.0 - 0.5)) * scale;
-                let z = (maze_y as f32 - (height as f32 / 2.0 - 0.5)) * scale;
+                let x = (maze_x as f32 - (MAZE_WIDTH as f32 / 2.0 - 0.5)) * MAZE_SCALE;
+                let z = (maze_y as f32 - (MAZE_HEIGHT as f32 / 2.0 - 0.5)) * MAZE_SCALE;
 
                 let id = if rand::random_bool(0.3) {
                     blank_mirror_id
@@ -238,8 +242,8 @@ impl Bloomable for Demo {
                         Matrix4::from_translation(cgmath::Vector3 {
                             x: x,
                             y: 0.0,
-                            z: z - scale / 2.0,
-                        }) * cgmath::Matrix4::from_nonuniform_scale(scale, scale, 0.1),
+                            z: z - MAZE_SCALE / 2.0,
+                        }) * cgmath::Matrix4::from_nonuniform_scale(MAZE_SCALE, MAZE_SCALE, 0.1),
                     );
                 }
                 if !tile.has_passage(&south) {
@@ -248,28 +252,28 @@ impl Bloomable for Demo {
                         Matrix4::from_translation(cgmath::Vector3 {
                             x: x,
                             y: 0.0,
-                            z: z + scale / 2.0,
-                        }) * cgmath::Matrix4::from_nonuniform_scale(scale, scale, 0.1),
+                            z: z + MAZE_SCALE / 2.0,
+                        }) * cgmath::Matrix4::from_nonuniform_scale(MAZE_SCALE, MAZE_SCALE, 0.1),
                     );
                 }
                 if !tile.has_passage(&east) {
                     let _ = scene.add_instance(
                         id,
                         Matrix4::from_translation(cgmath::Vector3 {
-                            x: x + scale / 2.0,
+                            x: x + MAZE_SCALE / 2.0,
                             y: 0.0,
                             z: z,
-                        }) * cgmath::Matrix4::from_nonuniform_scale(0.1, scale, scale),
+                        }) * cgmath::Matrix4::from_nonuniform_scale(0.1, MAZE_SCALE, MAZE_SCALE),
                     );
                 }
                 if !tile.has_passage(&west) {
                     let _ = scene.add_instance(
                         id,
                         Matrix4::from_translation(cgmath::Vector3 {
-                            x: x - scale / 2.0,
+                            x: x - MAZE_SCALE / 2.0,
                             y: 0.0,
                             z: z,
-                        }) * cgmath::Matrix4::from_nonuniform_scale(0.1, scale, scale),
+                        }) * cgmath::Matrix4::from_nonuniform_scale(0.1, MAZE_SCALE, MAZE_SCALE),
                     );
                 }
             }
@@ -306,9 +310,9 @@ impl Bloomable for Demo {
         let _ = scene.add_instance(
             sphere_id,
             Matrix4::from_translation(cgmath::Vector3 {
-                x: -1.0,
-                y: 20.0,
-                z: 3.0,
+                x: MAZE_WIDTH as f32 * MAZE_SCALE / 2.0,
+                y: MAZE_WIDTH as f32 * MAZE_SCALE,
+                z: -MAZE_HEIGHT as f32 * MAZE_SCALE / 2.0,
             }),
         );
 
