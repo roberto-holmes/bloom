@@ -16,6 +16,7 @@ mod viewport;
 mod vulkan;
 
 use std::{
+    io::Write,
     sync::{mpsc, Arc, RwLock},
     thread::{self, JoinHandle},
     time::{Duration, SystemTime},
@@ -24,8 +25,10 @@ use std::{
 use anyhow::Result;
 use api::{BloomAPI, Bloomable};
 use ash::{vk, Entry};
+use colored::Colorize;
 use core::*;
 use debug::ValidationInfo;
+use log::LevelFilter;
 use structures::SurfaceStuff;
 use uniforms::UniformBufferObject;
 use vulkan::Destructor;
@@ -66,7 +69,36 @@ const VALIDATION: ValidationInfo = ValidationInfo {
 };
 
 pub fn run<T: Bloomable + Sync + Send + 'static>(user_app: T) {
-    env_logger::init();
+    env_logger::Builder::new()
+        .format(|buf, record| {
+            let level = match record.level() {
+                log::Level::Error => "Error".red().bold(),
+                log::Level::Warn => "Warn ".yellow(),
+                log::Level::Info => "Info ".green(),
+                log::Level::Debug => "Debug".magenta(),
+                log::Level::Trace => "Trace".cyan(),
+            };
+            let file_name = record.file().unwrap_or("unknown").to_string();
+            let index_file_name_start = *file_name.rfind("src").get_or_insert(0) + 4;
+            writeln!(
+                buf,
+                "{} {} {}::{}:{}>\t{}",
+                chrono::Local::now().format("%H:%M:%S%.3f"),
+                level,
+                std::thread::current()
+                    .name()
+                    .unwrap_or(format!("{:?}", std::thread::current().id()).as_str())
+                    .black(),
+                file_name
+                    .get(index_file_name_start..)
+                    .get_or_insert(file_name.as_str()),
+                record.line().unwrap_or(0).to_string().yellow(),
+                record.args()
+            )
+        })
+        .filter(None, LevelFilter::Debug)
+        // .filter(Some("logger_example"), LevelFilter::Debug)
+        .init();
     // log::error!("Testing Error");
     // log::warn!("Testing Warn");
     // log::info!("Testing Info");
@@ -260,7 +292,6 @@ struct VulkanApp<T: Bloomable + Sync + Send + 'static> {
 
     physical_device: vk::PhysicalDevice,
     debug_messenger: Option<debug::DebugUtils>,
-    // surface_stuff: SurfaceStuff,
     allocator: Arc<vk_mem::Allocator>,
     device: vulkan::Device, // Logical Device
     instance: vulkan::Instance,
@@ -416,7 +447,7 @@ impl<T: Bloomable + Sync + Send + 'static> VulkanApp<T> {
 
         let physics_thread =
             match thread::Builder::new()
-                .name("Physics".to_string())
+                .name("Phys".to_string())
                 .spawn(move || {
                     physics::thread(
                         Duration::from_millis(10),
@@ -439,7 +470,7 @@ impl<T: Bloomable + Sync + Send + 'static> VulkanApp<T> {
 
         let transfer_thread =
             match thread::Builder::new()
-                .name("Transfer".to_string())
+                .name("Sync".to_string())
                 .spawn(move || {
                     transfer::thread(
                         transfer_device,
@@ -468,7 +499,7 @@ impl<T: Bloomable + Sync + Send + 'static> VulkanApp<T> {
 
         let viewport_thread =
             match thread::Builder::new()
-                .name("Viewport".to_string())
+                .name("View".to_string())
                 .spawn(move || {
                     viewport::thread(
                         viewport_device,
@@ -497,7 +528,7 @@ impl<T: Bloomable + Sync + Send + 'static> VulkanApp<T> {
 
         let uniforms_thread =
             match thread::Builder::new()
-                .name("Uniforms".to_string())
+                .name("Buff".to_string())
                 .spawn(move || {
                     uniforms::thread(
                         update_uniforms_receiver,

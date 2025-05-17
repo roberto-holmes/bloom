@@ -14,6 +14,8 @@ ash = { path = "./ash/ash" }
 ash-window = { path = "./ash/ash-window" }
 bytemuck = { version = "1.21", features = ["derive"] }
 cgmath = "0.18.0"
+chrono = "0.4.41"
+colored = "3.0.0"
 env_logger = "0.11.6"
 gltf = "1.4.1"
 image = "0.25.5"
