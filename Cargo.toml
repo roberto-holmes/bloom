@@ -3,10 +3,6 @@ name = "bloom"
 version = "0.1.0"
 edition = "2021"
 
-[[bin]]
-name = "demo"
-path = "src/main.rs"
-
 [dependencies]
 anyhow = "1.0.95"
 approx = "0.5.1"

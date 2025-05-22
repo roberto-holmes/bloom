@@ -18,8 +18,8 @@ jobs:
         with:
           submodules: recursive
       - name: Build Debug
-        run: cargo build --verbose
+        run: cargo build --verbose --example maze
       - name: Build Release
-        run: cargo build -r --verbose
+        run: cargo build -r --verbose --example maze
       - name: Run tests
         run: cargo test --verbose
