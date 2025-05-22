@@ -17,7 +17,7 @@ use crate::primitives::{
 use crate::uniforms::{self, UniformBufferObject};
 use crate::vec::Vec3;
 use crate::vulkan::Destructor;
-use crate::{api, core, primitives, structures, tools, transfer, vulkan, MAX_FRAMES_IN_FLIGHT};
+use crate::{api, core, primitives, structures, sync, tools, vulkan, MAX_FRAMES_IN_FLIGHT};
 
 const RESERVED_SIZE: usize = 100;
 
@@ -50,7 +50,7 @@ pub fn thread(
 
     should_threads_die: Arc<RwLock<bool>>,
     transfer_semaphore: vk::Semaphore,
-    transfer_sender: mpsc::Sender<transfer::ResizedSource>,
+    transfer_sender: mpsc::Sender<sync::ResizedSource>,
     transfer_commands: mpsc::Receiver<TransferCommand>,
     mut resize: single_value_channel::Receiver<PhysicalSize<u32>>,
     notify_complete_frame: Arc<RwLock<Update>>,
@@ -148,7 +148,7 @@ pub fn thread(
                 size.width,
                 size.height
             );
-            match transfer_sender.send(transfer::ResizedSource::Ray((*size, new_images))) {
+            match transfer_sender.send(sync::ResizedSource::Ray((*size, new_images))) {
                 Err(e) => log::error!("Failed to update transfer with new images: {e}"),
                 Ok(()) => {}
             };
@@ -208,7 +208,7 @@ pub fn thread(
                     }
                     Ok(v) => v,
                 };
-                match transfer_sender.send(transfer::ResizedSource::Ray((*size, new_images))) {
+                match transfer_sender.send(sync::ResizedSource::Ray((*size, new_images))) {
                     Err(e) => log::error!("Failed to update transfer with new images: {e}"),
                     Ok(()) => {}
                 };

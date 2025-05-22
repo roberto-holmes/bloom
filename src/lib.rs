@@ -8,8 +8,8 @@ pub mod primitives;
 pub mod quaternion;
 mod ray;
 mod structures;
+mod sync;
 mod tools;
-mod transfer;
 mod uniforms;
 pub mod vec;
 mod viewport;
@@ -465,7 +465,7 @@ where
             match thread::Builder::new()
                 .name("Sync".to_string())
                 .spawn(move || {
-                    transfer::thread(
+                    sync::thread(
                         sync_user_app,
                         transfer_device,
                         transfer_instance,

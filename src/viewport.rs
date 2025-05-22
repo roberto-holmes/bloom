@@ -13,8 +13,8 @@ use winit::{dpi::PhysicalSize, window::Window};
 use crate::{
     core,
     structures::{self, SwapChainStuff},
+    sync,
     tools::read_shader_code,
-    transfer,
     uniforms::UniformBufferObject,
     vulkan::{self, Destructor},
     MAX_FRAMES_IN_FLIGHT,
@@ -89,7 +89,7 @@ pub fn thread(
 
     uniform_buffers: [vk::Buffer; 2],
 
-    transfer_sender: mpsc::Sender<transfer::ResizedSource>,
+    transfer_sender: mpsc::Sender<sync::ResizedSource>,
     transfer_semaphore: vk::Semaphore,
     viewport_semaphore: vk::Semaphore,
 
@@ -172,7 +172,7 @@ pub fn thread(
                 size.width,
                 size.height
             );
-            match transfer_sender.send(transfer::ResizedSource::Viewport((*size, new_images))) {
+            match transfer_sender.send(sync::ResizedSource::Viewport((*size, new_images))) {
                 Err(e) => log::error!("Failed to update transfer with new images: {e}"),
                 Ok(()) => {}
             };
