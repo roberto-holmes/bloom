@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Result};
 use ash::vk;
+use hecs::Entity;
 
 use crate::{vec::Vec3, vulkan};
 
@@ -10,16 +11,16 @@ use super::{Addressable, Extrema, ObjectType, Objectionable, PrimitiveAddresses}
 pub struct SphereData {
     pub object_type: u64,
     pub radius: f32,
-    _material: u32,
+    pub material: u32,
     pub is_selected: u32,
 }
 
 impl SphereData {
-    fn new(radius: f32, material: u32, is_selected: bool) -> Self {
+    fn new(radius: f32, is_selected: bool) -> Self {
         Self {
             object_type: ObjectType::Sphere as _,
             radius,
-            _material: material,
+            material: 0,
             is_selected: if is_selected { 1 } else { 0 },
         }
     }
@@ -28,15 +29,17 @@ impl SphereData {
 #[derive(Debug, PartialEq, Clone)]
 pub struct Sphere {
     data: SphereData,
+    material: Entity,
     data_buffer: Option<vulkan::Buffer>,
 }
 
 impl Sphere {
-    pub fn new(radius: f32, material: u32) -> Result<Self> {
-        let data = SphereData::new(radius, material, false);
+    pub fn new(radius: f32, material: Entity) -> Result<Self> {
+        let data = SphereData::new(radius, false);
 
         Ok(Self {
             data,
+            material,
             data_buffer: None,
         })
     }
@@ -51,6 +54,12 @@ impl Extrema for Sphere {
 }
 
 impl Objectionable for Sphere {
+    fn set_materials(&mut self, map: &std::collections::HashMap<hecs::Entity, usize>) {
+        match map.get(&self.material) {
+            Some(&m) => self.data.material = m as u32,
+            None => self.data.material = 0,
+        }
+    }
     fn allocate(
         &mut self,
         allocator: &vk_mem::Allocator,

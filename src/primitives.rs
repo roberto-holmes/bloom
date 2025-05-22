@@ -2,9 +2,12 @@ pub mod lentil;
 pub mod model;
 pub mod sphere;
 
+use std::collections::HashMap;
+
 use anyhow::Result;
 use ash::vk;
 use cgmath::Matrix4;
+use hecs::Entity;
 
 use crate::vec::Vec3;
 
@@ -22,6 +25,7 @@ pub trait Addressable {
 /// Put the parameters required to describe the primitive into buffers that can be accessed by
 /// the GPU with Buffer Device Addresses
 pub(crate) trait Objectionable {
+    fn set_materials(&mut self, map: &HashMap<Entity, usize>);
     fn allocate(
         &mut self,
         allocator: &vk_mem::Allocator,

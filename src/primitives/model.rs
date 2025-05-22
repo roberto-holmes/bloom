@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Result};
 use ash::vk;
+use hecs::Entity;
 
 use crate::{vec::Vec3, vulkan};
 
@@ -33,24 +34,28 @@ impl Vertex {
     }
 }
 
+// TODO: Implement PartialEq manually so we only check actual values
 #[derive(Debug, PartialEq, Clone)]
 pub struct Model {
     pub vertices: Vec<Vertex>,
     pub indices: Vec<u32>,
     pub material_indices: Vec<u32>,
-    pub vertex_buffer: Option<vulkan::Buffer>, // Buffer containing all the vertices that make up the object
-    pub index_buffer: Option<vulkan::Buffer>,  // How to connect up the vertices into triangles
-    pub mat_index_buffer: Option<vulkan::Buffer>, // What material each triangle maps to
-    pub primitive_data: Option<MeshData>,
+    pub material_entities: Vec<Entity>,
+    pub(crate) vertex_buffer: Option<vulkan::Buffer>, // Buffer containing all the vertices that make up the object
+    pub(crate) index_buffer: Option<vulkan::Buffer>, // How to connect up the vertices into triangles
+    pub(crate) mat_index_buffer: Option<vulkan::Buffer>, // What material each triangle maps to
+    pub(crate) primitive_data: Option<MeshData>,
     main_buffer: Option<vulkan::Buffer>,
 }
 
 impl Model {
-    pub fn new(vertices: Vec<Vertex>, indices: Vec<u32>, material_indices: Vec<u32>) -> Self {
+    pub fn new(vertices: Vec<Vertex>, indices: Vec<u32>, material_entities: Vec<Entity>) -> Self {
+        let material_count = indices.len() / 3;
         Self {
             vertices,
             indices,
-            material_indices,
+            material_entities,
+            material_indices: Vec::with_capacity(material_count),
             vertex_buffer: None,
             index_buffer: None,
             mat_index_buffer: None,
@@ -61,7 +66,7 @@ impl Model {
     pub fn new_gltf_primitive(
         primitive: gltf::Primitive,
         buffers: &Vec<gltf::buffer::Data>,
-        material_id: u32,
+        material_entity: Entity,
     ) -> Self {
         let r = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
         let mut indices = Vec::new();
@@ -118,11 +123,14 @@ impl Model {
             vertices.push(Vertex::new(Vec3(*p), Vec3(normals[i])));
         }
 
-        let material_indices = vec![material_id; indices.len() / 3];
+        let material_count = indices.len() / 3;
+        let material_entities = vec![material_entity; material_count];
+        let material_indices = vec![0; material_count];
 
         Self {
             vertices,
             indices,
+            material_entities,
             material_indices,
             vertex_buffer: None,
             index_buffer: None,
@@ -131,7 +139,7 @@ impl Model {
             main_buffer: None,
         }
     }
-    pub fn new_cube(material: u32) -> Result<Self> {
+    pub fn new_cube(material: Entity) -> Result<Self> {
         #[rustfmt::skip]
         let vertices = vec![
             Vertex::new(Vec3([ 0.5,  0.5,  0.5]), Vec3([ 0.0,  1.0,  0.0])),    // Top
@@ -161,18 +169,21 @@ impl Model {
             ];
         #[rustfmt::skip]
         let indices= vec![
-                0,  1,  2,  1,  2,  3, // Top
-                4,  5,  6,  5,  6,  7, // Bottom
-                8,  9, 10,  8, 10, 11, // Right
+            0,  1,  2,  1,  2,  3, // Top
+            4,  5,  6,  5,  6,  7, // Bottom
+            8,  9, 10,  8, 10, 11, // Right
             12, 13, 14, 12, 14, 15, // Left
             16, 17, 18, 16, 18, 19, // Front
             20, 21, 22, 20, 22, 23, // Back
             ];
-        let material_indices = vec![material; 12];
+        let material_count = indices.len() / 3;
+        let material_entities = vec![material; material_count];
+        let material_indices = vec![0; material_count];
 
         Ok(Self {
             vertices,
             indices,
+            material_entities,
             material_indices,
             primitive_data: None,
             main_buffer: None,
@@ -181,7 +192,7 @@ impl Model {
             mat_index_buffer: None,
         })
     }
-    pub fn new_mirror(material: u32) -> Result<Self> {
+    pub fn new_mirror(material: Entity) -> Result<Self> {
         #[rustfmt::skip]
         let vertices = vec![
             Vertex::new(Vec3([ 0.5,  0.5,  0.5]), Vec3([ 0.0,  1.0,  0.0])),    // Top
@@ -211,18 +222,21 @@ impl Model {
             ];
         #[rustfmt::skip]
         let indices= vec![
-                0,  1,  2,  1,  2,  3, // Top
-                4,  5,  6,  5,  6,  7, // Bottom
-                8,  9, 10,  8, 10, 11, // Right
+            0,  1,  2,  1,  2,  3, // Top
+            4,  5,  6,  5,  6,  7, // Bottom
+            8,  9, 10,  8, 10, 11, // Right
             12, 13, 14, 12, 14, 15, // Left
             16, 17, 18, 16, 18, 19, // Front
             20, 21, 22, 20, 22, 23, // Back
             ];
-        let material_indices = vec![material; 12];
+        let material_count = indices.len() / 3;
+        let material_entities = vec![material; material_count];
+        let material_indices = vec![0; material_count];
 
         Ok(Self {
             vertices,
             indices,
+            material_entities,
             material_indices,
             primitive_data: None,
             main_buffer: None,
@@ -231,7 +245,7 @@ impl Model {
             mat_index_buffer: None,
         })
     }
-    pub fn new_plane(material: u32) -> Result<Self> {
+    pub fn new_plane(material: Entity) -> Result<Self> {
         #[rustfmt::skip]
        let vertices= vec![
             Vertex::new(Vec3([ 1.0, 0.0,  1.0]), Vec3([0.0, 1.0, 0.0])),
@@ -243,11 +257,14 @@ impl Model {
        let indices= vec![
              0,  1,  2,  1,  2,  3,
         ];
-        let material_indices = vec![material; 2];
+        let material_count = indices.len() / 3;
+        let material_entities = vec![material; material_count];
+        let material_indices = vec![0; material_count];
 
         Ok(Self {
             vertices,
             indices,
+            material_entities,
             material_indices,
             primitive_data: None,
             main_buffer: None,
@@ -267,6 +284,14 @@ impl Model {
 }
 
 impl Objectionable for Model {
+    fn set_materials(&mut self, map: &std::collections::HashMap<Entity, usize>) {
+        for (i, e) in self.material_entities.iter().enumerate() {
+            match map.get(e) {
+                Some(&m) => self.material_indices[i] = m as u32,
+                None => self.material_indices[i] = 0,
+            }
+        }
+    }
     fn allocate(
         &mut self,
         allocator: &vk_mem::Allocator,

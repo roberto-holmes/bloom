@@ -3,9 +3,15 @@ use std::{
     time::Duration,
 };
 
+use hecs::World;
 use winit::dpi::PhysicalSize;
 
-use crate::{camera::Camera, quaternion::Quaternion, vec::Vec3, vulkan};
+use crate::{
+    api::{self, Bloomable, DOF_SCALE, FOCAL_DISTANCE, VFOV_DEG},
+    quaternion::Quaternion,
+    vec::Vec3,
+    vulkan,
+};
 
 pub enum Event {
     RayTick,
@@ -14,8 +20,45 @@ pub enum Event {
 
 #[derive(Debug, Copy, Clone)]
 #[repr(C)]
+pub struct Camera {
+    pub position: Vec3,
+    pub vfov_rad: f32,
+    pub quaternion: Quaternion,
+    pub focal_distance: f32,
+    pub dof_scale: f32,
+    pub enabled: u32,
+    _pad: [u32; 1], //  Aligned struct to 32 Bytes
+}
+impl Default for Camera {
+    fn default() -> Self {
+        Self {
+            position: Vec3::default(),
+            focal_distance: FOCAL_DISTANCE,
+            quaternion: Quaternion::identity(),
+            vfov_rad: VFOV_DEG.to_radians(),
+            dof_scale: DOF_SCALE,
+            enabled: 0,
+            _pad: [0; 1],
+        }
+    }
+}
+impl Camera {
+    fn update(&mut self, pos: Vec3, quat: Quaternion, cam: &api::Camera) {
+        self.position = pos;
+        self.quaternion = quat;
+        self.focal_distance = cam.focal_distance;
+        self.vfov_rad = cam.vfov_rad;
+        self.dof_scale = cam.dof_scale;
+    }
+    fn enable(&mut self, enable: bool) {
+        self.enabled = if enable { 1 } else { 0 };
+    }
+}
+
+#[derive(Debug, Copy, Clone)]
+#[repr(C)]
 pub struct UniformBufferObject {
-    camera: Camera,
+    pub camera: Camera,
     ray_frame_num: u32,
     width: u32,
     height: u32,
@@ -36,34 +79,20 @@ impl UniformBufferObject {
         // log::trace!("Ray frame num is now {}", self.ray_frame_num);
         self.ray_frame_num += 1;
     }
-    pub fn update_camera_position(&mut self, position: Vec3) -> bool {
-        // Return true if the value has changed
-        if self.camera.position != position {
-            self.camera.position = position;
-            return true;
-        }
-        return false;
-    }
-    pub fn update_camera_quaternion(&mut self, quaternion: Quaternion) -> bool {
-        // Return true if the value has changed
-        if self.camera.quaternion != quaternion {
-            self.camera.quaternion = quaternion;
-            return true;
-        }
-        return false;
-    }
     pub fn refresh_random_number(&mut self) {
         self.random_num = rand::random();
     }
 }
 
-pub fn thread(
+pub fn thread<T: Bloomable>(
+    user_app: T,
+
     channel: mpsc::Receiver<Event>,
     latest_ray_frame_index: Arc<RwLock<usize>>,
     latest_viewport_frame_index: Arc<RwLock<usize>>,
     should_threads_die: Arc<RwLock<bool>>,
-    camera_pos_in: Arc<RwLock<Vec3>>,
-    camera_quat_in: Arc<RwLock<Quaternion>>,
+    mut event_rx: bus::BusReader<api::Event>,
+    world: Arc<RwLock<World>>,
 
     mut ray_ubo_buffer: [vulkan::Buffer; 2],
     mut viewport_ubo_buffer: [vulkan::Buffer; 2],
@@ -82,32 +111,38 @@ pub fn thread(
                 break;
             }
         }
-        match camera_pos_in.read() {
-            Ok(v) => {
-                let _ = ubo.update_camera_position(*v);
-            }
-            Err(e) => {
-                log::error!("Uniform's camera pos arc is poisoned: {e}");
-                break;
-            }
+        match event_rx.recv_timeout(Duration::from_millis(1)) {
+            Ok(api::Event::PostPhysics) => match user_app.get_active_camera() {
+                Some(camera_entity) => {
+                    ubo.camera.enable(true);
+                    let mut w = world.write().unwrap();
+                    let (camera, ori) = match w
+                        .query_one_mut::<(&api::Camera, &mut api::Orientation)>(camera_entity)
+                    {
+                        Ok(v) => v,
+                        Err(e) => {
+                            log::error!("Failed to query camera: {e}");
+                            return;
+                        }
+                    };
+                    ubo.camera.update(ori.pos, ori.quat, camera);
+                }
+                None => {
+                    ubo.camera.enable(false);
+                }
+            },
+            Ok(_) => {}
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
-        match camera_quat_in.read() {
-            Ok(v) => {
-                let _ = ubo.update_camera_quaternion(*v);
-            }
-            Err(e) => {
-                log::error!("Uniform's camera pos arc is poisoned: {e}");
-                break;
-            }
-        }
-        match channel.recv_timeout(Duration::from_millis(1)) {
+        match channel.try_recv() {
             Ok(Event::RayTick) => ubo.tick_ray(),
             Ok(Event::Resize(size)) => {
                 ubo.width = size.width;
                 ubo.height = size.height;
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
+            Err(mpsc::TryRecvError::Empty) => {}
+            Err(mpsc::TryRecvError::Disconnected) => {
                 log::error!("Transfer channel has disconnected");
                 break;
             }
@@ -164,25 +199,5 @@ mod tests {
             ubo.tick_ray();
         }
         assert_eq!(ubo.ray_frame_num, frames);
-        // for _ in frames..u32::MAX {
-        //     ubo.tick_ray();
-        // }
-        // assert_eq!(ubo.ray_frame_num, u32::MAX);
-    }
-
-    #[test]
-    fn update_position() {
-        let mut ubo = UniformBufferObject::new();
-        let pos = Vec3::new(1.2, -123_023.135, 0.0);
-        ubo.update_camera_position(pos);
-        assert_eq!(ubo.camera.position, pos);
-    }
-
-    #[test]
-    fn update_rotation() {
-        let mut ubo = UniformBufferObject::new();
-        let quat = Quaternion::new(1_465_021.212, -0.0, -123_023.135, 0.0);
-        ubo.update_camera_quaternion(quat);
-        assert_eq!(ubo.camera.quaternion, quat);
     }
 }

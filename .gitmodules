@@ -4,3 +4,6 @@
 [submodule "vk-mem-rs"]
 	path = vk-mem-rs
 	url = https://github.com/roberto-holmes/vk-mem-rs.git
+[submodule "hecs"]
+	path = hecs
+	url = https://github.com/roberto-holmes/hecs.git

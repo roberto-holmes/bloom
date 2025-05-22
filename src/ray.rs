@@ -6,6 +6,7 @@ use std::sync::{mpsc, Arc, RwLock};
 use anyhow::{anyhow, Result};
 use ash::vk::AccelerationStructureInstanceKHR;
 use ash::{vk, RawPtr};
+use hecs::{Entity, World};
 use vk_mem;
 use winit::dpi::PhysicalSize;
 
@@ -14,10 +15,9 @@ use crate::primitives::{
     Addressable, ObjectType, Objectionable, Primitive, PrimitiveAddresses, AABB,
 };
 use crate::uniforms::{self, UniformBufferObject};
+use crate::vec::Vec3;
 use crate::vulkan::Destructor;
-use crate::{
-    core, material, physics, primitives, structures, tools, transfer, vulkan, MAX_FRAMES_IN_FLIGHT,
-};
+use crate::{api, core, primitives, structures, tools, transfer, vulkan, MAX_FRAMES_IN_FLIGHT};
 
 const RESERVED_SIZE: usize = 100;
 
@@ -38,6 +38,8 @@ enum TlasProcess {
 }
 
 pub fn thread(
+    world: Arc<RwLock<World>>,
+
     device: ash::Device,
 
     instance: ash::Instance,
@@ -52,8 +54,6 @@ pub fn thread(
     transfer_commands: mpsc::Receiver<TransferCommand>,
     mut resize: single_value_channel::Receiver<PhysicalSize<u32>>,
     notify_complete_frame: Arc<RwLock<Update>>,
-    update_as: mpsc::Receiver<physics::UpdateScene>,
-    add_material: mpsc::Receiver<material::Material>,
     uniform: mpsc::Sender<uniforms::Event>,
     latest_frame_index: Arc<RwLock<usize>>,
 ) {
@@ -90,8 +90,6 @@ pub fn thread(
         allocator,
         queue_family_indices,
         uniform_buffers,
-        update_as,
-        add_material,
         uniform,
     ) {
         Ok(v) => v,
@@ -244,7 +242,7 @@ pub fn thread(
             }
         }
 
-        if let Err(e) = ray.update() {
+        if let Err(e) = ray.update(&world) {
             log::error!("Failed to check for updates: {e}");
             break;
         }
@@ -285,8 +283,6 @@ struct Ray<'a> {
     miss_shader_binding_table: vulkan::Buffer,
     hit_shader_binding_table: vulkan::Buffer,
 
-    update_as: mpsc::Receiver<physics::UpdateScene>,
-    add_material: mpsc::Receiver<material::Material>,
     uniform: mpsc::Sender<uniforms::Event>,
     semaphore: Destructor<vk::Semaphore>,
 
@@ -303,9 +299,10 @@ struct Ray<'a> {
     descriptor_pool: Destructor<vk::DescriptorPool>,
     descriptor_sets: Option<[vk::DescriptorSet; 2]>,
 
-    instance_id_location_map: HashMap<u64, usize>,
+    material_location_map: HashMap<Entity, usize>,
+    instance_location_map: HashMap<Entity, usize>,
     /// Map the IDs of objects to their position in the blass vector and store the object
-    primitive_id_location_map: HashMap<u64, (Primitive, usize)>,
+    primitive_location_map: HashMap<Entity, (ObjectType, usize)>,
     primitive_addresses: Vec<PrimitiveAddresses>,
     materials_buffer: vulkan::Buffer,
     aabbs_buffers: Vec<vulkan::Buffer>,
@@ -338,8 +335,6 @@ impl<'a> Ray<'a> {
         queue_family_indices: structures::QueueFamilyIndices,
         uniform_buffers: [vk::Buffer; 2],
 
-        update_as: mpsc::Receiver<physics::UpdateScene>,
-        add_material: mpsc::Receiver<material::Material>,
         uniform: mpsc::Sender<uniforms::Event>,
     ) -> Result<Self> {
         log::trace!("Creating object");
@@ -399,6 +394,10 @@ impl<'a> Ray<'a> {
             device.fp_v1_0().destroy_semaphore,
         );
 
+        let mut materials = Vec::with_capacity(RESERVED_SIZE);
+        // Set a default material for primitives that are missing one or have not been properly set up
+        materials.push(Material::new_basic(Vec3::new(1.0, 0.1, 0.7), 0.));
+
         Ok(Self {
             device,
             instance,
@@ -423,17 +422,16 @@ impl<'a> Ray<'a> {
             uniform_buffers,
             tlas,
             buffer_references,
-            materials: Vec::with_capacity(RESERVED_SIZE),
+            materials,
             aabbs: Vec::with_capacity(RESERVED_SIZE),
             blass: Vec::with_capacity(RESERVED_SIZE),
             blas_instances,
             materials_buffer,
             primitive_addresses: Vec::with_capacity(RESERVED_SIZE),
             aabbs_buffers: Vec::with_capacity(RESERVED_SIZE),
-            instance_id_location_map: HashMap::with_capacity(RESERVED_SIZE),
-            primitive_id_location_map: HashMap::with_capacity(RESERVED_SIZE),
-            update_as,
-            add_material,
+            instance_location_map: HashMap::with_capacity(RESERVED_SIZE),
+            primitive_location_map: HashMap::with_capacity(RESERVED_SIZE),
+            material_location_map: HashMap::with_capacity(RESERVED_SIZE),
             uniform,
             instances_buffer,
         })
@@ -573,179 +571,170 @@ impl<'a> Ray<'a> {
         log::trace!("Resize complete: have commands {:?}", self.commands);
         Ok(raw_images)
     }
-    pub fn update(&mut self) -> Result<()> {
-        let mut need_new_references = false;
-        loop {
-            match self.add_material.try_recv() {
-                Ok(m) => {
-                    self.materials.push(m);
-                    if self.materials_buffer.check_available_space::<Material>(1) {
-                        self.materials_buffer.append_staged(
-                            &self.device,
-                            self.command_pool.get(),
-                            self.queue,
-                            &self.allocator,
-                            &m,
-                            1,
-                        )?
-                    } else {
-                        log::trace!("Materials buffer is full, creating a new, bigger one");
-                        // Create a new buffer with the old data
-                        self.materials_buffer = vulkan::Buffer::new_populated_staged(
-                            &self.device,
-                            self.command_pool.get(),
-                            self.queue,
-                            &self.allocator,
-                            vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
-                                | vk::BufferUsageFlags::STORAGE_BUFFER,
-                            self.materials.as_ptr(),
-                            self.materials.len(),
-                            self.materials.len() + RESERVED_SIZE,
-                        )?;
-                        // Update reference that shader sees
-                        need_new_references = true;
-                    }
+
+    fn add_primitive(&mut self, entity: Entity, primitive: &mut Primitive) -> Result<bool> {
+        let mut primitives_changed = false;
+        match primitive {
+            Primitive::Model(ref mut o) if !self.primitive_location_map.contains_key(&entity) => {
+                log::info!("Adding model {:?}", entity);
+                // TODO: Find the index of each material in the material vector
+                o.set_materials(&self.material_location_map);
+                o.allocate(
+                    &self.allocator,
+                    &self.device,
+                    self.command_pool.get(),
+                    self.queue,
+                )?;
+                self.primitive_addresses
+                    .push(o.get_addresses(&self.device)?);
+                self.blass.push(create_bottom_level_acceleration_structure(
+                    &self.device,
+                    &self.allocator,
+                    &self.as_device,
+                    self.command_pool.get(),
+                    self.queue,
+                    vk::GeometryTypeKHR::TRIANGLES,
+                    Some(&o),
+                    None,
+                    None,
+                )?);
+                if self
+                    .primitive_location_map
+                    .insert(entity, (ObjectType::Triangle, self.blass.len() - 1))
+                    != None
+                {
+                    log::warn!("Failed to add model to primitive map");
                 }
-                Err(mpsc::TryRecvError::Empty) => {
-                    // Nothing to wait for, we can go on as planned
-                    break;
-                }
-                Err(mpsc::TryRecvError::Disconnected) => {
-                    return Err(anyhow!(
-                        "Failed to receive an acceleration structure update"
-                    ));
-                }
+                primitives_changed = true;
+            }
+            Primitive::Lentil(ref mut o) if !self.primitive_location_map.contains_key(&entity) => {
+                log::info!("Adding lentil {:?}: {:?}", entity, o);
+                o.set_materials(&self.material_location_map);
+                o.allocate(
+                    &self.allocator,
+                    &self.device,
+                    self.command_pool.get(),
+                    self.queue,
+                )?;
+                self.primitive_location_map
+                    .insert(entity, (ObjectType::Lentil, self.blass.len()));
+                self.add_aabb(AABB::new(o), o.get_addresses(&self.device)?)?;
+                primitives_changed = true;
+            }
+            Primitive::Sphere(ref mut o) if !self.primitive_location_map.contains_key(&entity) => {
+                log::info!("Adding sphere {:?}: {:?}", entity, o);
+                o.set_materials(&self.material_location_map);
+                o.allocate(
+                    &self.allocator,
+                    &self.device,
+                    self.command_pool.get(),
+                    self.queue,
+                )?;
+                self.primitive_location_map
+                    .insert(entity, (ObjectType::Sphere, self.blass.len()));
+                self.add_aabb(AABB::new(o), o.get_addresses(&self.device)?)?;
+                primitives_changed = true;
+            }
+            _ => {
+                // Primitive is already saved
+                // TODO: Update primitive if it has changed (Hash the state somehow?)
             }
         }
+        Ok(primitives_changed)
+    }
 
+    pub fn update(&mut self, world: &Arc<RwLock<World>>) -> Result<()> {
+        let mut need_new_references = false;
         let mut primitives_changed = false;
         let mut need_rebuild: Option<TlasProcess> = None;
 
-        loop {
-            match self.update_as.try_recv() {
-                Ok(physics::UpdateScene::Add(id, primitives::Primitive::Model(mut o))) => {
-                    log::trace!("{} - Adding a model", line!());
-                    o.allocate(
-                        &self.allocator,
-                        &self.device,
-                        self.command_pool.get(),
-                        self.queue,
-                    )?;
-                    self.primitive_addresses
-                        .push(o.get_addresses(&self.device)?);
-                    self.blass.push(create_bottom_level_acceleration_structure(
-                        &self.device,
-                        &self.allocator,
-                        &self.as_device,
-                        self.command_pool.get(),
-                        self.queue,
-                        vk::GeometryTypeKHR::TRIANGLES,
-                        Some(&o),
-                        None,
-                        None,
-                    )?);
-                    if self
-                        .primitive_id_location_map
-                        .insert(id, (primitives::Primitive::Model(o), self.blass.len() - 1))
-                        != None
-                    {
-                        log::warn!("Failed to add model to primitive map");
+        {
+            let mut w = world.write().unwrap();
+            // TODO: Use some sort of `new` component to only add primitives/materials that have changed
+            for (entity, material) in w.query_mut::<&Material>() {
+                if self.material_location_map.contains_key(&entity) {
+                    continue;
+                }
+                // If the material is new, remake the buffer with all the materials
+                self.materials.push(*material);
+                self.material_location_map
+                    .insert(entity, self.materials.len() - 1);
+                // Create a new buffer with the old data
+                self.materials_buffer = vulkan::Buffer::new_populated_staged(
+                    &self.device,
+                    self.command_pool.get(),
+                    self.queue,
+                    &self.allocator,
+                    vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
+                        | vk::BufferUsageFlags::STORAGE_BUFFER,
+                    self.materials.as_ptr(),
+                    self.materials.len(),
+                    self.materials.len(),
+                )?;
+                // Update reference that shader sees
+                need_new_references = true;
+                // TODO: Remove materials that no longer exist
+            }
+
+            let mut primitives = Vec::with_capacity(RESERVED_SIZE);
+            for (entity, primitive) in w.query::<&mut Primitive>().iter() {
+                // log::debug!("Initialising primitive {:?}: {:?}", entity, primitive);
+                primitives.push(entity);
+                if self.add_primitive(entity, primitive)? {
+                    primitives_changed = true;
+                }
+            }
+            // Look for primitives that we have instantiated but are no longer in the world.
+            let mut orphaned_primitives = primitives.clone();
+            // Reverse loop to avoid copies as we remove items
+            for (i, p) in primitives.iter().enumerate().rev() {
+                if self.primitive_location_map.contains_key(p) {
+                    orphaned_primitives.remove(i);
+                }
+            }
+
+            // TODO: Do something with `orphaned_primitives` (Remove from primitive addresses and blass)
+
+            for (entity, (instance, ori)) in w.query_mut::<(&api::Instance, &api::Orientation)>() {
+                let transform = ori.transformation * instance.base_transform;
+                match self.instance_location_map.get(&entity) {
+                    None => {
+                        // We need to create a new BLAS
+                        log::trace!("Adding an instance: {:?}", instance);
+                        // TODO: How are we keeping track of instance_id?
+                        let (primitive_type, location_in_blas) =
+                            match self.primitive_location_map.get(&instance.primitive) {
+                                Some(v) => v,
+                                None => {
+                                    return Err(anyhow!(
+                                        "Failed to find primitive {:?} in the blas",
+                                        instance.primitive
+                                    ))
+                                }
+                            };
+
+                        self.instance_location_map
+                            .insert(entity, self.blas_instances.len());
+                        // Create a Bottom Level Acceleration structure for each instance
+                        self.blas_instances.push(create_blas_instance(
+                            &self.as_device,
+                            &mut self.blass,
+                            *location_in_blas,
+                            transform,
+                            *primitive_type,
+                        )?);
+                        need_rebuild = Some(TlasProcess::Build);
                     }
-                    primitives_changed = true;
-                }
-                Ok(physics::UpdateScene::Add(id, primitives::Primitive::Lentil(mut o))) => {
-                    log::trace!("{} - Adding a lentil", line!());
-                    o.allocate(
-                        &self.allocator,
-                        &self.device,
-                        self.command_pool.get(),
-                        self.queue,
-                    )?;
-                    self.primitive_id_location_map
-                        .insert(id, (primitives::Primitive::Lentil(o), self.blass.len()));
-                    self.add_aabb(id)?;
-                    primitives_changed = true;
-                }
-                Ok(physics::UpdateScene::Add(id, primitives::Primitive::Sphere(mut o))) => {
-                    log::trace!("{} - Adding a sphere", line!());
-                    o.allocate(
-                        &self.allocator,
-                        &self.device,
-                        self.command_pool.get(),
-                        self.queue,
-                    )?;
-                    self.primitive_id_location_map
-                        .insert(id, (primitives::Primitive::Sphere(o), self.blass.len()));
-                    self.add_aabb(id)?;
-                    primitives_changed = true;
-                }
-                Ok(physics::UpdateScene::Remove(_id)) => {
-                    log::warn!("TODO: Implement removing objects");
-                    primitives_changed = true;
-                }
-                Ok(physics::UpdateScene::AddInstance(
-                    instance_id,
-                    primitive_id,
-                    transformation,
-                )) => {
-                    log::trace!("{} - Adding an instance", line!());
-                    // TODO: How are we keeping track of instance_id?
-                    let (primitive, location_in_blas) =
-                        match self.primitive_id_location_map.get(&primitive_id) {
-                            Some(v) => v,
-                            None => {
-                                return Err(anyhow!(
-                                    "Failed to find primitive {} in the blas",
-                                    primitive_id
-                                ))
-                            }
-                        };
-                    let primitive_type = match primitive {
-                        &Primitive::Model(_) => ObjectType::Triangle,
-                        &Primitive::Sphere(_) => ObjectType::Sphere,
-                        &Primitive::Lentil(_) => ObjectType::Lentil,
-                    };
-                    self.instance_id_location_map
-                        .insert(instance_id, self.blas_instances.len());
-                    // Create a Bottom Level Acceleration structure for each instance
-                    self.blas_instances.push(create_blas_instance(
-                        &self.as_device,
-                        &mut self.blass,
-                        *location_in_blas,
-                        transformation,
-                        primitive_type,
-                    )?);
-                    need_rebuild = Some(TlasProcess::Build);
-                }
-                Ok(physics::UpdateScene::RemoveInstance(_instance_id)) => {
-                    log::warn!("TODO: Implement removing instances");
-                    need_rebuild = Some(TlasProcess::Build);
-                }
-                Ok(physics::UpdateScene::MoveInstance(instance_id, transform)) => {
-                    let instance_index = match self.instance_id_location_map.get(&instance_id) {
-                        None => {
-                            log::warn!("Failed to find instance in active BLAS instances");
-                            continue;
-                        }
-                        Some(v) => *v,
-                    };
-                    need_rebuild = Some(TlasProcess::Update);
-                    #[rustfmt::skip]
+                    Some(&instance_index) => {
+                        need_rebuild = Some(TlasProcess::Update);
+                        #[rustfmt::skip]
                     let transform_matrix = vk::TransformMatrixKHR {matrix:[
                         transform.x[0], transform.y[0], transform.z[0], transform.w[0],
                         transform.x[1], transform.y[1], transform.z[1], transform.w[1],
                         transform.x[2], transform.y[2], transform.z[2], transform.w[2]],
                     };
-                    self.blas_instances[instance_index].transform = transform_matrix;
-                }
-                Err(mpsc::TryRecvError::Empty) => {
-                    // Nothing to wait for, we can go on as planned
-                    break;
-                }
-                Err(mpsc::TryRecvError::Disconnected) => {
-                    return Err(anyhow!(
-                        "Failed to receive an acceleration structure update"
-                    ));
+                        self.blas_instances[instance_index].transform = transform_matrix;
+                    }
                 }
             }
         }
@@ -1016,11 +1005,9 @@ impl<'a> Ray<'a> {
         Ok(())
     }
 
-    fn add_aabb(&mut self, id: u64) -> Result<()> {
-        let obj = &self.primitive_id_location_map.get(&id).unwrap().0;
-        self.aabbs.push(primitives::AABB::new(obj));
-        self.primitive_addresses
-            .push(obj.get_addresses(&self.device)?);
+    fn add_aabb(&mut self, aabb: AABB, addresses: PrimitiveAddresses) -> Result<()> {
+        self.aabbs.push(aabb);
+        self.primitive_addresses.push(addresses);
         self.aabbs_buffers
             .push(vulkan::Buffer::new_populated_staged(
                 &self.device,

@@ -121,6 +121,15 @@ impl Quaternion {
             *i /= magnitude
         }
     }
+    pub fn normalised(&self) -> Self {
+        let magnitude = self.magnitude();
+        Self::new(
+            self.w() / magnitude,
+            self.x() / magnitude,
+            self.y() / magnitude,
+            self.z() / magnitude,
+        )
+    }
     pub fn apply(&self, v: Vec3) -> Vec3 {
         // https://gamedev.stackexchange.com/questions/28395/rotating-vector3-by-a-quaternion
         let quat_v = self.vec();
@@ -143,6 +152,25 @@ impl Quaternion {
         let half = rad / 2.0;
         *self *= Self::new(half.cos(), 0.0, 0.0, half.sin());
         self.normalise();
+    }
+    pub fn to_axis_angle_rad(&self) -> (Vec3, f32) {
+        let q = if self.w() > 1.0 {
+            self.normalised() // if w>1 acos and sqrt will produce errors, this cant happen if quaternion is normalised
+        } else {
+            *self
+        };
+        let angle = 2.0 * q.w().acos();
+        let s = (1.0 - q.w() * q.w()).sqrt(); // assuming quaternion normalised then w is less than 1, so term always positive.
+        let v = if s < 0.001 {
+            // test to avoid divide by zero, s is always positive due to sqrt
+            // if s close to zero then direction of axis not important
+            // if it is important that axis is normalised then replace with x=1; y=z=0;
+            q.vec()
+        } else {
+            // normalise axis
+            q.vec() / s
+        };
+        (v, angle)
     }
 }
 

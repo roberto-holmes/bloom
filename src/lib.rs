@@ -1,5 +1,5 @@
 pub mod api;
-pub mod camera;
+// pub mod camera;
 mod core;
 mod debug;
 pub mod material;
@@ -19,15 +19,17 @@ use std::{
     io::Write,
     sync::{mpsc, Arc, RwLock},
     thread::{self, JoinHandle},
-    time::{Duration, SystemTime},
+    time::{Duration, Instant, SystemTime},
 };
 
 use anyhow::Result;
-use api::{BloomAPI, Bloomable};
+use api::Bloomable;
 use ash::{vk, Entry};
+use bus::Bus;
 use colored::Colorize;
 use core::*;
 use debug::ValidationInfo;
+use hecs::World;
 use log::LevelFilter;
 use structures::SurfaceStuff;
 use uniforms::UniformBufferObject;
@@ -68,14 +70,14 @@ const VALIDATION: ValidationInfo = ValidationInfo {
     required_validation_layers: ["", ""],
 };
 
-pub fn run<T: Bloomable + Sync + Send + 'static>(user_app: T) {
+pub fn run<T: Bloomable + Clone + Sync + Send + 'static>(user_app: T) {
     env_logger::Builder::new()
         .format(|buf, record| {
             let level = match record.level() {
-                log::Level::Error => "Error".red().bold(),
+                log::Level::Error => "Error".red(),
                 log::Level::Warn => "Warn ".yellow(),
                 log::Level::Info => "Info ".green(),
-                log::Level::Debug => "Debug".magenta(),
+                log::Level::Debug => "Debug".black(),
                 log::Level::Trace => "Trace".cyan(),
             };
             let file_name = record.file().unwrap_or("unknown").to_string();
@@ -88,7 +90,7 @@ pub fn run<T: Bloomable + Sync + Send + 'static>(user_app: T) {
                 std::thread::current()
                     .name()
                     .unwrap_or(format!("{:?}", std::thread::current().id()).as_str())
-                    .black(),
+                    .purple(),
                 file_name
                     .get(index_file_name_start..)
                     .get_or_insert(file_name.as_str()),
@@ -105,7 +107,6 @@ pub fn run<T: Bloomable + Sync + Send + 'static>(user_app: T) {
     // log::debug!("Testing Debug");
     // log::trace!("Testing Trace");
 
-    let user_app = Arc::new(RwLock::new(user_app));
     let mut app = App::new(user_app);
     let event_loop = match EventLoop::new() {
         Ok(v) => v,
@@ -125,21 +126,23 @@ pub fn run<T: Bloomable + Sync + Send + 'static>(user_app: T) {
     };
 }
 
-struct App<T: Bloomable + Sync + Send + 'static> {
+struct App<T: Bloomable + Clone + Sync + Send + 'static> {
     vulkan: Option<VulkanApp<T>>,
     window: Option<Arc<RwLock<Window>>>,
     last_frame_time: SystemTime,
 
     is_initialised: bool,
+    world: Arc<RwLock<World>>,
 
-    user_app: Arc<RwLock<T>>,
+    user_app: T,
 }
 
-impl<T: Bloomable + Sync + Send + 'static> App<T> {
-    pub fn new(user_app: Arc<RwLock<T>>) -> Self {
+impl<T: Bloomable + Clone + Sync + Send + 'static> App<T> {
+    pub fn new(user_app: T) -> Self {
         Self {
             window: None,
             vulkan: None,
+            world: Arc::new(RwLock::new(World::new())),
             last_frame_time: SystemTime::now(),
 
             is_initialised: false,
@@ -149,7 +152,7 @@ impl<T: Bloomable + Sync + Send + 'static> App<T> {
     }
 }
 
-impl<T: Bloomable + Sync + Send + 'static> ApplicationHandler for App<T> {
+impl<T: Bloomable + Clone + Sync + Send + 'static> ApplicationHandler for App<T> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.is_initialised {
             log::warn!("Window is already initialised but has been resumed");
@@ -166,16 +169,13 @@ impl<T: Bloomable + Sync + Send + 'static> ApplicationHandler for App<T> {
 
         // Give the window to the user incase they want it
         let window = Arc::new(RwLock::new(window));
+        self.user_app.init_window(Arc::clone(&window));
         // Initialise vulkan app
-        let vulkan_user_app = Arc::clone(&self.user_app);
         self.vulkan = Some(
-            VulkanApp::new(window.clone(), vulkan_user_app).expect("Failed to create vulkan app"),
+            VulkanApp::new(self.world.clone(), window.clone(), self.user_app.clone())
+                .expect("Failed to create vulkan app"),
         );
 
-        match self.user_app.write() {
-            Ok(mut app) => app.init_window(Arc::clone(&window)),
-            Err(e) => log::error!("Failed to give user app the window: {e}"),
-        }
         // Store the window for later use
         self.window = Some(window);
         self.is_initialised = true;
@@ -198,10 +198,8 @@ impl<T: Bloomable + Sync + Send + 'static> ApplicationHandler for App<T> {
             }
             WindowEvent::Resized(physical_size) => {
                 // log::info!("Resize event");
-                match self.vulkan.as_mut().unwrap().user_app.write() {
-                    Ok(mut app) => app.resize(physical_size.width, physical_size.height),
-                    Err(e) => log::error!("Failed to give user app the resize event: {e}"),
-                }
+                self.user_app
+                    .resize(physical_size.width, physical_size.height, &self.world);
 
                 self.vulkan.as_mut().unwrap().resize(physical_size);
             }
@@ -243,10 +241,7 @@ impl<T: Bloomable + Sync + Send + 'static> ApplicationHandler for App<T> {
             //     log::info!("Draw button pressed");
             //     self.vulkan.as_mut().unwrap().draw(Duration::default());
             // }
-            e => match self.user_app.write() {
-                Ok(mut app) => app.input(e),
-                Err(e) => log::error!("Failed to give user app the window event: {e}"),
-            },
+            e => self.user_app.input(e, &self.world),
         }
     }
 
@@ -256,16 +251,14 @@ impl<T: Bloomable + Sync + Send + 'static> ApplicationHandler for App<T> {
         device_id: DeviceId,
         event: DeviceEvent,
     ) {
-        match self.user_app.write() {
-            Ok(mut app) => app.raw_input(device_id, event),
-            Err(e) => log::error!("Failed to give user app the device event: {e}"),
-        }
+        self.user_app.raw_input(device_id, event, &self.world);
     }
 }
 
 #[allow(dead_code)]
-struct VulkanApp<T: Bloomable + Sync + Send + 'static> {
-    user_app: Arc<RwLock<T>>,
+struct VulkanApp<T: Bloomable + Clone + Sync + Send + 'static> {
+    world: Arc<RwLock<World>>,
+    user_app: T,
     current_size: PhysicalSize<u32>,
 
     should_ray_die: Arc<RwLock<bool>>,
@@ -279,9 +272,6 @@ struct VulkanApp<T: Bloomable + Sync + Send + 'static> {
 
     should_uniforms_die: Arc<RwLock<bool>>,
     uniforms_thread: Option<JoinHandle<()>>,
-
-    should_physics_die: Arc<RwLock<bool>>,
-    physics_thread: Option<JoinHandle<()>>,
 
     draw_event: mpsc::SyncSender<bool>,
     resize_event: single_value_channel::Updater<PhysicalSize<u32>>,
@@ -298,8 +288,15 @@ struct VulkanApp<T: Bloomable + Sync + Send + 'static> {
     _entry: Entry,
 }
 
-impl<T: Bloomable + Sync + Send + 'static> VulkanApp<T> {
-    pub fn new(window: Arc<RwLock<Window>>, user_app: Arc<RwLock<T>>) -> Result<Self> {
+impl<T> VulkanApp<T>
+where
+    T: Bloomable + Clone + Sync + Send + 'static,
+{
+    pub fn new(
+        world: Arc<RwLock<World>>,
+        window: Arc<RwLock<Window>>,
+        mut user_app: T,
+    ) -> Result<Self> {
         log::debug!("Initialising vulkan application");
         let entry = unsafe { Entry::load()? };
         // Set up Vulkan API
@@ -340,13 +337,11 @@ impl<T: Bloomable + Sync + Send + 'static> VulkanApp<T> {
         let should_viewport_die = Arc::new(RwLock::new(false));
         let should_uniforms_die = Arc::new(RwLock::new(false));
         let should_ray_die = Arc::new(RwLock::new(false));
-        let should_physics_die = Arc::new(RwLock::new(false));
 
         let should_transfer_die_out = Arc::clone(&should_transfer_die);
         let should_viewport_die_out = Arc::clone(&should_viewport_die);
         let should_uniforms_die_out = Arc::clone(&should_uniforms_die);
         let should_ray_die_out = Arc::clone(&should_ray_die);
-        let should_physics_die_out = Arc::clone(&should_physics_die);
 
         let transfer_device = device.get().clone();
         let viewport_device = device.get().clone();
@@ -370,21 +365,7 @@ impl<T: Bloomable + Sync + Send + 'static> VulkanApp<T> {
         let ray_frame_complete_receiver = Arc::new(RwLock::new(ray::Update::default()));
         let ray_frame_complete_sender = ray_frame_complete_receiver.clone();
 
-        let (update_acceleration_structure_sender, update_acceleration_structure_receiver) =
-            mpsc::channel();
-        let (add_material_sender, add_material_receiver) = mpsc::channel();
         let (ray_update_uniforms_sender, update_uniforms_receiver) = mpsc::channel();
-        let (update_scene_sender, update_scene_receiver) = mpsc::channel();
-
-        let cam_pos_user = Arc::new(RwLock::new(vec::Vec3::new(0.1, 0.0, 0.0)));
-        let cam_pos_physics_in = cam_pos_user.clone();
-        let cam_pos_physics_out = Arc::new(RwLock::new(vec::Vec3::zero()));
-        let cam_pos_uniforms = cam_pos_physics_out.clone();
-
-        let cam_angles_user = Arc::new(RwLock::new((0.0, 0.0, 0.0)));
-        let cam_angles_physics_in = cam_angles_user.clone();
-        let cam_quat_physics_out = Arc::new(RwLock::new(quaternion::Quaternion::identity()));
-        let cam_quat_uniforms = cam_quat_physics_out.clone();
 
         let (resize_receiver, resize_sender) =
             single_value_channel::channel_starting_with(PhysicalSize {
@@ -431,54 +412,71 @@ impl<T: Bloomable + Sync + Send + 'static> VulkanApp<T> {
         let ray_viewport_semaphore = viewport_semaphore.get().clone();
         let viewport_viewport_semaphore = viewport_semaphore.get().clone();
 
-        let api = BloomAPI::new(
-            add_material_sender,
-            update_scene_sender,
-            cam_pos_user,
-            cam_angles_user,
-        );
+        user_app.init(&world)?;
 
-        match user_app.write() {
-            Ok(mut a) => a.init(api)?,
-            Err(e) => log::error!("Failed to call user's init function: {e}"),
-        }
+        let should_systems_die = Arc::new(RwLock::new(false));
+        let system_sync = mpsc::channel();
+        let mut event_broadcaster = Bus::new(10);
 
-        let physics_user_app = Arc::clone(&user_app);
+        let ubo_event_rx = event_broadcaster.add_rx();
 
-        let physics_thread =
-            match thread::Builder::new()
-                .name("Phys".to_string())
-                .spawn(move || {
-                    physics::thread(
-                        Duration::from_millis(10),
-                        should_physics_die_out,
-                        update_scene_receiver,
-                        cam_pos_physics_in,
-                        cam_angles_physics_in,
-                        cam_pos_physics_out,
-                        cam_quat_physics_out,
-                        update_acceleration_structure_sender,
-                        physics_user_app,
-                    );
-                }) {
-                Ok(v) => Some(v),
-                Err(e) => {
-                    log::error!("Failed to create transfer thread: {e}");
-                    None
-                }
-            };
+        let sync_user_app = user_app.clone();
+        let ubo_user_app = user_app.clone();
+
+        let ray_world = world.clone();
+        let ubo_world = world.clone();
+
+        user_app.physics_tick(Duration::ZERO, &world);
+
+        let systems = vec![
+            Self::add_system(
+                user_app.clone(),
+                world.clone(),
+                should_systems_die.clone(),
+                system_sync.0.clone(),
+                api::Event::Physics,
+                "Phys",
+                physics::system,
+                event_broadcaster.add_rx(),
+            ),
+            Self::add_system(
+                user_app.clone(),
+                world.clone(),
+                should_systems_die.clone(),
+                system_sync.0.clone(),
+                api::Event::PrePhysics,
+                "UsrP",
+                T::physics_tick,
+                event_broadcaster.add_rx(),
+            ),
+            Self::add_system(
+                user_app.clone(),
+                world.clone(),
+                should_systems_die.clone(),
+                system_sync.0.clone(),
+                api::Event::GraphicsUpdate,
+                "UsrD",
+                T::display_tick,
+                event_broadcaster.add_rx(),
+            ),
+        ];
 
         let transfer_thread =
             match thread::Builder::new()
                 .name("Sync".to_string())
                 .spawn(move || {
                     transfer::thread(
+                        sync_user_app,
                         transfer_device,
                         transfer_instance,
                         transfer_physical_device,
                         queue_family_indices,
                         transfer_transfer_semaphore,
                         should_transfer_die_out,
+                        should_systems_die,
+                        event_broadcaster,
+                        systems,
+                        system_sync,
                         ray_frame_complete_receiver,
                         draw_receiver,
                         resize_receiver,
@@ -531,12 +529,13 @@ impl<T: Bloomable + Sync + Send + 'static> VulkanApp<T> {
                 .name("Buff".to_string())
                 .spawn(move || {
                     uniforms::thread(
+                        ubo_user_app,
                         update_uniforms_receiver,
                         ray_latest_frame_index_receiver,
                         viewport_latest_frame_index_receiver,
                         should_uniforms_die_out,
-                        cam_pos_uniforms,
-                        cam_quat_uniforms,
+                        ubo_event_rx,
+                        ubo_world,
                         ray_uniform_buffers,
                         viewport_uniform_buffers,
                     );
@@ -550,9 +549,10 @@ impl<T: Bloomable + Sync + Send + 'static> VulkanApp<T> {
 
         // TODO: Choose whether to enable the compute thread or ray_tracing thread depending on HW capabilities
         let ray_thread = match thread::Builder::new()
-            .name("Ray".to_string())
+            .name("Ray ".to_string())
             .spawn(move || {
                 ray::thread(
+                    ray_world,
                     ray_device,
                     ray_instance,
                     ray_physical_device,
@@ -564,8 +564,6 @@ impl<T: Bloomable + Sync + Send + 'static> VulkanApp<T> {
                     ray_transfer_command_receiver,
                     ray_resize_receiver,
                     ray_frame_complete_sender,
-                    update_acceleration_structure_receiver,
-                    add_material_receiver,
                     ray_update_uniforms_sender,
                     ray_latest_frame_index_sender,
                 );
@@ -578,6 +576,7 @@ impl<T: Bloomable + Sync + Send + 'static> VulkanApp<T> {
         };
 
         Ok(Self {
+            world,
             user_app,
             current_size: PhysicalSize {
                 width: 1920,
@@ -600,8 +599,6 @@ impl<T: Bloomable + Sync + Send + 'static> VulkanApp<T> {
             viewport_thread,
             should_uniforms_die,
             uniforms_thread,
-            should_physics_die,
-            physics_thread,
             allocator,
             draw_event: draw_sender,
             resize_event: resize_sender,
@@ -639,9 +636,48 @@ impl<T: Bloomable + Sync + Send + 'static> VulkanApp<T> {
             _ => {}
         }
     }
+
+    pub fn add_system(
+        mut user_app: T,
+        world: Arc<RwLock<World>>,
+        should_die: Arc<RwLock<bool>>,
+        sync_tx: mpsc::Sender<bool>,
+        step: api::Event,
+        thread_name: &str,
+        f: fn(&mut T, Duration, &Arc<RwLock<World>>),
+        mut rx: bus::BusReader<api::Event>,
+    ) -> Option<JoinHandle<()>> {
+        let mut last_time = Instant::now();
+        match std::thread::Builder::new()
+            .name(thread_name.to_string())
+            .spawn(move || loop {
+                match should_die.read() {
+                    Ok(should_die) => {
+                        if *should_die == true {
+                            return;
+                        }
+                    }
+                    Err(_) => return,
+                }
+                match rx.recv_timeout(Duration::from_millis(10)) {
+                    Ok(v) => {
+                        if v == step {
+                            f(&mut user_app, last_time.elapsed(), &world);
+                            last_time = Instant::now();
+                        }
+                    }
+                    Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                }
+                let _ = sync_tx.send(true);
+            }) {
+            Ok(v) => Some(v),
+            Err(_) => None,
+        }
+    }
 }
 
-impl<T: Bloomable + Sync + Send + 'static> Drop for VulkanApp<T> {
+impl<T: Bloomable + Clone + Sync + Send + 'static> Drop for VulkanApp<T> {
     fn drop(&mut self) {
         log::debug!("Cleaning up");
         // Kill threads
@@ -665,14 +701,6 @@ impl<T: Bloomable + Sync + Send + 'static> Drop for VulkanApp<T> {
         match self.should_viewport_die.write() {
             Ok(mut m) => *m = true,
             Err(e) => log::error!("Failed to write to viewport death mutex: {e}"),
-        }
-        match self.should_physics_die.write() {
-            Ok(mut m) => *m = true,
-            Err(e) => log::error!("Failed to write to physics death mutex: {e}"),
-        }
-        if let Some(t) = self.physics_thread.take() {
-            log::debug!("Waiting for physics to finish");
-            t.join().unwrap();
         }
         if let Some(t) = self.viewport_thread.take() {
             log::debug!("Waiting for viewport to finish");

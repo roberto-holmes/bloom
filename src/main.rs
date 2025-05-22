@@ -1,17 +1,20 @@
 use std::collections::HashSet;
 use std::f32;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use anyhow::Result;
+use bloom::api::{Child, Collider, Instance, Orientation};
+use bloom::material::Material;
+use bloom::quaternion::Quaternion;
 use bloom::{
     self,
-    api::{BloomAPI, Bloomable},
-    material,
+    api::{Bloomable, Camera},
     primitives::{model::Model, sphere::Sphere, Primitive},
     vec::Vec3,
 };
-use cgmath::{Matrix4, SquareMatrix};
+use cgmath::Matrix4;
+use hecs::Entity;
 use maze_generator::prelude::Generator;
 use winit::event::DeviceEvent;
 use winit::{
@@ -26,110 +29,98 @@ fn main() {
     bloom::run(demo);
 }
 
+#[derive(Debug, Clone)]
 struct Demo {
-    api: Option<BloomAPI>,
     window: Option<Arc<RwLock<Window>>>,
-    mouse_state: MouseState,
-    keyboard_state: KeyboardState,
+    mouse_state: Arc<RwLock<MouseState>>,
+    keyboard_state: Arc<RwLock<KeyboardState>>,
+    is_mouse_grabbed: Arc<RwLock<bool>>,
+    are_angles_updated: Arc<Mutex<bool>>,
+    pitch_rad: Arc<Mutex<f32>>,
+    yaw_rad: Arc<Mutex<f32>>,
 
-    is_mouse_grabbed: bool,
-    are_angles_updated: bool,
-
-    pitch_rad: f32,
-    yaw_rad: f32,
-
-    goal: u64,
-    goal_pos: Matrix4<f32>,
-    goal_scale: Matrix4<f32>,
+    camera: Arc<RwLock<Option<Entity>>>,
+    player: Arc<RwLock<Option<Entity>>>,
+    goal: Arc<RwLock<Option<Entity>>>,
     goal_yaw_rad: f32,
-    // lentil: u64,
-    // lentil_position: cgmath::Matrix4<f32>,
 }
+
+unsafe impl Send for Demo {}
+unsafe impl Sync for Demo {}
 
 impl Demo {
     fn new() -> Self {
         Self {
-            api: None,
+            // api: None,
             window: None,
-            mouse_state: MouseState::default(),
-            keyboard_state: KeyboardState::default(),
-            is_mouse_grabbed: false,
-            are_angles_updated: false,
+            camera: Arc::new(RwLock::new(None)),
+            mouse_state: Arc::new(RwLock::new(MouseState::default())),
+            keyboard_state: Arc::new(RwLock::new(KeyboardState::default())),
+            is_mouse_grabbed: Arc::new(RwLock::new(false)),
+            are_angles_updated: Arc::new(Mutex::new(false)),
+            pitch_rad: Arc::new(Mutex::new(0.0)),
+            yaw_rad: Arc::new(Mutex::new(0.0)),
 
-            pitch_rad: 0.0,
-            yaw_rad: 0.0,
-
-            goal: 0,
-            goal_pos: Matrix4::<f32>::identity(),
-            goal_scale: Matrix4::<f32>::from_scale(1.0 / 100.0),
+            player: Arc::new(RwLock::new(None)),
+            goal: Arc::new(RwLock::new(None)),
             goal_yaw_rad: 0.0,
-            // lentil: 0,
-            // lentil_position: cgmath::Matrix4::from_translation(cgmath::Vector3 {
-            //     x: 5.0,
-            //     y: 0.0,
-            //     z: 0.0,
-            // }),
         }
     }
-    fn get_api(&mut self) -> &mut BloomAPI {
-        self.api.as_mut().unwrap()
-    }
-    pub fn translate(&mut self, dx: f32, dz: f32, dy: f32) {
-        let delta = Vec3::new(dx, dy, dz);
-        // let quat = Quaternion::from_euler(0.0, 0.0, self.yaw_rad);
-        // self.pos += quat.apply(delta);
-        // self.api.as_ref().unwrap().update_camera_position(self.pos);
-        self.api.as_ref().unwrap().update_camera_position(delta);
-    }
-    pub fn look(&mut self, dx_rad: f32, dy_rad: f32) {
-        self.yaw_rad += dx_rad;
-        self.pitch_rad += dy_rad;
+    pub fn translate(&mut self, dx: f32, dz: f32, dy: f32, world: &Arc<RwLock<hecs::World>>) {
+        let delta: Vec3 = Vec3::new(dx, dy, dz);
 
-        if self.pitch_rad > std::f32::consts::FRAC_PI_2 {
-            self.pitch_rad = std::f32::consts::FRAC_PI_2;
-        } else if self.pitch_rad < -std::f32::consts::FRAC_PI_2 {
-            self.pitch_rad = -std::f32::consts::FRAC_PI_2;
+        let mut w = world.write().unwrap();
+        // Get player orientation
+        let player_ori = w
+            .query_one_mut::<&mut Orientation>(self.player.read().unwrap().unwrap())
+            .unwrap();
+
+        player_ori.pos += player_ori.quat.apply(delta);
+    }
+    pub fn look(&mut self, dx_rad: f32, dy_rad: f32, _world: &Arc<RwLock<hecs::World>>) {
+        let mut yaw_rad = self.yaw_rad.lock().unwrap();
+        let mut pitch_rad = self.pitch_rad.lock().unwrap();
+        // Apply yaw to the player and pitch to the camera
+        *yaw_rad += dx_rad;
+        *pitch_rad += dy_rad;
+
+        if *pitch_rad > std::f32::consts::FRAC_PI_2 {
+            *pitch_rad = std::f32::consts::FRAC_PI_2;
+        } else if *pitch_rad < -std::f32::consts::FRAC_PI_2 {
+            *pitch_rad = -std::f32::consts::FRAC_PI_2;
         }
 
-        if self.yaw_rad > std::f32::consts::PI * 2.0 {
-            self.yaw_rad -= std::f32::consts::PI * 2.0;
-        } else if self.yaw_rad < -std::f32::consts::PI * 2.0 {
-            self.yaw_rad += std::f32::consts::PI * 2.0;
+        if *yaw_rad > std::f32::consts::PI * 2.0 {
+            *yaw_rad -= std::f32::consts::PI * 2.0;
+        } else if *yaw_rad < -std::f32::consts::PI * 2.0 {
+            *yaw_rad += std::f32::consts::PI * 2.0;
         }
-        self.are_angles_updated = true;
+        *self.are_angles_updated.lock().unwrap() = true;
     }
 }
 
 impl Bloomable for Demo {
+    fn get_active_camera(&self) -> Option<Entity> {
+        *self.camera.read().unwrap()
+    }
+    fn get_physics_update_period(&self) -> Duration {
+        Duration::from_millis(2)
+    }
     fn init_window(&mut self, window: Arc<RwLock<Window>>) {
         self.window = Some(window)
     }
-    fn init(&mut self, api_in: BloomAPI) -> Result<()> {
-        self.api = Some(api_in);
-        let scene = self.get_api();
+    fn init(&mut self, world: &Arc<RwLock<hecs::World>>) -> Result<()> {
+        let mut w = world.write().unwrap();
 
-        // let red =
-        //     scene.add_material(material::Material::new_basic(Vec3::new(1.0, 0.0, 0.0), 0.))?;
-        let grey =
-            scene.add_material(material::Material::new_basic(Vec3::new(0.7, 0.7, 0.7), 0.1))?;
-        // let yellow =
-        //     scene.add_material(material::Material::new_basic(Vec3::new(1.0, 0.8, 0.0), 0.))?;
-        // let glass = scene.add_material(material::Material::new_clear(Vec3::new(0.9, 1.0, 1.0)))?;
-        let mirror = scene.add_material(material::Material::new_basic(
-            Vec3::new(1.0, 1.0, 1.0),
-            // 0.5,
-            0.992,
-        ))?;
-        let light = scene.add_material(material::Material::new_emissive(
-            Vec3::new(0.9, 0.3, 0.1),
-            1.0,
-        ))?;
-        let goal_colour = scene.add_material(material::Material::new_emissive(
-            Vec3::new(1.0, 1.0, 1.0),
-            1.0,
-        ))?;
+        // let red = w.spawn((Material::new_basic(Vec3::new(1.0, 0.0, 0.0), 0.),));
+        let grey = w.spawn((Material::new_basic(Vec3::new(0.7, 0.7, 0.7), 0.1),));
+        // let yellow = w.spawn((Material::new_basic(Vec3::new(1.0, 0.8, 0.0), 0.),));
+        // let glass = w.spawn((Material::new_clear(Vec3::new(0.9, 1.0, 1.0)),));
+        let mirror_mat = w.spawn((Material::new_basic(Vec3::new(1.0, 1.0, 1.0), 0.992),));
+        let light = w.spawn((Material::new_emissive(Vec3::new(0.9, 0.3, 0.1), 1.0),));
+        let goal_colour = w.spawn((Material::new_emissive(Vec3::new(1.0, 1.0, 1.0), 1.0),));
 
-        let character_material = scene.add_material(material::Material::new(
+        let character_material = w.spawn((Material::new(
             Vec3::new(1.0, 1.0, 1.0),
             0.0,
             0.0,
@@ -137,55 +128,87 @@ impl Bloomable for Demo {
             1.0,
             0.1,
             Vec3::new(0.1, 1.0, 0.1),
-        ))?;
+        ),));
 
         const MAZE_SCALE: f32 = 5.0;
         const MAZE_WIDTH: i32 = 7;
         const MAZE_HEIGHT: i32 = 7;
 
-        let mut duck = 0;
-        let mut goal = 0;
-        let goal_position = Matrix4::<f32>::from_translation(cgmath::Vector3::new(
-            (MAZE_WIDTH as f32 / 2.0 - 0.5) * MAZE_SCALE,
-            0.0,
-            (MAZE_HEIGHT as f32 / 2.0 - 0.5) * MAZE_SCALE,
+        let (document, buffers, _) = gltf::import("models/Duck.glb").unwrap();
+        // get the first primitive stored in the file
+        let p = document
+            .meshes()
+            .next()
+            .unwrap()
+            .primitives()
+            .next()
+            .unwrap();
+        let duck_model = Model::new_gltf_primitive(p.clone(), &buffers, character_material);
+        let duck_collider = Collider::new(&duck_model, false);
+        let d = w.spawn((Primitive::Model(duck_model),));
+
+        let duck = w.spawn((
+            Instance {
+                primitive: d,
+                base_transform: Matrix4::<f32>::from_translation(cgmath::Vector3::new(
+                    0.0, -1.0, 0.0,
+                )) * Matrix4::from_angle_y(cgmath::Rad(
+                    -0.23 - std::f32::consts::FRAC_PI_2,
+                )) * Matrix4::from_scale(1.0 / 100.0),
+            },
+            Orientation::new(
+                Vec3::new(
+                    -(MAZE_WIDTH as f32 / 2.0 - 0.5) * MAZE_SCALE,
+                    0.0,
+                    -(MAZE_HEIGHT as f32 / 2.0 - 0.5) * MAZE_SCALE,
+                ),
+                Quaternion::identity(),
+            ),
+            duck_collider,
+            true,
+        ));
+        self.player = Arc::new(RwLock::new(Some(duck)));
+
+        let g = w.spawn((Primitive::Model(Model::new_gltf_primitive(
+            p.clone(),
+            &buffers,
+            goal_colour,
+        )),));
+        self.goal = Arc::new(RwLock::new(Some(w.spawn((
+            Instance {
+                primitive: g,
+                base_transform: Matrix4::<f32>::from_scale(1.0 / 100.0),
+            },
+            Orientation::new(
+                Vec3::new(
+                    (MAZE_WIDTH as f32 / 2.0 - 0.5) * MAZE_SCALE,
+                    0.0,
+                    (MAZE_HEIGHT as f32 / 2.0 - 0.5) * MAZE_SCALE,
+                ),
+                Quaternion::identity(),
+            ),
+        )))));
+
+        // Create a camera
+        let camera = w.spawn((
+            Camera::default(),
+            Child {
+                parent: duck,
+                offset_pos: Vec3::new(0.0, 0.5, 0.8),
+                offset_quat: Quaternion::identity(),
+            },
+            Orientation::default(),
         ));
 
-        let (document, buffers, _) = gltf::import("models/Duck.glb").unwrap();
-        for m in document.meshes() {
-            for p in m.primitives() {
-                let m = Model::new_gltf_primitive(p.clone(), &buffers, character_material);
-                let m_id = scene.add_obj(Primitive::Model(m))?;
-                duck = scene.add_instance(
-                    m_id,
-                    Matrix4::<f32>::from_translation(cgmath::Vector3::new(0.0, 0.0, 0.0))
-                        * Matrix4::<f32>::from_scale(1.0 / 100.0),
-                )?;
-                let g = Model::new_gltf_primitive(p, &buffers, goal_colour);
-                let g_id = scene.add_obj(Primitive::Model(g))?;
-                goal = scene.add_instance(
-                    g_id,
-                    goal_position * Matrix4::<f32>::from_scale(1.0 / 100.0),
-                )?;
-            }
-        }
+        self.camera = Arc::new(RwLock::new(Some(camera)));
 
-        scene.assign_camera_to(
-            duck,
-            Vec3::new(0.0, 1.5, 0.8),
-            Matrix4::<f32>::from_translation(cgmath::Vector3::new(0.0, -1.0, 0.0))
-                * Matrix4::from_angle_y(cgmath::Rad(-0.23 - std::f32::consts::FRAC_PI_2))
-                * Matrix4::from_scale(1.0 / 100.0),
-            Vec3::new(
-                -(MAZE_WIDTH as f32 / 2.0 - 0.5) * MAZE_SCALE,
-                0.0,
-                -(MAZE_HEIGHT as f32 / 2.0 - 0.5) * MAZE_SCALE,
-            ),
-        )?;
+        let mirror_model = Model::new_mirror(mirror_mat)?;
+        let mirror_collider = Collider::new(&mirror_model, true);
 
-        let plane_id = scene.add_obj(Primitive::Model(Model::new_plane(grey)?))?;
-        let blank_mirror_id = scene.add_obj(Primitive::Model(Model::new_mirror(grey)?))?;
-        let mirror_id = scene.add_obj(Primitive::Model(Model::new_mirror(mirror)?))?;
+        let plane = w.spawn((Primitive::Model(Model::new_plane(grey)?),));
+        let blank_mirror = w.spawn((Primitive::Model(Model::new_mirror(grey)?),));
+
+        let mirror = w.spawn((Primitive::Model(mirror_model),));
 
         // Create a maze
         // Each maze unit is 10 of our units
@@ -200,22 +223,19 @@ impl Bloomable for Demo {
         let west = maze_generator::prelude::Direction::West;
 
         // Create the floor
-        let _ = scene.add_instance(
-            plane_id,
-            Matrix4::from_translation(cgmath::Vector3 {
-                x: 0.0,
-                y: -1.0,
-                z: 0.0,
-            }) * cgmath::Matrix4::from_nonuniform_scale(
-                MAZE_WIDTH as f32 * MAZE_SCALE / 2.0,
-                1.0,
-                MAZE_HEIGHT as f32 * MAZE_SCALE / 2.0,
-            ),
-        );
+        let _ = w.spawn((
+            Instance {
+                primitive: plane,
+                base_transform: Matrix4::from_nonuniform_scale(
+                    MAZE_WIDTH as f32 * MAZE_SCALE / 2.0,
+                    1.0,
+                    MAZE_HEIGHT as f32 * MAZE_SCALE / 2.0,
+                ),
+            },
+            Orientation::new(Vec3::new(0.0, -1.0, 0.0), Quaternion::identity()),
+        ));
 
-        log::debug!("Creating maze \n{:?}", maze);
-
-        // let mirror_scale = cgmath::Matrix4::from_nonuniform_scale(scale as f32, scale as f32, 0.1);
+        log::debug!("Creating maze:\n{:?}", maze);
 
         // Loop through every tile of the maze
         for maze_y in 0..MAZE_HEIGHT {
@@ -228,155 +248,117 @@ impl Bloomable for Demo {
                 let z = (maze_y as f32 - (MAZE_HEIGHT as f32 / 2.0 - 0.5)) * MAZE_SCALE;
 
                 let id = if rand::random_bool(0.3) {
-                    blank_mirror_id
+                    blank_mirror
                 } else {
-                    mirror_id
+                    mirror
                 };
 
                 if !tile.has_passage(&north) {
-                    let _ = scene.add_instance(
-                        id,
-                        Matrix4::from_translation(cgmath::Vector3 {
-                            x: x,
-                            y: 0.0,
-                            z: z - MAZE_SCALE / 2.0,
-                        }) * cgmath::Matrix4::from_nonuniform_scale(MAZE_SCALE, MAZE_SCALE, 0.1),
-                    );
+                    let _ = w.spawn((
+                        Instance {
+                            primitive: id,
+                            base_transform: Matrix4::from_nonuniform_scale(
+                                MAZE_SCALE, MAZE_SCALE, 0.1,
+                            ),
+                        },
+                        Orientation::new(
+                            Vec3::new(x, 0.0, z - MAZE_SCALE / 2.0),
+                            Quaternion::identity(),
+                        ),
+                        mirror_collider,
+                    ));
                 }
                 if !tile.has_passage(&south) {
-                    let _ = scene.add_instance(
-                        id,
-                        Matrix4::from_translation(cgmath::Vector3 {
-                            x: x,
-                            y: 0.0,
-                            z: z + MAZE_SCALE / 2.0,
-                        }) * cgmath::Matrix4::from_nonuniform_scale(MAZE_SCALE, MAZE_SCALE, 0.1),
-                    );
+                    let _ = w.spawn((
+                        Instance {
+                            primitive: id,
+                            base_transform: Matrix4::from_nonuniform_scale(
+                                MAZE_SCALE, MAZE_SCALE, 0.1,
+                            ),
+                        },
+                        Orientation::new(
+                            Vec3::new(x, 0.0, z + MAZE_SCALE / 2.0),
+                            Quaternion::identity(),
+                        ),
+                        mirror_collider,
+                    ));
                 }
                 if !tile.has_passage(&east) {
-                    let _ = scene.add_instance(
-                        id,
-                        Matrix4::from_translation(cgmath::Vector3 {
-                            x: x + MAZE_SCALE / 2.0,
-                            y: 0.0,
-                            z: z,
-                        }) * cgmath::Matrix4::from_nonuniform_scale(0.1, MAZE_SCALE, MAZE_SCALE),
-                    );
+                    let _ = w.spawn((
+                        Instance {
+                            primitive: id,
+                            base_transform: Matrix4::from_nonuniform_scale(
+                                0.1, MAZE_SCALE, MAZE_SCALE,
+                            ),
+                        },
+                        Orientation::new(
+                            Vec3::new(x + MAZE_SCALE / 2.0, 0.0, z),
+                            Quaternion::identity(),
+                        ),
+                        mirror_collider,
+                    ));
                 }
                 if !tile.has_passage(&west) {
-                    let _ = scene.add_instance(
-                        id,
-                        Matrix4::from_translation(cgmath::Vector3 {
-                            x: x - MAZE_SCALE / 2.0,
-                            y: 0.0,
-                            z: z,
-                        }) * cgmath::Matrix4::from_nonuniform_scale(0.1, MAZE_SCALE, MAZE_SCALE),
-                    );
+                    let _ = w.spawn((
+                        Instance {
+                            primitive: id,
+                            base_transform: Matrix4::from_nonuniform_scale(
+                                0.1, MAZE_SCALE, MAZE_SCALE,
+                            ),
+                        },
+                        Orientation::new(
+                            Vec3::new(x - MAZE_SCALE / 2.0, 0.0, z),
+                            Quaternion::identity(),
+                        ),
+                        mirror_collider,
+                    ));
                 }
             }
         }
 
-        // let _ = scene.add_instance(
-        //     mirror_id,
-        //     Matrix4::from_translation(cgmath::Vector3 {
-        //         x: 0.0,
-        //         y: 0.0,
-        //         z: -7.0,
-        //     }) * cgmath::Matrix4::from_nonuniform_scale(5.0, 5.0, 0.1),
-        // );
-        // let _ = scene.add_instance(
-        //     mirror_id,
-        //     Matrix4::from_translation(cgmath::Vector3 {
-        //         x: -2.5,
-        //         y: 0.0,
-        //         z: -4.5,
-        //     }) * Matrix4::from_angle_y(cgmath::Rad(-std::f32::consts::FRAC_PI_2))
-        //         * cgmath::Matrix4::from_nonuniform_scale(5.0, 5.0, 0.1),
-        // );
-        // let _ = scene.add_instance(
-        //     mirror_id,
-        //     Matrix4::from_translation(cgmath::Vector3 {
-        //         x: 0.0,
-        //         y: 0.0,
-        //         z: 3.0,
-        //     }) * cgmath::Matrix4::from_nonuniform_scale(3.0, 5.0, 0.1),
-        // );
+        let sphere = w.spawn((Primitive::Sphere(Sphere::new(2.0, light).unwrap()),));
+        let _ = w.spawn((
+            Instance::new(sphere),
+            Orientation::new(
+                Vec3::new(
+                    MAZE_WIDTH as f32 * MAZE_SCALE / 2.0,
+                    MAZE_WIDTH as f32 * MAZE_SCALE,
+                    -MAZE_HEIGHT as f32 * MAZE_SCALE / 2.0,
+                ),
+                Quaternion::identity(),
+            ),
+        ));
 
-        let sphere = Sphere::new(2.0, light).unwrap();
-        let sphere_id = scene.add_obj(Primitive::Sphere(sphere))?;
-        let _ = scene.add_instance(
-            sphere_id,
-            Matrix4::from_translation(cgmath::Vector3 {
-                x: MAZE_WIDTH as f32 * MAZE_SCALE / 2.0,
-                y: MAZE_WIDTH as f32 * MAZE_SCALE,
-                z: -MAZE_HEIGHT as f32 * MAZE_SCALE / 2.0,
-            }),
-        );
-
-        // let lentil = Lentil::new(1.0, 1.0, glass).unwrap();
-        // let lentil_id = scene.add_obj(Primitive::Lentil(lentil))?;
-        // let _ = scene.add_instance(
-        //     lentil_id,
-        //     Matrix4::from_translation(cgmath::Vector3 {
-        //         x: 2.0,
-        //         y: 0.0,
-        //         z: 0.0,
-        //     }),
-        // );
-        // let _ = scene.add_instance(
-        //     lentil_id,
-        //     Matrix4::from_translation(cgmath::Vector3 {
-        //         x: -2.0,
-        //         y: 0.0,
-        //         z: 0.0,
-        //     }),
-        // );
-        // #[rustfmt::skip]
-        // let _ = scene.add_instance(
-        //     lentil_id,
-        //     Matrix4::from_translation(cgmath::Vector3 {
-        //             x: 2.0,
-        //             y: 0.0,
-        //             z: -3.0,
-        //         }) * cgmath::Matrix4::new(
-        //             0.9182397, 0.3893702,-0.0722967, 0.0,
-        //            -0.1784285, 0.5697361, 0.8022245, 0.0,
-        //            -0.3535523,-0.7237346, 0.5926290 , 0.0,
-        //             0.0      , 0.0      , 0.0      , 1.0,
-        //         ),
-        // );
-        // self.lentil = scene.add_instance(
-        //     lentil_id,
-        //     cgmath::Matrix4::from_translation(cgmath::Vector3 {
-        //         x: 5.0,
-        //         y: 0.0,
-        //         z: 0.0,
-        //     }),
-        // )?;
-
-        self.goal = goal;
-        self.goal_pos = goal_position;
         Ok(())
     }
-    fn resize(&mut self, _width: u32, _height: u32) {}
-    fn raw_input(&mut self, _device_id: winit::event::DeviceId, event: winit::event::DeviceEvent) {
+    fn resize(&mut self, _width: u32, _height: u32, _world: &std::sync::Arc<RwLock<hecs::World>>) {}
+    fn raw_input(
+        &mut self,
+        _device_id: winit::event::DeviceId,
+        event: winit::event::DeviceEvent,
+        world: &std::sync::Arc<RwLock<hecs::World>>,
+    ) {
         match event {
             DeviceEvent::MouseMotion { mut delta } => {
                 delta.0 *= 0.01;
                 delta.1 *= 0.01;
-                if self.is_mouse_grabbed {
-                    let _ = self.look(delta.0 as f32, delta.1 as f32);
+                if *self.is_mouse_grabbed.read().unwrap() {
+                    let _ = self.look(delta.0 as f32, delta.1 as f32, world);
                 }
             }
             _ => {}
         }
     }
 
-    fn input(&mut self, event: winit::event::WindowEvent) {
+    fn input(
+        &mut self,
+        event: winit::event::WindowEvent,
+        _world: &std::sync::Arc<RwLock<hecs::World>>,
+    ) {
         // let api = self.get_api();
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.mouse_state.update_position(position);
+                self.mouse_state.write().unwrap().update_position(position);
                 // if self.mouse_state.left_pressed {
                 // scene.api.camera.orbit(dx, dy);
                 // api.uniform.reset_samples();
@@ -390,7 +372,10 @@ impl Bloomable for Demo {
                 // }
             }
             WindowEvent::MouseInput { state, button, .. } => {
-                self.mouse_state.update_button(button, state);
+                self.mouse_state
+                    .write()
+                    .unwrap()
+                    .update_button(button, state);
 
                 // if button == MouseButton::Left
                 //     && !state.is_pressed()
@@ -430,7 +415,8 @@ impl Bloomable for Demo {
                 if let Some(win) = self.window.as_ref() {
                     match win.write() {
                         Ok(w) => {
-                            if self.is_mouse_grabbed {
+                            let mut is_grabbed = self.is_mouse_grabbed.write().unwrap();
+                            if *is_grabbed {
                                 log::info!("Releasing mouse");
                                 match w.set_cursor_grab(winit::window::CursorGrabMode::None) {
                                     Ok(()) => {}
@@ -445,7 +431,7 @@ impl Bloomable for Demo {
                                 };
                                 w.set_cursor_visible(false);
                             }
-                            self.is_mouse_grabbed = !self.is_mouse_grabbed;
+                            *is_grabbed = !*is_grabbed;
                         }
                         Err(e) => log::error!("Window is poisoned: {e}"),
                     }
@@ -559,49 +545,100 @@ impl Bloomable for Demo {
                 ..
             } => {
                 match s {
-                    ElementState::Pressed => self.keyboard_state.add(v),
-                    ElementState::Released => self.keyboard_state.remove(v),
+                    ElementState::Pressed => self.keyboard_state.write().unwrap().add(v),
+                    ElementState::Released => self.keyboard_state.write().unwrap().remove(v),
                 };
             }
             _ => (),
         }
     }
-    fn display_tick(&mut self) {}
-    fn physics_tick(&mut self, delta_time: Duration) {
+    fn display_tick(&mut self, _delta: Duration, _world: &std::sync::Arc<RwLock<hecs::World>>) {}
+    fn physics_tick(&mut self, delta_time: Duration, world: &std::sync::Arc<RwLock<hecs::World>>) {
         let delta = 0.005 * delta_time.as_millis() as f32;
         let mut movement = (0.0, 0.0, 0.0);
-        if self.keyboard_state.is_pressed(KeyCode::KeyW) {
+        if self
+            .keyboard_state
+            .read()
+            .unwrap()
+            .is_pressed(KeyCode::KeyW)
+        {
             movement.1 += delta;
         }
-        if self.keyboard_state.is_pressed(KeyCode::KeyS) {
+        if self
+            .keyboard_state
+            .read()
+            .unwrap()
+            .is_pressed(KeyCode::KeyS)
+        {
             movement.1 -= delta;
         }
-        if self.keyboard_state.is_pressed(KeyCode::KeyA) {
+        if self
+            .keyboard_state
+            .read()
+            .unwrap()
+            .is_pressed(KeyCode::KeyA)
+        {
             movement.0 -= delta;
         }
-        if self.keyboard_state.is_pressed(KeyCode::KeyD) {
+        if self
+            .keyboard_state
+            .read()
+            .unwrap()
+            .is_pressed(KeyCode::KeyD)
+        {
             movement.0 += delta;
         }
-        // if self.keyboard_state.is_pressed(KeyCode::Space) {
-        //     movement.2 += delta;
-        // }
-        // if self.keyboard_state.is_pressed(KeyCode::ControlLeft) {
-        //     movement.2 -= delta;
-        // }
-        self.translate(movement.0, movement.1, movement.2);
-        if self.are_angles_updated == true {
-            self.api
-                .as_ref()
+        if self
+            .keyboard_state
+            .read()
+            .unwrap()
+            .is_pressed(KeyCode::Space)
+        {
+            movement.2 += delta;
+        }
+        if self
+            .keyboard_state
+            .read()
+            .unwrap()
+            .is_pressed(KeyCode::ControlLeft)
+        {
+            movement.2 -= delta;
+        }
+        self.translate(movement.0, movement.1, movement.2, world);
+        let mut is_updated = self.are_angles_updated.lock().unwrap();
+        if *is_updated == true {
+            // let player_ori =
+            world
+                .write()
                 .unwrap()
-                .update_camera_angles(self.pitch_rad, 0.0, self.yaw_rad);
-            self.are_angles_updated = false;
+                .query_one_mut::<&mut Orientation>(self.player.read().unwrap().unwrap())
+                .unwrap()
+                .quat = Quaternion::from_euler(0.0, 0.0, *self.yaw_rad.lock().unwrap());
+            world
+                .write()
+                .unwrap()
+                .query_one_mut::<&mut Orientation>(self.player.read().unwrap().unwrap())
+                .unwrap()
+                .update();
+            world
+                .write()
+                .unwrap()
+                .query_one_mut::<&mut Child>(self.camera.read().unwrap().unwrap())
+                .unwrap()
+                .offset_quat = Quaternion::from_euler(*self.pitch_rad.lock().unwrap(), 0.0, 0.0);
+            *is_updated = false;
         }
 
-        let id = self.goal;
-        let transformation =
-            self.goal_pos * Matrix4::from_angle_y(cgmath::Rad(self.goal_yaw_rad)) * self.goal_scale;
-        let _ = self.get_api().move_instance_to(id, transformation);
+        let mut w = world.write().unwrap();
+        let ori = w
+            .query_one_mut::<&mut Orientation>(self.goal.read().unwrap().unwrap())
+            .unwrap();
+        ori.quat = Quaternion::from_euler(0.0, 0.0, self.goal_yaw_rad);
+
         self.goal_yaw_rad += 0.01;
+        if self.goal_yaw_rad > std::f32::consts::PI * 2.0 {
+            self.goal_yaw_rad -= std::f32::consts::PI * 2.0;
+        }
     }
 }
 

@@ -100,6 +100,7 @@ public struct Camera {
 	public float4 q;
 	public float focal_distance;
 	public float dof_scale;
+	public uint enabled;
 }
 
 public struct UBO {

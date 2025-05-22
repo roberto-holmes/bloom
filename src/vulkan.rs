@@ -154,6 +154,7 @@ pub struct Buffer {
 }
 
 impl Buffer {
+    #[allow(unused)]
     pub fn new_cpu(
         allocator: &vk_mem::Allocator,
         size: vk::DeviceSize,
@@ -167,6 +168,7 @@ impl Buffer {
             usage,
         )
     }
+    #[allow(unused)]
     pub fn new_gpu(
         allocator: &vk_mem::Allocator,
         size: vk::DeviceSize,
@@ -180,6 +182,7 @@ impl Buffer {
             usage,
         )
     }
+    #[allow(unused)]
     pub fn new(
         allocator: &vk_mem::Allocator,
         size: vk::DeviceSize,
@@ -206,7 +209,6 @@ impl Buffer {
                 | vk_mem::AllocationCreateFlags::HOST_ACCESS_SEQUENTIAL_WRITE,
             usage,
         )?;
-        // new_buffer.allocation_info.mapped_data // TODO: Do we return the mapped data or should this struct hide it
         Ok(new_buffer)
     }
     pub fn new_generic(
@@ -216,7 +218,7 @@ impl Buffer {
         flags: vk_mem::AllocationCreateFlags,
         usage: vk::BufferUsageFlags,
     ) -> Result<Self> {
-        log::trace!("Creating VMA allocated buffer");
+        // log::trace!("Creating VMA allocated buffer");
         if size == 0 {
             return Err(anyhow!("Tried to create a 0 size buffer"));
         }
@@ -250,7 +252,7 @@ impl Buffer {
         usage: vk::BufferUsageFlags,
         alignment: vk::DeviceSize,
     ) -> Result<Self> {
-        log::trace!("Creating Aligned VMA allocated buffer");
+        // log::trace!("Creating Aligned VMA allocated buffer");
         if size == 0 {
             return Err(anyhow!("Tried to create a 0 size buffer"));
         }
@@ -365,7 +367,7 @@ impl Buffer {
         )?;
         buffer.type_name = std::any::type_name::<T>();
         buffer.populate(data, data_len)?;
-        log::trace!("Created buffer of {}", buffer.type_name);
+        // log::trace!("Created buffer of {}", buffer.type_name);
         Ok(buffer)
     }
     pub fn new_populated_staged<T>(
@@ -409,6 +411,7 @@ impl Buffer {
 
         Ok(buffer)
     }
+    #[allow(unused)]
     pub fn append_staged<T>(
         &mut self,
         device: &ash::Device,
@@ -490,6 +493,7 @@ impl Buffer {
 }
 
 impl Drop for Buffer {
+    #[track_caller]
     fn drop(&mut self) {
         log::trace!(
             "Destroying VMA allocated buffer for {} object",
@@ -502,6 +506,7 @@ impl Drop for Buffer {
 }
 
 unsafe impl Send for Buffer {}
+unsafe impl Sync for Buffer {}
 
 pub struct Image<'a> {
     device: vk::Device,

@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Result};
 use ash::vk;
+use hecs::Entity;
 
 use crate::{vec::Vec3, vulkan};
 
@@ -17,12 +18,12 @@ pub struct LentilData {
     pub curvature_b: f32,
     pub kappa_a: f32,
     pub kappa_b: f32,
-    _material: u32,
+    material: u32,
     pub is_selected: u32,
 }
 
 impl LentilData {
-    fn new(radius: f32, length: f32, material: u32, is_selected: bool) -> Self {
+    fn new(radius: f32, length: f32, is_selected: bool) -> Self {
         Self {
             object_type: ObjectType::Lentil as _,
             radius,
@@ -31,7 +32,7 @@ impl LentilData {
             curvature_b: 1.5,
             kappa_a: 1.0,
             kappa_b: 1.0,
-            _material: material,
+            material: 0,
             is_selected: if is_selected { 1 } else { 0 },
         }
     }
@@ -40,16 +41,18 @@ impl LentilData {
 #[derive(Debug, PartialEq, Clone)]
 pub struct Lentil {
     data: LentilData,
+    material: Entity,
     data_buffer: Option<vulkan::Buffer>,
 }
 
 impl Lentil {
-    pub fn new(radius: f32, length: f32, material: u32) -> Result<Self> {
-        let data = LentilData::new(radius, length, material, false);
+    pub fn new(radius: f32, length: f32, material: Entity) -> Result<Self> {
+        let data = LentilData::new(radius, length, false);
         // TODO: Check that the given values are valid (r is less than r_max)
 
         Ok(Self {
             data,
+            material,
             data_buffer: None,
         })
     }
@@ -80,6 +83,12 @@ impl Addressable for Lentil {
 }
 
 impl Objectionable for Lentil {
+    fn set_materials(&mut self, map: &std::collections::HashMap<Entity, usize>) {
+        match map.get(&self.material) {
+            Some(&m) => self.data.material = m as u32,
+            None => self.data.material = 0,
+        }
+    }
     fn allocate(
         &mut self,
         allocator: &vk_mem::Allocator,

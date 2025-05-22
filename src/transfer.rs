@@ -1,21 +1,28 @@
-use std::{
-    sync::{mpsc, Arc, RwLock},
-    time::Duration,
-    u64,
-};
-
 use anyhow::{anyhow, Result};
 use ash::vk;
+use bus::Bus;
+use std::{
+    sync::{mpsc, Arc, RwLock},
+    thread::JoinHandle,
+    time::{Duration, Instant},
+    u64,
+};
 use winit::dpi::PhysicalSize;
 
-use crate::{core, ray, structures, uniforms, viewport, vulkan::Destructor, MAX_FRAMES_IN_FLIGHT};
+use crate::{
+    api::{self, Bloomable},
+    core, ray, structures, uniforms, viewport,
+    vulkan::Destructor,
+    MAX_FRAMES_IN_FLIGHT,
+};
 
 pub enum ResizedSource {
     Viewport((PhysicalSize<u32>, [vk::Image; 2])),
     Ray((PhysicalSize<u32>, [vk::Image; 2])),
 }
 
-pub fn thread(
+pub fn thread<T: Bloomable>(
+    user_app: T,
     device: ash::Device,
     instance: ash::Instance,
     physical_device: vk::PhysicalDevice,
@@ -23,11 +30,16 @@ pub fn thread(
     semaphore: vk::Semaphore,
     should_threads_die: Arc<RwLock<bool>>,
 
+    should_systems_die: Arc<RwLock<bool>>,
+    mut event_broadcaster: Bus<api::Event>,
+    mut system_threads: Vec<Option<JoinHandle<()>>>,
+    system_sync: (mpsc::Sender<bool>, mpsc::Receiver<bool>), // TODO: Replace bool with a thread identifier
+
     ray_frame_done: Arc<RwLock<ray::Update>>,
     draw_request: mpsc::Receiver<bool>,
     mut resize_request: single_value_channel::Receiver<PhysicalSize<u32>>,
-    resized: mpsc::Receiver<ResizedSource>,
 
+    resized: mpsc::Receiver<ResizedSource>,
     ubo: mpsc::Sender<uniforms::Event>,
     ray: mpsc::SyncSender<ray::TransferCommand>,
     viewport: mpsc::SyncSender<viewport::TransferCommand>,
@@ -41,6 +53,12 @@ pub fn thread(
         physical_device,
         semaphore,
         queue_family_indices,
+        ubo,
+        ray,
+        viewport,
+        ray_resize,
+        viewport_resize,
+        resized,
     ) {
         Err(e) => {
             log::error!("Failed to create transfer object: {e}");
@@ -58,6 +76,8 @@ pub fn thread(
         height: 0,
     };
 
+    let mut last_physics_time = Instant::now();
+
     loop {
         // Check if we should end the thread
         match should_threads_die.read() {
@@ -71,102 +91,43 @@ pub fn thread(
             }
         }
 
-        // Wait for either a draw or resize event
-        let new_size = resize_request.latest();
-        if *new_size != old_size {
-            old_size = *new_size;
-            if new_size.width == 0 || new_size.height == 0 {
-                log::debug!("Window is minimized");
-                is_minimised = true;
-                was_minimised = true;
-            } else {
-                is_minimised = false;
-            }
-            match transfer.resize(
-                &ray_resize,
-                &viewport_resize,
-                &ubo,
-                &resized,
-                *new_size,
-                !is_minimised && !was_minimised,
+        // Check if the window has changed size
+        let new_size = *resize_request.latest();
+        if new_size != old_size {
+            if let Err(e) = resize(
+                &mut transfer,
+                &mut old_size,
+                new_size,
+                &mut is_minimised,
+                &mut was_minimised,
                 timestamp,
             ) {
-                Ok((true, ray_images, viewport_images)) => {
-                    log::trace!(
-                        "Have ray images {:?} and viewport images {:?}",
-                        ray_images,
-                        viewport_images
-                    );
-                    match transfer.update_commands(&ray_images, &viewport_images, *new_size) {
-                        Ok(()) => {}
-                        Err(e) => {
-                            log::error!("Failed to update the images in the transfer object: {e}");
-                            break;
-                        }
-                    }
-                }
-                Ok((false, _, _)) => {
-                    log::info!("Not rebuilding transfer commands");
-                }
-                Err(e) => {
-                    log::error!("Failed to resize: {e}");
-                    break;
-                }
-            }
-            if was_minimised == true && is_minimised == false {
-                was_minimised = false;
+                log::error!("Failed to resize: {e}");
+                break;
             }
         }
 
+        // Check if it's time to present a new frame
         match draw_request.try_recv() {
             Ok(true) => {
-                if is_minimised {
-                    continue;
-                }
-                log::trace!("Drawing");
-                // Notify ray to pause any further ray tracing until the image is free to use
-                match ray.send(ray::TransferCommand::Pause(timestamp + 1)) {
-                    Err(e) => {
-                        log::error!(
-                            "Transfer failed to notify ray channel that it should pause ray tracing: {e}"
-                        );
-                        break;
-                    }
-                    Ok(()) => {}
-                }
-
-                let (ray_frame, accumulated_frame_count) = match ray_frame_done.read() {
-                    Ok(v) => (v.current_frame_index, v.accumulated_frames),
-                    Err(e) => {
-                        log::error!("Transfer failed to receive lastest frame from ray: {e}");
-                        return;
-                    }
-                };
-
-                // Let the viewport know when the data will be ready and which frame to use
-                match viewport.send(viewport::TransferCommand {
-                    timestamp: timestamp + 1,
-                    frame_index: output_frame_index,
-                    accumulated_frame_count,
-                }) {
-                    Err(e) => {
-                        log::error!("Transfer failed to notify graphics channel: {e}");
-                        break;
-                    }
-                    Ok(()) => {}
-                }
-                // Perform a copy
-                match transfer.perform_compute_copy(
-                    output_frame_index,
-                    ray_frame as usize,
+                if let Err(e) = draw(
+                    &mut transfer,
+                    is_minimised,
                     timestamp,
-                    timestamp + 1,
+                    output_frame_index,
+                    &ray_frame_done,
                 ) {
-                    Err(e) => {
-                        log::error!("Failed to perform copy operation {e}");
-                        break;
-                    }
-                    Ok(()) => {}
+                    log::error!("Failed to draw: {e}");
+                    break;
+                }
+                if let Err(e) = broadcast(
+                    api::Event::GraphicsUpdate,
+                    &mut event_broadcaster,
+                    &system_threads,
+                    &system_sync.1,
+                ) {
+                    log::error!("Failed to broadcast graphics update: {e}");
+                    break;
                 }
                 timestamp += 1;
                 output_frame_index += 1;
@@ -179,10 +140,165 @@ pub fn thread(
                 break;
             }
         }
+
+        // Check if physics needs updating
+        if user_app.get_physics_update_period() <= last_physics_time.elapsed() {
+            if let Err(e) = broadcast(
+                api::Event::PrePhysics,
+                &mut event_broadcaster,
+                &system_threads,
+                &system_sync.1,
+            ) {
+                log::error!("Failed to broadcast pre physics update: {e}");
+                break;
+            }
+            if let Err(e) = broadcast(
+                api::Event::Physics,
+                &mut event_broadcaster,
+                &system_threads,
+                &system_sync.1,
+            ) {
+                log::error!("Failed to broadcast physics update: {e}");
+                break;
+            }
+            if let Err(e) = broadcast(
+                api::Event::PostPhysics,
+                &mut event_broadcaster,
+                &system_threads,
+                &system_sync.1,
+            ) {
+                log::error!("Failed to broadcast post physics update: {e}");
+                break;
+            }
+            last_physics_time = Instant::now();
+        }
+    }
+
+    *should_systems_die.write().unwrap() = true;
+    for ot in system_threads.iter_mut() {
+        if let Some(t) = ot.take() {
+            t.join().unwrap();
+        };
     }
 }
 
+fn broadcast(
+    event: api::Event,
+    event_broadcaster: &mut Bus<api::Event>,
+    system_threads: &Vec<Option<JoinHandle<()>>>,
+    system_sync_receiver: &mpsc::Receiver<bool>,
+) -> Result<()> {
+    // Broadcast graohics update and wait for all systems to finish
+    event_broadcaster.broadcast(event);
+
+    let total_systems: u32 = system_threads
+        .iter()
+        .map(|x| match x {
+            Some(_) => 1,
+            None => 0,
+        })
+        .sum();
+
+    let mut finished_threads = 0;
+    while finished_threads < total_systems {
+        match system_sync_receiver.recv() {
+            Ok(true) => finished_threads += 1,
+            Ok(false) => log::warn!("Invalid response from thread sync channel"),
+            Err(e) => return Err(anyhow!("Failed to receive sync from a system: {e}")),
+        }
+    }
+    Ok(())
+}
+
+fn resize(
+    transfer: &mut Transfer,
+    old_size: &mut PhysicalSize<u32>,
+    new_size: PhysicalSize<u32>,
+    is_minimised: &mut bool,
+    was_minimised: &mut bool,
+    timestamp_to_wait: u64,
+) -> Result<()> {
+    *old_size = new_size;
+    if new_size.width == 0 || new_size.height == 0 {
+        log::debug!("Window is minimized");
+        *is_minimised = true;
+        *was_minimised = true;
+    } else {
+        *is_minimised = false;
+    }
+    match transfer.resize(
+        new_size,
+        !*is_minimised && !*was_minimised,
+        timestamp_to_wait,
+    ) {
+        Ok((true, ray_images, viewport_images)) => {
+            log::trace!(
+                "Have ray images {:?} and viewport images {:?}",
+                ray_images,
+                viewport_images
+            );
+            transfer.update_commands(&ray_images, &viewport_images, new_size)?;
+        }
+        Ok((false, _, _)) => {
+            log::info!("Not rebuilding transfer commands");
+        }
+        Err(e) => return Err(e),
+    }
+    if *was_minimised == true && *is_minimised == false {
+        *was_minimised = false;
+    }
+    return Ok(());
+}
+
+fn draw(
+    transfer: &mut Transfer,
+    is_minimised: bool,
+    timestamp: u64,
+    output_frame_index: usize,
+    ray_frame_done: &Arc<RwLock<ray::Update>>,
+) -> Result<()> {
+    if is_minimised {
+        return Ok(());
+    }
+    log::trace!("Drawing");
+    // Notify ray to pause any further ray tracing until the image is free to use
+    transfer
+        .ray
+        .send(ray::TransferCommand::Pause(timestamp + 1))?;
+
+    let (ray_frame, accumulated_frame_count) = match ray_frame_done.read() {
+        Ok(v) => (v.current_frame_index, v.accumulated_frames),
+        Err(e) => {
+            return Err(anyhow!(
+                "Transfer failed to receive lastest frame from ray: {e}"
+            ));
+        }
+    };
+
+    // Let the viewport know when the data will be ready and which frame to use
+    transfer.viewport.send(viewport::TransferCommand {
+        timestamp: timestamp + 1,
+        frame_index: output_frame_index,
+        accumulated_frame_count,
+    })?;
+
+    // Perform a copy
+    transfer.perform_compute_copy(
+        output_frame_index,
+        ray_frame as usize,
+        timestamp,
+        timestamp + 1,
+    )?;
+    Ok(())
+}
 struct Transfer {
+    ubo: mpsc::Sender<uniforms::Event>,
+    ray: mpsc::SyncSender<ray::TransferCommand>,
+    viewport: mpsc::SyncSender<viewport::TransferCommand>,
+    ray_resize: single_value_channel::Updater<PhysicalSize<u32>>,
+    viewport_resize: single_value_channel::Updater<PhysicalSize<u32>>,
+    resized: mpsc::Receiver<ResizedSource>,
+
     last_timestamp: u64,
     queue: vk::Queue,
     semaphore: vk::Semaphore,
@@ -201,6 +317,13 @@ impl Transfer {
         physical_device: vk::PhysicalDevice,
         semaphore: vk::Semaphore,
         queue_family_indices: structures::QueueFamilyIndices,
+
+        ubo: mpsc::Sender<uniforms::Event>,
+        ray: mpsc::SyncSender<ray::TransferCommand>,
+        viewport: mpsc::SyncSender<viewport::TransferCommand>,
+        ray_resize: single_value_channel::Updater<PhysicalSize<u32>>,
+        viewport_resize: single_value_channel::Updater<PhysicalSize<u32>>,
+        resized: mpsc::Receiver<ResizedSource>,
     ) -> Result<Self> {
         log::trace!("Creating object");
         let queue = core::create_queue(&device, queue_family_indices.transfer_family.unwrap());
@@ -214,6 +337,13 @@ impl Transfer {
             semaphore,
             command_pool,
             commands,
+
+            ubo,
+            ray,
+            viewport,
+            ray_resize,
+            viewport_resize,
+            resized,
         })
     }
     pub fn perform_compute_copy(
@@ -430,10 +560,6 @@ impl Transfer {
     }
     fn resize(
         &self,
-        ray: &single_value_channel::Updater<PhysicalSize<u32>>,
-        viewport: &single_value_channel::Updater<PhysicalSize<u32>>,
-        ubo: &mpsc::Sender<uniforms::Event>,
-        resized: &mpsc::Receiver<ResizedSource>,
         new_size: PhysicalSize<u32>,
         need_response: bool,
         timestamp_to_wait: u64,
@@ -448,9 +574,9 @@ impl Transfer {
             }
         }
 
-        ray.update(new_size)?;
-        viewport.update(new_size)?;
-        ubo.send(uniforms::Event::Resize(new_size))?;
+        self.ray_resize.update(new_size)?;
+        self.viewport_resize.update(new_size)?;
+        self.ubo.send(uniforms::Event::Resize(new_size))?;
         log::info!("Sent size {}x{}", new_size.width, new_size.height);
 
         if !need_response {
@@ -465,7 +591,7 @@ impl Transfer {
         let mut viewport_images = None;
 
         loop {
-            match resized.recv_timeout(Duration::new(1, 000_000_000)) {
+            match self.resized.recv_timeout(Duration::new(1, 000_000_000)) {
                 Ok(ResizedSource::Ray((reported_size, v))) if reported_size == new_size => {
                     ray_resized = true;
                     ray_images = Some(v);

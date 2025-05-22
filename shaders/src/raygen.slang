@@ -17,6 +17,11 @@ void main() {
 	uint3 LaunchID = DispatchRaysIndex();
 	uint3 LaunchSize = DispatchRaysDimensions();
 
+	if (ubo.camera.enabled == false) {
+		write_image[int2(LaunchID.xy)] = float4(0.0);
+		return;
+	}
+
 	const float aspect_ratio = float(ubo.width) / float(ubo.height);
 
 	init_rng(DispatchRaysIndex().xy, ubo.width, ubo.ray_frame_num + DispatchRaysIndex().x + DispatchRaysIndex().y + ubo.random_num);
