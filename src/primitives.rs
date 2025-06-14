@@ -1,5 +1,6 @@
 pub mod lentil;
 pub mod model;
+pub mod ocean;
 pub mod sphere;
 
 use std::collections::HashMap;
@@ -39,6 +40,7 @@ pub(crate) trait Objectionable {
 pub enum Primitive {
     Model(model::Model),
     Sphere(sphere::Sphere),
+    Ocean(ocean::Ocean),
     Lentil(lentil::Lentil),
 }
 
@@ -48,6 +50,7 @@ impl Addressable for Primitive {
             Primitive::Model(v) => v.get_addresses(device),
             Primitive::Sphere(v) => v.get_addresses(device),
             Primitive::Lentil(v) => v.get_addresses(device),
+            Primitive::Ocean(v) => v.get_addresses(device),
         }
     }
     fn free(&mut self) {
@@ -55,6 +58,7 @@ impl Addressable for Primitive {
             Primitive::Model(v) => v.free(),
             Primitive::Sphere(v) => v.free(),
             Primitive::Lentil(v) => v.free(),
+            Primitive::Ocean(v) => v.free(),
         };
     }
 }
@@ -65,6 +69,7 @@ impl Extrema for Primitive {
             Primitive::Model(v) => v.get_extrema(),
             Primitive::Sphere(v) => v.get_extrema(),
             Primitive::Lentil(v) => v.get_extrema(),
+            Primitive::Ocean(v) => v.get_extrema(),
         }
     }
 }
@@ -79,8 +84,8 @@ pub struct PrimitiveAddresses {
 pub enum ObjectType {
     Triangle = 0,
     Sphere = 1,
-    Lentil = 2,
-    // Ocean = 3,
+    Ocean = 2,
+    Lentil = 3,
     // Volume = 4,
 }
 

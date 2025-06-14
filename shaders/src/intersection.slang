@@ -1,10 +1,12 @@
 __import structs;
 __import helpers;
 __import constants;
+__import ocean;
 
-[[vk::binding(3)]]
+// (Binding, Set)
+[[vk::binding(3, 0)]]
 ConstantBuffer<UBO> ubo;
-[[vk::binding(4)]]
+[[vk::binding(4, 0)]]
 StructuredBuffer<Buffers> scene;
 
 [shader("intersection")]
@@ -22,6 +24,13 @@ void main() {
 		let t = hit_sphere(center, s.radius);
 		if (t < F32_MAX) {
 			ReportHit(t, object_type, att);
+		}
+	} else if (object_type == ObjectType::Ocean) {
+		let o = (Ocean*)o.primitive;
+		let p = hit_ocean(o);
+		if (p.r < F32_MAX) {
+			// TODO: Figure out how best to give the rest of the data to the hit shader
+			ReportHit(p.r, object_type, att);
 		}
 	} else if (object_type == ObjectType::Lentil) {
 		let l = (Lentil*)o.primitive;

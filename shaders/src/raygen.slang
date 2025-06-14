@@ -12,6 +12,9 @@ RWTexture2D<float4> write_image;
 [[vk::binding(3)]]
 ConstantBuffer<UBO> ubo;
 
+[[vk::binding(6)]]
+RWTexture2D<float4> ocean;
+
 [shader("raygeneration")]
 void main() {
 	uint3 LaunchID = DispatchRaysIndex();
@@ -77,4 +80,7 @@ void main() {
 	}
 	sample += throughput * payload.radiance;
 	write_image[int2(LaunchID.xy)] = float4(sample, 0.0);
+	// write_image[int2(LaunchID.xy)] = float4(0.1, 0.4, 1.0, 1.0);
+	// write_image[int2(LaunchID.xy)] = ocean[int2(0, 0)];
+	// write_image[int2(LaunchID.xy)] = ocean[int2(LaunchID.xy)];
 }

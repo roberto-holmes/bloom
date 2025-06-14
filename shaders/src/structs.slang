@@ -3,6 +3,7 @@ module structs;
 public enum ObjectType {
 	Triangle,
 	Sphere,
+	Ocean,
 	Lentil,
 }
 
@@ -76,6 +77,12 @@ public struct Sphere {
 	public float radius;
 	public uint material;
 	public uint is_selected;
+}
+
+public struct Ocean {
+	public uint64_t object_type;
+	public uint material;
+	public uint size;
 }
 
 public struct Lentil {

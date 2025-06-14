@@ -10,6 +10,7 @@ use hecs::{Entity, World};
 use vk_mem;
 use winit::dpi::PhysicalSize;
 
+use crate::ocean::Ocean;
 use crate::material::Material;
 use crate::primitives::{
     Addressable, ObjectType, Objectionable, Primitive, PrimitiveAddresses, AABB,
@@ -315,6 +316,8 @@ struct Ray<'a> {
     blas_instances: Vec<AccelerationStructureInstanceKHR>,
     tlas: AccelerationStructure,
 
+    ocean: Ocean<'a>,
+
     allocator: Arc<vk_mem::Allocator>,
     physical_device: vk::PhysicalDevice,
     rt_device: ash::khr::ray_tracing_pipeline::Device,
@@ -398,6 +401,8 @@ impl<'a> Ray<'a> {
         // Set a default material for primitives that are missing one or have not been properly set up
         materials.push(Material::new_basic(Vec3::new(1.0, 0.1, 0.7), 0.));
 
+        let ocean = Ocean::new(&device, &allocator, queue_family_indices)?;
+
         Ok(Self {
             device,
             instance,
@@ -434,6 +439,7 @@ impl<'a> Ray<'a> {
             material_location_map: HashMap::with_capacity(RESERVED_SIZE),
             uniform,
             instances_buffer,
+            ocean,
         })
     }
     pub fn need_resize(&self, size: PhysicalSize<u32>) -> bool {
@@ -467,24 +473,11 @@ impl<'a> Ray<'a> {
             self.descriptor_pool.get(),
             &self.tlas,
             self.images.as_ref().unwrap(),
+            &self.ocean.images,
             &self.uniform_buffers,
             &self.buffer_references,
             &self.materials_buffer,
         )?);
-        build_command_buffers(
-            &self.device,
-            &self.rt_device,
-            size.width,
-            size.height,
-            self.descriptor_sets.unwrap(),
-            self.commands,
-            &self.ray_tracing_pipeline_properties,
-            &self.raygen_shader_binding_table,
-            &self.miss_shader_binding_table,
-            &self.hit_shader_binding_table,
-            self.pipeline.get(),
-            self.pipeline_layout.get(),
-        )?;
         let mut raw_images = [vk::Image::null(); 2];
         for i in 0..self.images.as_ref().unwrap().len() {
             raw_images[i] = self.images.as_ref().unwrap()[i].get();
@@ -550,20 +543,6 @@ impl<'a> Ray<'a> {
                 unsafe { self.device.update_descriptor_sets(&descriptor_writes, &[]) };
             }
         }
-        build_command_buffers(
-            &self.device,
-            &self.rt_device,
-            new_size.width,
-            new_size.height,
-            self.descriptor_sets.unwrap(),
-            self.commands,
-            &self.ray_tracing_pipeline_properties,
-            &self.raygen_shader_binding_table,
-            &self.miss_shader_binding_table,
-            &self.hit_shader_binding_table,
-            self.pipeline.get(),
-            self.pipeline_layout.get(),
-        )?;
         let mut raw_images = [vk::Image::null(); 2];
         for i in 0..self.images.as_ref().unwrap().len() {
             raw_images[i] = self.images.as_ref().unwrap()[i].get();
@@ -632,6 +611,20 @@ impl<'a> Ray<'a> {
                 )?;
                 self.primitive_location_map
                     .insert(entity, (ObjectType::Sphere, self.blass.len()));
+                self.add_aabb(AABB::new(o), o.get_addresses(&self.device)?)?;
+                primitives_changed = true;
+            }
+            Primitive::Ocean(ref mut o) if !self.primitive_location_map.contains_key(&entity) => {
+                log::info!("Adding Ocean {:?}: {:?}", entity, o);
+                o.set_materials(&self.material_location_map);
+                o.allocate(
+                    &self.allocator,
+                    &self.device,
+                    self.command_pool.get(),
+                    self.queue,
+                )?;
+                self.primitive_location_map
+                    .insert(entity, (ObjectType::Ocean, self.blass.len()));
                 self.add_aabb(AABB::new(o), o.get_addresses(&self.device)?)?;
                 primitives_changed = true;
             }
@@ -785,28 +778,44 @@ impl<'a> Ray<'a> {
         Ok(())
     }
     pub fn ray_trace(
-        &self,
+        &mut self,
         current_frame_index: usize,
         transfer_semaphore: vk::Semaphore,
         transfer_timestamp_to_wait: u64,
         ray_timestamp_to_wait: u64,
         timestamp_to_signal: u64,
     ) -> Result<()> {
-        // log::trace!(
-        //     "Ray tracing into {current_frame_index} when timestamp reaches {}",
-        //     transfer_timestamp_to_wait
-        // );
-        let wait_timestamps = [transfer_timestamp_to_wait, ray_timestamp_to_wait];
-        let wait_semaphores = [transfer_semaphore, self.semaphore.get()];
-        let wait_stages = [
-            vk::PipelineStageFlags::TRANSFER,
-            vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
-        ];
-
         if self.images.is_none() {
             // We only want to start ray tracing once the output images are set up
             return Ok(());
         }
+
+        let (ocean_semaphore, ocean_timestamp) =
+            self.ocean.dispatch(&self.device, current_frame_index)?;
+
+        let height = self.images.as_ref().unwrap()[current_frame_index].height;
+        let width = self.images.as_ref().unwrap()[current_frame_index].width;
+        self.build_command_buffers(width, height, current_frame_index)?;
+
+        // log::trace!(
+        //     "Ray tracing into {current_frame_index} when timestamp reaches {}",
+        //     transfer_timestamp_to_wait
+        // );
+        let wait_timestamps = [
+            transfer_timestamp_to_wait,
+            ray_timestamp_to_wait,
+            ocean_timestamp,
+        ];
+        let wait_semaphores = [
+            transfer_semaphore,
+            self.semaphore.get(),
+           ocean_semaphore,
+        ];
+        let wait_stages = [
+            vk::PipelineStageFlags::TRANSFER,
+            vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
+            vk::PipelineStageFlags::COMPUTE_SHADER,
+        ];
 
         let signal_timestamps = [timestamp_to_signal];
         let signal_semaphores = [self.semaphore.get()];
@@ -1073,21 +1082,83 @@ impl<'a> Ray<'a> {
             ];
             unsafe { self.device.update_descriptor_sets(&descriptor_writes, &[]) };
         }
-        // Create new commands with new descriptor sets
-        build_command_buffers(
-            &self.device,
-            &self.rt_device,
-            self.images.as_ref().unwrap()[0].width,
-            self.images.as_ref().unwrap()[0].height,
-            self.descriptor_sets.unwrap(),
-            self.commands,
-            &self.ray_tracing_pipeline_properties,
-            &self.raygen_shader_binding_table,
-            &self.miss_shader_binding_table,
-            &self.hit_shader_binding_table,
-            self.pipeline.get(),
-            self.pipeline_layout.get(),
-        )?;
+        Ok(())
+    }
+
+    fn build_command_buffers(&self, width: u32, height: u32, frame_index: usize) -> Result<()> {
+        let begin_info = vk::CommandBufferBeginInfo::default();
+        let command_buffer = self.commands[frame_index];
+        let descriptor_sets_to_bind = [self.descriptor_sets.unwrap()[frame_index]];
+        unsafe {
+            self.device
+                .begin_command_buffer(command_buffer, &begin_info)?;
+
+            let single_handle_size_aligned = aligned_size(
+                self.ray_tracing_pipeline_properties
+                    .shader_group_handle_size,
+                self.ray_tracing_pipeline_properties
+                    .shader_group_handle_alignment,
+            ) as u64;
+            let base_handle_size_aligned = aligned_size(
+                self.ray_tracing_pipeline_properties
+                    .shader_group_handle_size,
+                self.ray_tracing_pipeline_properties
+                    .shader_group_base_alignment,
+            ) as u64;
+
+            let raygen_shader_sbt_entry = vk::StridedDeviceAddressRegionKHR {
+                device_address: self
+                    .raygen_shader_binding_table
+                    .get_device_address(&self.device),
+                stride: base_handle_size_aligned,
+                size: base_handle_size_aligned,
+            };
+            let miss_shader_sbt_entry = vk::StridedDeviceAddressRegionKHR {
+                device_address: self
+                    .miss_shader_binding_table
+                    .get_device_address(&self.device),
+                stride: single_handle_size_aligned,
+                size: base_handle_size_aligned,
+            };
+            let hit_shader_sbt_entry = vk::StridedDeviceAddressRegionKHR {
+                device_address: self
+                    .hit_shader_binding_table
+                    .get_device_address(&self.device),
+                stride: single_handle_size_aligned,
+                size: base_handle_size_aligned,
+            };
+
+            let callable_shader_sbt_entry = vk::StridedDeviceAddressRegionKHR::default();
+
+            // Dispatch the ray tracing commands
+            self.device.cmd_bind_pipeline(
+                command_buffer,
+                vk::PipelineBindPoint::RAY_TRACING_KHR,
+                self.pipeline.get(),
+            );
+            self.device.cmd_bind_descriptor_sets(
+                command_buffer,
+                vk::PipelineBindPoint::RAY_TRACING_KHR,
+                self.pipeline_layout.get(),
+                0,
+                &descriptor_sets_to_bind,
+                &[],
+            );
+            self.rt_device.cmd_trace_rays(
+                command_buffer,
+                &raygen_shader_sbt_entry,
+                &miss_shader_sbt_entry,
+                &hit_shader_sbt_entry,
+                &callable_shader_sbt_entry,
+                width,
+                height,
+                1,
+            );
+
+            // self.fft.finish(&self.device, command_buffer, frame_index);
+            self.device.end_command_buffer(command_buffer)?;
+        }
+        // log::info!("Recorded commands {:?}", self.commands);
         Ok(())
     }
 }
@@ -1524,11 +1595,12 @@ fn create_descriptor_sets(
     set_layout: vk::DescriptorSetLayout,
     descriptor_pool: vk::DescriptorPool,
     tlas: &AccelerationStructure,
-    storage_images: &[vulkan::Image; 2],
-    ubo: &[vk::Buffer; 2],
+    storage_images: &[vulkan::Image; MAX_FRAMES_IN_FLIGHT],
+    ocean_images: &[vulkan::Image; MAX_FRAMES_IN_FLIGHT],
+    ubo: &[vk::Buffer; MAX_FRAMES_IN_FLIGHT],
     scene: &vulkan::Buffer,
     materials: &vulkan::Buffer,
-) -> Result<[vk::DescriptorSet; 2]> {
+) -> Result<[vk::DescriptorSet; MAX_FRAMES_IN_FLIGHT]> {
     let set_layouts = [set_layout, set_layout];
     let allocate_info = vk::DescriptorSetAllocateInfo::default()
         .descriptor_pool(descriptor_pool)
@@ -1549,6 +1621,11 @@ fn create_descriptor_sets(
         }];
         let write_image_descriptor = [vk::DescriptorImageInfo {
             image_view: storage_images[i].view(),
+            image_layout: vk::ImageLayout::GENERAL,
+            ..Default::default()
+        }];
+        let ocean_image_descriptor = [vk::DescriptorImageInfo {
+            image_view: ocean_images[i].view(),
             image_layout: vk::ImageLayout::GENERAL,
             ..Default::default()
         }];
@@ -1610,6 +1687,14 @@ fn create_descriptor_sets(
                 ..Default::default()
             }
             .buffer_info(&material_descriptor),
+            vk::WriteDescriptorSet {
+                dst_set: descriptor_set,
+                dst_binding: 6,
+                descriptor_count: 1,
+                descriptor_type: vk::DescriptorType::STORAGE_IMAGE,
+                ..Default::default()
+            }
+            .image_info(&ocean_image_descriptor),
         ];
         unsafe { device.update_descriptor_sets(&descriptor_writes, &[]) };
     }
@@ -1672,6 +1757,14 @@ fn create_pipeline<'a>(
             descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
             descriptor_count: 1,
             stage_flags: vk::ShaderStageFlags::CLOSEST_HIT_KHR,
+            ..Default::default()
+        },
+        vk::DescriptorSetLayoutBinding {
+            // Ocean height map
+            binding: 6,
+            descriptor_type: vk::DescriptorType::STORAGE_IMAGE,
+            descriptor_count: 1,
+            stage_flags: vk::ShaderStageFlags::RAYGEN_KHR | vk::ShaderStageFlags::INTERSECTION_KHR, // TODO: Just Intersection?
             ..Default::default()
         },
     ];
@@ -1816,86 +1909,6 @@ fn create_pipeline<'a>(
         )),
         Err(e) => Err(anyhow!("Failed to create graphics pipeline: {:?}", e)),
     }
-}
-
-fn build_command_buffers(
-    device: &ash::Device,
-    rt_device: &ash::khr::ray_tracing_pipeline::Device,
-    width: u32,
-    height: u32,
-    descriptor_sets: [vk::DescriptorSet; 2],
-    command_buffers: [vk::CommandBuffer; 2],
-    ray_tracing_pipeline_properties: &vk::PhysicalDeviceRayTracingPipelinePropertiesKHR,
-    raygen_shader_binding_table: &vulkan::Buffer,
-    miss_shader_binding_table: &vulkan::Buffer,
-    hit_shader_binding_table: &vulkan::Buffer,
-    pipeline: vk::Pipeline,
-    pipeline_layout: vk::PipelineLayout,
-) -> Result<()> {
-    let begin_info = vk::CommandBufferBeginInfo::default();
-
-    // for &command_buffer in command_buffers {
-    for (i, &command_buffer) in command_buffers.iter().enumerate() {
-        unsafe {
-            device.begin_command_buffer(command_buffer, &begin_info)?;
-            let single_handle_size_aligned = aligned_size(
-                ray_tracing_pipeline_properties.shader_group_handle_size,
-                ray_tracing_pipeline_properties.shader_group_handle_alignment,
-            ) as u64;
-            let base_handle_size_aligned = aligned_size(
-                ray_tracing_pipeline_properties.shader_group_handle_size,
-                ray_tracing_pipeline_properties.shader_group_base_alignment,
-            ) as u64;
-
-            let raygen_shader_sbt_entry = vk::StridedDeviceAddressRegionKHR {
-                device_address: raygen_shader_binding_table.get_device_address(device),
-                stride: base_handle_size_aligned,
-                size: base_handle_size_aligned,
-            };
-            let miss_shader_sbt_entry = vk::StridedDeviceAddressRegionKHR {
-                device_address: miss_shader_binding_table.get_device_address(device),
-                stride: single_handle_size_aligned,
-                size: base_handle_size_aligned,
-            };
-            let hit_shader_sbt_entry = vk::StridedDeviceAddressRegionKHR {
-                device_address: hit_shader_binding_table.get_device_address(device),
-                stride: single_handle_size_aligned,
-                size: base_handle_size_aligned,
-            };
-
-            let callable_shader_sbt_entry = vk::StridedDeviceAddressRegionKHR::default();
-
-            // Dispatch the ray tracing commands
-            device.cmd_bind_pipeline(
-                command_buffer,
-                vk::PipelineBindPoint::RAY_TRACING_KHR,
-                pipeline,
-            );
-            let descriptor_sets_to_bind = [descriptor_sets[i]];
-            device.cmd_bind_descriptor_sets(
-                command_buffer,
-                vk::PipelineBindPoint::RAY_TRACING_KHR,
-                pipeline_layout,
-                0,
-                &descriptor_sets_to_bind,
-                &[],
-            );
-            rt_device.cmd_trace_rays(
-                command_buffer,
-                &raygen_shader_sbt_entry,
-                &miss_shader_sbt_entry,
-                &hit_shader_sbt_entry,
-                &callable_shader_sbt_entry,
-                width,
-                height,
-                1,
-            );
-
-            device.end_command_buffer(command_buffer)?;
-        }
-    }
-    log::trace!("Recorded commands {:?}", command_buffers);
-    Ok(())
 }
 
 fn create_empty_commands(

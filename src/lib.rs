@@ -3,6 +3,7 @@ pub mod api;
 mod core;
 mod debug;
 pub mod material;
+mod ocean;
 mod physics;
 pub mod primitives;
 pub mod quaternion;
