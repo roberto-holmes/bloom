@@ -17,9 +17,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - name: Build Debug
+      - name: Build Debug Maze
         run: cargo build --verbose --example maze
-      - name: Build Release
+      - name: Build Release Maze
         run: cargo build -r --verbose --example maze
+      - name: Build Debug Sail
+        run: cargo build --verbose --example sail
+      - name: Build Release Sail
+        run: cargo build -r --verbose --example sail
       - name: Run tests
         run: cargo test --verbose
