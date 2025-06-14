@@ -1,10 +1,10 @@
 use crate::structures::{QueueFamilyIndices, SurfaceStuff, SwapChainSupportDetails};
-use crate::vulkan;
 use crate::vulkan::Destructor;
 use crate::{
     debug::{check_validation_layer_support, populate_debug_messenger_create_info},
     tools, VALIDATION,
 };
+use crate::{vulkan, MAX_FRAMES_IN_FLIGHT};
 use anyhow::{anyhow, Result};
 use ash::vk;
 use std::collections::HashSet;
@@ -764,4 +764,59 @@ pub fn create_semaphore(device: &ash::Device) -> Result<vk::Semaphore> {
         .initial_value(0);
     let semaphore_info = vk::SemaphoreCreateInfo::default().push(&mut type_info);
     Ok(unsafe { device.create_semaphore(&semaphore_info, None) }?)
+}
+
+pub fn create_commands_flight_frames(
+    device: &ash::Device,
+    queue_family_indices: &QueueFamilyIndices,
+) -> Result<(
+    Destructor<vk::CommandPool>,
+    [vk::CommandBuffer; MAX_FRAMES_IN_FLIGHT],
+)> {
+    let pool_info = vk::CommandPoolCreateInfo::default()
+        .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
+        .queue_family_index(queue_family_indices.transfer_family.unwrap().0);
+    let command_pool = Destructor::new(
+        device,
+        unsafe { device.create_command_pool(&pool_info, None)? },
+        device.fp_v1_0().destroy_command_pool,
+    );
+    let command_buffers =
+        create_command_buffers(device, command_pool.get(), MAX_FRAMES_IN_FLIGHT as u32)?;
+
+    let commands_out = <Vec<vk::CommandBuffer> as TryInto<
+        [vk::CommandBuffer; MAX_FRAMES_IN_FLIGHT],
+    >>::try_into(command_buffers)
+    .unwrap();
+
+    Ok((command_pool, commands_out))
+}
+
+pub fn create_commands_2_flight_frames(
+    device: &ash::Device,
+    queue_family_indices: &QueueFamilyIndices,
+) -> Result<(
+    Destructor<vk::CommandPool>,
+    [vk::CommandBuffer; 2 * MAX_FRAMES_IN_FLIGHT],
+)> {
+    let pool_info = vk::CommandPoolCreateInfo::default()
+        .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
+        .queue_family_index(queue_family_indices.transfer_family.unwrap().0);
+    let command_pool = Destructor::new(
+        device,
+        unsafe { device.create_command_pool(&pool_info, None)? },
+        device.fp_v1_0().destroy_command_pool,
+    );
+    let command_buffers = create_command_buffers(
+        device,
+        command_pool.get(),
+        (2 * MAX_FRAMES_IN_FLIGHT) as u32,
+    )?;
+
+    let commands_out = <Vec<vk::CommandBuffer> as TryInto<
+        [vk::CommandBuffer; 2 * MAX_FRAMES_IN_FLIGHT],
+    >>::try_into(command_buffers)
+    .unwrap();
+
+    Ok((command_pool, commands_out))
 }

@@ -327,7 +327,8 @@ impl Transfer {
     ) -> Result<Self> {
         log::trace!("Creating object");
         let queue = core::create_queue(&device, queue_family_indices.transfer_family.unwrap());
-        let (command_pool, commands) = create_commands(&device, &queue_family_indices)?;
+        let (command_pool, commands) =
+            core::create_commands_2_flight_frames(&device, &queue_family_indices)?;
         Ok(Self {
             last_timestamp: 0,
             device,
@@ -442,26 +443,30 @@ impl Transfer {
             layer_count: 1,
         }];
 
-        let mut ray_barrier = vk::ImageMemoryBarrier::default()
-            .old_layout(vk::ImageLayout::GENERAL)
-            .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
-            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-            .image(ray_images[ray_frame_index])
-            .subresource_range(subresource_range[0])
-            .src_access_mask(vk::AccessFlags::SHADER_READ)
-            .dst_access_mask(vk::AccessFlags::TRANSFER_READ);
-        let mut viewport_barrier = vk::ImageMemoryBarrier::default()
-            .old_layout(vk::ImageLayout::UNDEFINED)
-            .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-            .image(viewport_images[viewport_frame_index])
-            .subresource_range(subresource_range[0])
-            .src_access_mask(vk::AccessFlags::SHADER_READ)
-            .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE);
-
-        let mut image_memory_barriers = [ray_barrier, viewport_barrier];
+        let pre_barriers = [
+            vk::ImageMemoryBarrier2::default()
+                .old_layout(vk::ImageLayout::GENERAL)
+                .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .image(ray_images[ray_frame_index])
+                .subresource_range(subresource_range[0])
+                .src_stage_mask(vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR)
+                .dst_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+                .src_access_mask(vk::AccessFlags2::SHADER_WRITE)
+                .dst_access_mask(vk::AccessFlags2::TRANSFER_READ),
+            vk::ImageMemoryBarrier2::default()
+                .old_layout(vk::ImageLayout::UNDEFINED)
+                .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .image(viewport_images[viewport_frame_index])
+                .subresource_range(subresource_range[0])
+                .src_stage_mask(vk::PipelineStageFlags2::FRAGMENT_SHADER)
+                .dst_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+                .src_access_mask(vk::AccessFlags2::SHADER_READ)
+                .dst_access_mask(vk::AccessFlags2::TRANSFER_WRITE),
+        ];
 
         let subresource = vk::ImageSubresourceLayers {
             aspect_mask: vk::ImageAspectFlags::COLOR,
@@ -493,20 +498,15 @@ impl Transfer {
             },
         }];
 
+        let mut post_barriers = pre_barriers.clone();
+
         let begin_info = vk::CommandBufferBeginInfo::default();
+        let dependency = vk::DependencyInfo::default().image_memory_barriers(&pre_barriers);
         unsafe {
             self.device
                 .begin_command_buffer(command_buffer, &begin_info)?;
-            self.device.cmd_pipeline_barrier(
-                command_buffer,
-                vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR
-                    | vk::PipelineStageFlags::FRAGMENT_SHADER,
-                vk::PipelineStageFlags::TRANSFER,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &image_memory_barriers,
-            );
+            self.device
+                .cmd_pipeline_barrier2(command_buffer, &dependency);
             self.device.cmd_copy_image(
                 command_buffer,
                 ray_images[ray_frame_index],
@@ -517,41 +517,55 @@ impl Transfer {
             );
         }
 
-        ray_barrier.src_access_mask = vk::AccessFlags::TRANSFER_READ;
-        ray_barrier.dst_access_mask = vk::AccessFlags::SHADER_READ;
-        viewport_barrier.src_access_mask = vk::AccessFlags::TRANSFER_WRITE;
-        viewport_barrier.dst_access_mask = vk::AccessFlags::SHADER_READ;
-        ray_barrier.old_layout = vk::ImageLayout::TRANSFER_SRC_OPTIMAL;
-        ray_barrier.new_layout = vk::ImageLayout::GENERAL;
-        viewport_barrier.old_layout = vk::ImageLayout::TRANSFER_DST_OPTIMAL;
-        viewport_barrier.new_layout = vk::ImageLayout::GENERAL;
+        let clear_barrier = [vk::ImageMemoryBarrier2::default()
+            .old_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+            .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .image(ray_images[ray_frame_index])
+            .subresource_range(subresource_range[0])
+            .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+            .dst_stage_mask(vk::PipelineStageFlags2::CLEAR)
+            .src_access_mask(vk::AccessFlags2::TRANSFER_READ)
+            .dst_access_mask(vk::AccessFlags2::TRANSFER_WRITE)];
+        let dependency = vk::DependencyInfo::default().image_memory_barriers(&clear_barrier);
 
-        image_memory_barriers = [ray_barrier, viewport_barrier]; // TODO: Is this necessary or will the changes already be here?
-
+        // Clear the old ray image so we can start accumulating again
         unsafe {
-            self.device.cmd_pipeline_barrier(
-                command_buffer,
-                vk::PipelineStageFlags::TRANSFER,
-                vk::PipelineStageFlags::FRAGMENT_SHADER
-                    | vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &image_memory_barriers,
-            );
+            self.device
+                .cmd_pipeline_barrier2(command_buffer, &dependency);
 
             let clear_value = vk::ClearColorValue {
                 float32: [0.0, 0.0, 0.0, 1.0],
             };
 
-            // Clear old ray image
             self.device.cmd_clear_color_image(
                 command_buffer,
                 ray_images[ray_frame_index],
-                vk::ImageLayout::GENERAL,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                 &clear_value,
                 &subresource_range,
             );
+        }
+
+        // Convert the images back to what their respective pipeline needs
+        post_barriers[0].src_access_mask = vk::AccessFlags2::TRANSFER_WRITE;
+        post_barriers[0].dst_access_mask = vk::AccessFlags2::SHADER_READ;
+        post_barriers[1].src_access_mask = vk::AccessFlags2::TRANSFER_WRITE;
+        post_barriers[1].dst_access_mask = vk::AccessFlags2::SHADER_READ;
+        post_barriers[0].old_layout = vk::ImageLayout::TRANSFER_DST_OPTIMAL;
+        post_barriers[0].new_layout = vk::ImageLayout::GENERAL;
+        post_barriers[1].old_layout = vk::ImageLayout::TRANSFER_DST_OPTIMAL;
+        post_barriers[1].new_layout = vk::ImageLayout::GENERAL;
+        post_barriers[0].src_stage_mask = vk::PipelineStageFlags2::CLEAR;
+        post_barriers[0].dst_stage_mask = vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR;
+        post_barriers[1].src_stage_mask = vk::PipelineStageFlags2::TRANSFER;
+        post_barriers[1].dst_stage_mask = vk::PipelineStageFlags2::FRAGMENT_SHADER;
+        let dependency = vk::DependencyInfo::default().image_memory_barriers(&post_barriers);
+
+        unsafe {
+            self.device
+                .cmd_pipeline_barrier2(command_buffer, &dependency);
 
             self.device.end_command_buffer(command_buffer)?;
         }
@@ -650,7 +664,7 @@ impl Transfer {
 
 impl Drop for Transfer {
     fn drop(&mut self) {
-        // TODO: Set timeline semaphore to max value
+        // Set timeline semaphore to max value so that everything waiting on it is released
         let signal_info = vk::SemaphoreSignalInfo {
             semaphore: self.semaphore,
             value: i32::MAX as u64,
@@ -676,29 +690,4 @@ impl Drop for Transfer {
         }
         log::trace!("Cleaned up Transfer");
     }
-}
-
-fn create_commands(
-    device: &ash::Device,
-    queue_family_indices: &structures::QueueFamilyIndices,
-) -> Result<(Destructor<vk::CommandPool>, [vk::CommandBuffer; 4])> {
-    let pool_info = vk::CommandPoolCreateInfo::default()
-        .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
-        .queue_family_index(queue_family_indices.transfer_family.unwrap().0);
-    let command_pool = Destructor::new(
-        device,
-        unsafe { device.create_command_pool(&pool_info, None)? },
-        device.fp_v1_0().destroy_command_pool,
-    );
-    let command_buffers = core::create_command_buffers(device, command_pool.get(), 4)?;
-
-    Ok((
-        command_pool,
-        [
-            command_buffers[0],
-            command_buffers[1],
-            command_buffers[2],
-            command_buffers[3],
-        ],
-    ))
 }

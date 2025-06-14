@@ -492,32 +492,45 @@ impl<'a> Viewport<'a> {
         self.push_constants.accumulated_frames = accumulated_frames;
         self.record_commands(swapchain_index as usize, frame)?;
 
-        let wait_semaphores = [self.image_available[frame].get(), transfer_semaphore];
-        let wait_stages = [
-            vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-            vk::PipelineStageFlags::TRANSFER,
+        let wait_semaphore_info = [
+            vk::SemaphoreSubmitInfo {
+                semaphore: self.image_available[frame].get(),
+                value: 0,
+                stage_mask: vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+                ..Default::default()
+            },
+            vk::SemaphoreSubmitInfo {
+                semaphore: transfer_semaphore,
+                value: wait_timestamp,
+                stage_mask: vk::PipelineStageFlags2::TRANSFER,
+                ..Default::default()
+            },
         ];
-        let wait_values = [
-            0, // Binary so will be ignored
-            wait_timestamp,
+
+        let command_buffer_info =
+            [vk::CommandBufferSubmitInfo::default().command_buffer(self.commands[frame])];
+
+        let submit_semaphore_info = [
+            vk::SemaphoreSubmitInfo {
+                semaphore: self.render_finished[frame].get(),
+                stage_mask: vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+                ..Default::default()
+            },
+            vk::SemaphoreSubmitInfo {
+                semaphore: viewport_semaphore,
+                value: wait_timestamp,
+                stage_mask: vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+                ..Default::default()
+            },
         ];
-        let submit_signal_semaphores = [self.render_finished[frame].get(), viewport_semaphore];
-        let command_buffers = [self.commands[frame]];
 
-        // We want to forward the timestamp value when we complete so we wait and submit the same value
-        let mut timeline_info = vk::TimelineSemaphoreSubmitInfo::default()
-            .wait_semaphore_values(&wait_values)
-            .signal_semaphore_values(&wait_values);
-
-        let submit_info = vk::SubmitInfo::default()
-            .wait_semaphores(&wait_semaphores)
-            .wait_dst_stage_mask(&wait_stages)
-            .command_buffers(&command_buffers)
-            .signal_semaphores(&submit_signal_semaphores)
-            .push(&mut timeline_info);
+        let submit_info = vk::SubmitInfo2::default()
+            .wait_semaphore_infos(&wait_semaphore_info)
+            .command_buffer_infos(&command_buffer_info)
+            .signal_semaphore_infos(&submit_semaphore_info);
 
         unsafe {
-            self.device.queue_submit(
+            self.device.queue_submit2(
                 self.queue,
                 &[submit_info],
                 self.in_flight_fences[frame].get(),
@@ -663,7 +676,7 @@ impl<'a> Viewport<'a> {
                 extent: self.swapchain_stuff.extent,
             });
 
-        let barrier = [vk::ImageMemoryBarrier::default()
+        let barrier = [vk::ImageMemoryBarrier2::default()
             .old_layout(vk::ImageLayout::UNDEFINED)
             .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
             .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
@@ -676,22 +689,16 @@ impl<'a> Viewport<'a> {
                 base_array_layer: 0,
                 layer_count: 1,
             })
-            .src_access_mask(vk::AccessFlags::empty())
-            .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)];
+            .src_access_mask(vk::AccessFlags2::empty())
+            .dst_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
+            .src_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
+            .dst_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)];
+        let dependency = vk::DependencyInfo::default().image_memory_barriers(&barrier);
 
         unsafe {
-            self.device.cmd_pipeline_barrier(
-                self.commands[frame_index],
-                vk::PipelineStageFlags::TOP_OF_PIPE,
-                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &barrier,
-            );
-        }
+            self.device
+                .cmd_pipeline_barrier2(self.commands[frame_index], &dependency);
 
-        unsafe {
             self.device
                 .cmd_begin_rendering(self.commands[frame_index], &rendering_info);
             self.device.cmd_bind_pipeline(
@@ -748,7 +755,7 @@ impl<'a> Viewport<'a> {
 
             self.device.cmd_end_rendering(self.commands[frame_index]);
 
-            let barrier = [vk::ImageMemoryBarrier::default()
+            let barrier = [vk::ImageMemoryBarrier2::default()
                 .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
                 .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
                 .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
@@ -761,18 +768,15 @@ impl<'a> Viewport<'a> {
                     base_array_layer: 0,
                     layer_count: 1,
                 })
-                .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
-                .dst_access_mask(vk::AccessFlags::empty())];
+                .src_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
+                .dst_access_mask(vk::AccessFlags2::empty())
+                .src_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
+                .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)];
 
-            self.device.cmd_pipeline_barrier(
-                self.commands[frame_index],
-                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                vk::PipelineStageFlags::BOTTOM_OF_PIPE,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &barrier,
-            );
+            let dependency = vk::DependencyInfo::default().image_memory_barriers(&barrier);
+
+            self.device
+                .cmd_pipeline_barrier2(self.commands[frame_index], &dependency);
 
             self.device.cmd_write_timestamp(
                 self.commands[frame_index],
@@ -1022,6 +1026,8 @@ pub fn create_descriptor_sets(
         .set_layouts(&layouts);
 
     let descriptor_sets = unsafe { device.allocate_descriptor_sets(&allocate_info)? };
+
+    // TODO: Replace with VK_EXT_descriptor_buffer?
 
     // TODO: Target 4 descriptors (apparently this is the guaranteed supported amount and more can be slow)
     for (i, &descriptor_set) in descriptor_sets.iter().enumerate() {
