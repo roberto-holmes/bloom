@@ -327,8 +327,10 @@ impl Transfer {
     ) -> Result<Self> {
         log::trace!("Creating object");
         let queue = core::create_queue(&device, queue_family_indices.transfer_family.unwrap());
-        let (command_pool, commands) =
-            core::create_commands_2_flight_frames(&device, &queue_family_indices)?;
+        let (command_pool, commands) = core::create_commands_2_flight_frames(
+            &device,
+            queue_family_indices.transfer_family.unwrap().0,
+        )?;
         Ok(Self {
             last_timestamp: 0,
             device,

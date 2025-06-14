@@ -10,7 +10,8 @@ use hecs::{Entity, World};
 use vk_mem;
 use winit::dpi::PhysicalSize;
 
-use crate::ocean::Ocean;
+use crate::core::create_commands_flight_frames;
+use crate::oceans::Ocean;
 use crate::material::Material;
 use crate::primitives::{
     Addressable, ObjectType, Objectionable, Primitive, PrimitiveAddresses, AABB,
@@ -143,7 +144,7 @@ pub fn thread(
                 }
                 Ok(v) => v,
             };
-            log::warn!(
+            log::trace!(
                 "First images {:?} are now {}x{}",
                 new_images,
                 size.width,
@@ -344,7 +345,7 @@ impl<'a> Ray<'a> {
         // Populates queue
         let queue = core::create_queue(&device, queue_family_indices.compute_family.unwrap());
 
-        let (command_pool, commands) = create_empty_commands(&device, queue_family_indices)?;
+        let (command_pool, commands) = create_commands_flight_frames(&device, queue_family_indices.compute_family.unwrap().0)?;
 
         let materials_buffer = vulkan::Buffer::new_gpu(
             &allocator,
@@ -401,7 +402,7 @@ impl<'a> Ray<'a> {
         // Set a default material for primitives that are missing one or have not been properly set up
         materials.push(Material::new_basic(Vec3::new(1.0, 0.1, 0.7), 0.));
 
-        let ocean = Ocean::new(&device, &allocator, queue_family_indices)?;
+        let ocean = Ocean::new(&device, &allocator, queue, command_pool.get())?;
 
         Ok(Self {
             device,
@@ -790,8 +791,7 @@ impl<'a> Ray<'a> {
             return Ok(());
         }
 
-        let (ocean_semaphore, ocean_timestamp) =
-            self.ocean.dispatch(&self.device, current_frame_index)?;
+        self.ocean.update();
 
         let height = self.images.as_ref().unwrap()[current_frame_index].height;
         let width = self.images.as_ref().unwrap()[current_frame_index].width;
@@ -804,17 +804,14 @@ impl<'a> Ray<'a> {
         let wait_timestamps = [
             transfer_timestamp_to_wait,
             ray_timestamp_to_wait,
-            ocean_timestamp,
         ];
         let wait_semaphores = [
             transfer_semaphore,
             self.semaphore.get(),
-           ocean_semaphore,
         ];
         let wait_stages = [
             vk::PipelineStageFlags::TRANSFER,
             vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
-            vk::PipelineStageFlags::COMPUTE_SHADER,
         ];
 
         let signal_timestamps = [timestamp_to_signal];
@@ -1092,6 +1089,8 @@ impl<'a> Ray<'a> {
         unsafe {
             self.device
                 .begin_command_buffer(command_buffer, &begin_info)?;
+
+            self.ocean.dispatch(&self.device, frame_index, command_buffer);
 
             let single_handle_size_aligned = aligned_size(
                 self.ray_tracing_pipeline_properties
@@ -1909,22 +1908,4 @@ fn create_pipeline<'a>(
         )),
         Err(e) => Err(anyhow!("Failed to create graphics pipeline: {:?}", e)),
     }
-}
-
-fn create_empty_commands(
-    device: &ash::Device,
-    queue_family_indices: structures::QueueFamilyIndices,
-) -> Result<(Destructor<vk::CommandPool>, [vk::CommandBuffer; 2])> {
-    let pool_info = vk::CommandPoolCreateInfo::default()
-        .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
-        .queue_family_index(queue_family_indices.compute_family.unwrap().0);
-    let command_pool = Destructor::new(
-        device,
-        unsafe { device.create_command_pool(&pool_info, None)? },
-        device.fp_v1_0().destroy_command_pool,
-    );
-
-    let command_buffers = core::create_command_buffers(device, command_pool.get(), 2)?;
-    let commands = [command_buffers[0], command_buffers[1]];
-    Ok((command_pool, commands))
 }

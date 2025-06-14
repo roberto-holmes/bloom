@@ -768,14 +768,16 @@ pub fn create_semaphore(device: &ash::Device) -> Result<vk::Semaphore> {
 
 pub fn create_commands_flight_frames(
     device: &ash::Device,
-    queue_family_indices: &QueueFamilyIndices,
+    queue_family_index: u32,
 ) -> Result<(
     Destructor<vk::CommandPool>,
     [vk::CommandBuffer; MAX_FRAMES_IN_FLIGHT],
 )> {
-    let pool_info = vk::CommandPoolCreateInfo::default()
-        .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
-        .queue_family_index(queue_family_indices.transfer_family.unwrap().0);
+    let pool_info = vk::CommandPoolCreateInfo {
+        queue_family_index,
+        flags: vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
+        ..Default::default()
+    };
     let command_pool = Destructor::new(
         device,
         unsafe { device.create_command_pool(&pool_info, None)? },
@@ -794,14 +796,16 @@ pub fn create_commands_flight_frames(
 
 pub fn create_commands_2_flight_frames(
     device: &ash::Device,
-    queue_family_indices: &QueueFamilyIndices,
+    queue_family_index: u32,
 ) -> Result<(
     Destructor<vk::CommandPool>,
     [vk::CommandBuffer; 2 * MAX_FRAMES_IN_FLIGHT],
 )> {
-    let pool_info = vk::CommandPoolCreateInfo::default()
-        .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
-        .queue_family_index(queue_family_indices.transfer_family.unwrap().0);
+    let pool_info = vk::CommandPoolCreateInfo {
+        queue_family_index,
+        flags: vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
+        ..Default::default()
+    };
     let command_pool = Destructor::new(
         device,
         unsafe { device.create_command_pool(&pool_info, None)? },

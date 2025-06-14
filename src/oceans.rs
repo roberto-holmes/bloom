@@ -1,4 +1,4 @@
-use std::{array, ffi::CString, path::Path, sync::Arc, time::Instant};
+use std::{ffi::CString, path::Path, sync::Arc, time::Instant};
 
 use anyhow::{anyhow, Result};
 use ash::vk;
@@ -41,33 +41,16 @@ pub struct Ocean<'a> {
     descriptor_sets: [vk::DescriptorSet; MAX_FRAMES_IN_FLIGHT],
     pipeline_layout: Destructor<vk::PipelineLayout>,
     pipeline: Destructor<vk::Pipeline>,
-
-    semaphore_values: [u64; MAX_FRAMES_IN_FLIGHT],
-
-    #[allow(dead_code)]
-    command_pool: Destructor<vk::CommandPool>,
-    commands: [vk::CommandBuffer; MAX_FRAMES_IN_FLIGHT],
-    queue: vk::Queue,
-    semaphores: [Destructor<vk::Semaphore>; MAX_FRAMES_IN_FLIGHT],
 }
 
 impl<'a> Ocean<'a> {
     pub fn new(
         device: &ash::Device,
         allocator: &Arc<vk_mem::Allocator>,
-        queue_family_indices: structures::QueueFamilyIndices,
+        queue: vk::Queue,
+        command_pool: vk::CommandPool,
     ) -> Result<Self> {
-        let queue = core::create_queue(&device, queue_family_indices.compute_family.unwrap());
-        let (command_pool, commands) =
-            core::create_commands_flight_frames(&device, &queue_family_indices)?;
-
-        let images = create_images(
-            device,
-            allocator,
-            OCEAN_RESOLUTION,
-            command_pool.get(),
-            queue,
-        )?;
+        let images = create_images(device, allocator, OCEAN_RESOLUTION, command_pool, queue)?;
 
         log::trace!(
             "FFT has images {:?} and {:?}",
@@ -78,14 +61,6 @@ impl<'a> Ocean<'a> {
         let (descriptor_pool, descriptor_set_layout, descriptor_sets, pipeline_layout, pipeline) =
             create_pipeline(device, &images)?;
 
-        let semaphores = array::from_fn(|_| {
-            Destructor::new(
-                &device,
-                core::create_semaphore(&device).unwrap(),
-                device.fp_v1_0().destroy_semaphore,
-            )
-        });
-
         Ok(Self {
             start_time: Instant::now(),
             images,
@@ -95,26 +70,21 @@ impl<'a> Ocean<'a> {
             pipeline,
             _descriptor_pool: descriptor_pool,
             descriptor_sets,
-            command_pool,
-            commands,
-            queue,
-            semaphores,
-            semaphore_values: [0; 2],
         })
     }
+    pub fn update(&mut self) {
+        self.push_constants.timestamp_ns = self.start_time.elapsed().as_nanos() as u64;
+    }
     pub fn dispatch(
-        &mut self,
+        &self,
         device: &ash::Device,
         frame_index: usize,
-    ) -> Result<(vk::Semaphore, u64)> {
-        self.push_constants.timestamp_ns = self.start_time.elapsed().as_nanos() as u64;
-
-        let begin_info = vk::CommandBufferBeginInfo::default();
-        unsafe { device.begin_command_buffer(self.commands[frame_index], &begin_info)? };
+        command_buffer: vk::CommandBuffer,
+    ) {
         // Convert Images from Ray to be able to write to them
         convert_images(
             device,
-            self.commands[frame_index],
+            command_buffer,
             &self.images[frame_index * FFT_IMAGES..(frame_index + 1) * FFT_IMAGES],
             false,
         );
@@ -122,7 +92,7 @@ impl<'a> Ocean<'a> {
         unsafe {
             // Update the push constants
             device.cmd_push_constants(
-                self.commands[frame_index],
+                command_buffer,
                 self.pipeline_layout.get(),
                 vk::ShaderStageFlags::COMPUTE,
                 0,
@@ -131,63 +101,30 @@ impl<'a> Ocean<'a> {
 
             // Dispatch the compute shader
             device.cmd_bind_pipeline(
-                self.commands[frame_index],
+                command_buffer,
                 vk::PipelineBindPoint::COMPUTE,
                 self.pipeline.get(),
             );
             let descriptor_sets_to_bind = [self.descriptor_sets[frame_index]];
             device.cmd_bind_descriptor_sets(
-                self.commands[frame_index],
+                command_buffer,
                 vk::PipelineBindPoint::COMPUTE,
                 self.pipeline_layout.get(),
                 0,
                 &descriptor_sets_to_bind,
                 &[],
             );
-            // build_barrier(device, self.commands[frame_index], true);
-            device.cmd_dispatch(self.commands[frame_index], 8, 8, 1); // TODO: Sizes
-                                                                      // Convert Images for Ray to be able to read them
+            // build_barrier(device, command_buffer, true);
+            device.cmd_dispatch(command_buffer, 8, 8, 1); // TODO: Sizes
+
+            // Convert Images for Ray to be able to read them
             convert_images(
                 device,
-                self.commands[frame_index],
+                command_buffer,
                 &self.images[frame_index * FFT_IMAGES..(frame_index + 1) * FFT_IMAGES],
                 true,
             );
-            device.end_command_buffer(self.commands[frame_index])?;
         }
-
-        let command_buffer_infos = [vk::CommandBufferSubmitInfo {
-            command_buffer: self.commands[frame_index],
-            ..Default::default()
-        }];
-        // Let Ray now that we are finished
-        let signal_semaphore_infos = [vk::SemaphoreSubmitInfo {
-            semaphore: self.semaphores[frame_index].get(),
-            value: self.semaphore_values[frame_index] + 1,
-            stage_mask: vk::PipelineStageFlags2::COMPUTE_SHADER, // TODO: Should this be Ray Tracing?
-            ..Default::default()
-        }];
-        // Wait for the last run to finish
-        let wait_semaphore_infos = [vk::SemaphoreSubmitInfo {
-            semaphore: self.semaphores[frame_index].get(),
-            value: self.semaphore_values[frame_index],
-            stage_mask: vk::PipelineStageFlags2::COMPUTE_SHADER, // TODO: Should this be Ray Tracing?
-            ..Default::default()
-        }];
-        let submits = [vk::SubmitInfo2::default()
-            .command_buffer_infos(&command_buffer_infos)
-            .signal_semaphore_infos(&signal_semaphore_infos)
-            .wait_semaphore_infos(&wait_semaphore_infos)];
-
-        unsafe {
-            device.queue_submit2(self.queue, &submits, vk::Fence::null())?;
-        };
-
-        self.semaphore_values[frame_index] += 1;
-        Ok((
-            self.semaphores[frame_index].get(),
-            self.semaphore_values[frame_index],
-        ))
     }
 }
 
@@ -261,7 +198,6 @@ fn create_pipeline(
 )> {
     let set_layout_bindings: [vk::DescriptorSetLayoutBinding<'_>; FFT_IMAGES] =
         std::array::from_fn(|i| {
-            log::error!("Layout bindings: {}", i);
             vk::DescriptorSetLayoutBinding::default()
                 .binding(i as u32)
                 .descriptor_count(1)
@@ -317,7 +253,6 @@ fn create_pipeline(
     for (i, &descriptor_set) in descriptor_sets.iter().enumerate() {
         // Swap image views around each frame
         let image_infos: [[vk::DescriptorImageInfo; 1]; FFT_IMAGES] = std::array::from_fn(|j| {
-            log::error!("Image View indices {}", FFT_IMAGES * i + j);
             [vk::DescriptorImageInfo::default()
                 .image_layout(vk::ImageLayout::GENERAL)
                 .image_view(output_images[FFT_IMAGES * i + j].view())]
@@ -369,35 +304,6 @@ fn create_pipeline(
         pipeline_layout,
         pipeline,
     ))
-}
-
-fn build_barrier(device: &ash::Device, command_buffer: vk::CommandBuffer, to_ray: bool) {
-    let barrier = if to_ray {
-        [vk::MemoryBarrier2 {
-            src_stage_mask: vk::PipelineStageFlags2::ALL_COMMANDS,
-            // src_stage_mask: vk::PipelineStageFlags2::COMPUTE_SHADER,
-            src_access_mask: vk::AccessFlags2::SHADER_WRITE,
-            dst_stage_mask: vk::PipelineStageFlags2::ALL_COMMANDS,
-            // dst_stage_mask: vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR,
-            dst_access_mask: vk::AccessFlags2::SHADER_READ,
-            ..Default::default()
-        }]
-    } else {
-        [vk::MemoryBarrier2 {
-            src_stage_mask: vk::PipelineStageFlags2::ALL_COMMANDS,
-            // src_stage_mask: vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR,
-            src_access_mask: vk::AccessFlags2::SHADER_READ,
-            dst_stage_mask: vk::PipelineStageFlags2::ALL_COMMANDS,
-            // dst_stage_mask: vk::PipelineStageFlags2::COMPUTE_SHADER,
-            dst_access_mask: vk::AccessFlags2::SHADER_WRITE,
-            ..Default::default()
-        }]
-    };
-    let dependency = vk::DependencyInfo::default().memory_barriers(&barrier);
-
-    unsafe {
-        device.cmd_pipeline_barrier2(command_buffer, &dependency);
-    }
 }
 
 fn convert_images(
