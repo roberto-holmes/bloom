@@ -23,7 +23,10 @@ fn evaluate_collisions<T: Bloomable>(user: &mut T, w: &mut World) {
         Some(c) => c,
         None => return,
     };
-    let player_entity = w.query_one::<&Child>(cam).unwrap().get().unwrap().parent;
+    let player_entity = match w.query_one::<&Child>(cam).unwrap().get() {
+        Some(v) => v.parent,
+        None => return, // We don't need to do physics if the camera is not attached to anything
+    };
     let mut player_query = w
         .query_one::<(&mut Collider, &mut Orientation, &Instance)>(player_entity)
         .unwrap();
