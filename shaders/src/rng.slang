@@ -43,7 +43,8 @@ public float rand_f32() {
 	return asfloat(0x3f800000u | (xorshift32() >> 9u)) - 1.;
 }
 
-public float3 generate_random_unit_vector() {
+// TODO: Improve
+public float3 random_unit_vector3() {
 	return normalize(float3(rand_f32() * 2. - 1., rand_f32() * 2. - 1., rand_f32() * 2. - 1.));
 	// var v = float3(rand_f32() * 2. - 1., rand_f32() * 2. - 1., rand_f32() * 2. - 1.);
 	// while (length(v) > 1.0) {
@@ -52,7 +53,11 @@ public float3 generate_random_unit_vector() {
 	// return v;
 }
 
-public float3 get_random_in_unit_disk() {
+public float2 random_unit_vector2() {
+	return normalize(float2(rand_f32() * 2. - 1., rand_f32() * 2. - 1.));
+}
+
+public float3 random_vector_in_unit_disk() {
 	// var v = float3(rand_f32() * 2. - 1., rand_f32() * 2. - 1., 0.0);
 	// while (length(v) > 1.0) {
 	// 	v = float3(rand_f32() * 2. - 1., rand_f32() * 2. - 1., 0.0);

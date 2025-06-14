@@ -27,7 +27,7 @@ void main() {
 	init_rng(DispatchRaysIndex().xy, ubo.width, ubo.ray_frame_num + DispatchRaysIndex().x + DispatchRaysIndex().y + ubo.random_num);
 
 	// Start the rays from the center of each pixel with a random offset to perform antialiasing
-	const float2 pixelCenter = float2(LaunchID.xy) + float2(0.5, 0.5) + get_random_in_unit_disk().xy;
+	const float2 pixelCenter = float2(LaunchID.xy) + float2(0.5, 0.5) + random_vector_in_unit_disk().xy;
 	// Coordinates are now between 0 and 1 (0,0 at top left, 1,1 at bottom right)
 	const float2 uv_in = pixelCenter / float2(LaunchSize.xy);
 	// Map coordinates so that 0,0 is in the center, y-up, x-right, screen height is 2 units
@@ -38,7 +38,7 @@ void main() {
 	uv *= viewport_scale_factor;
 
 	// float3x3 camera_rotation = transpose(float3x3(ubo.camera.u, ubo.camera.v, ubo.camera.w));
-	let dof_offset = rotate_vector(get_random_in_unit_disk(), ubo.camera.q) * ubo.camera.dof_scale;
+	let dof_offset = rotate_vector(random_vector_in_unit_disk(), ubo.camera.q) * ubo.camera.dof_scale;
 	let direction = rotate_vector(float3(uv, ubo.camera.focal_distance), ubo.camera.q) - dof_offset;
 
 	Payload payload;

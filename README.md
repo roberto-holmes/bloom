@@ -6,7 +6,7 @@ Vulkan app to demonstrate path traced lenses
 
 ### Fixes
 
-- generate_random_unit_vector and get_random_in_unit_disk
+- random_unit_vector3 and random_vector_in_unit_disk
 - Lenses
 - Collision AABBs (Duck can sometimes stick nose through objects)
 - Slow shutdowns
