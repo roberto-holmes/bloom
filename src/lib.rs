@@ -266,7 +266,7 @@ struct VulkanApp<T: Bloomable + Clone + Sync + Send + 'static> {
     ray_thread: Option<JoinHandle<()>>,
 
     should_transfer_die: Arc<RwLock<bool>>,
-    transfer_thread: Option<JoinHandle<()>>,
+    sync_thread: Option<JoinHandle<()>>,
 
     should_viewport_die: Arc<RwLock<bool>>,
     viewport_thread: Option<JoinHandle<()>>,
@@ -344,15 +344,15 @@ where
         let should_uniforms_die_out = Arc::clone(&should_uniforms_die);
         let should_ray_die_out = Arc::clone(&should_ray_die);
 
-        let transfer_device = device.get().clone();
+        let sync_device = device.get().clone();
         let viewport_device = device.get().clone();
         let ray_device = device.get().clone();
 
-        let transfer_instance = instance.get().clone();
+        let sync_instance = instance.get().clone();
         let viewport_instance = instance.get().clone();
         let ray_instance = instance.get().clone();
 
-        let transfer_physical_device = physical_device.clone();
+        let sync_physical_device = physical_device.clone();
         let viewport_physical_device = physical_device.clone();
         let ray_physical_device = physical_device.clone();
 
@@ -462,39 +462,38 @@ where
             ),
         ];
 
-        let transfer_thread =
-            match thread::Builder::new()
-                .name("Sync".to_string())
-                .spawn(move || {
-                    sync::thread(
-                        sync_user_app,
-                        transfer_device,
-                        transfer_instance,
-                        transfer_physical_device,
-                        queue_family_indices,
-                        transfer_transfer_semaphore,
-                        should_transfer_die_out,
-                        should_systems_die,
-                        event_broadcaster,
-                        systems,
-                        system_sync,
-                        ray_frame_complete_receiver,
-                        draw_receiver,
-                        resize_receiver,
-                        transfer_resize_receiver,
-                        transfer_uniforms_sender,
-                        ray_transfer_command_sender,
-                        viewport_transfer_command_sender,
-                        ray_resize_updater,
-                        viewport_resize_updater,
-                    );
-                }) {
-                Ok(v) => Some(v),
-                Err(e) => {
-                    log::error!("Failed to create transfer thread: {e}");
-                    None
-                }
-            };
+        let sync_thread = match thread::Builder::new()
+            .name("Sync".to_string())
+            .spawn(move || {
+                sync::thread(
+                    sync_user_app,
+                    sync_device,
+                    sync_instance,
+                    sync_physical_device,
+                    queue_family_indices,
+                    transfer_transfer_semaphore,
+                    should_transfer_die_out,
+                    should_systems_die,
+                    event_broadcaster,
+                    systems,
+                    system_sync,
+                    ray_frame_complete_receiver,
+                    draw_receiver,
+                    resize_receiver,
+                    transfer_resize_receiver,
+                    transfer_uniforms_sender,
+                    ray_transfer_command_sender,
+                    viewport_transfer_command_sender,
+                    ray_resize_updater,
+                    viewport_resize_updater,
+                );
+            }) {
+            Ok(v) => Some(v),
+            Err(e) => {
+                log::error!("Failed to create transfer thread: {e}");
+                None
+            }
+        };
 
         let viewport_thread =
             match thread::Builder::new()
@@ -594,7 +593,7 @@ where
             should_ray_die,
             should_transfer_die,
             ray_thread,
-            transfer_thread,
+            sync_thread,
 
             should_viewport_die,
             viewport_thread,
@@ -686,8 +685,8 @@ impl<T: Bloomable + Clone + Sync + Send + 'static> Drop for VulkanApp<T> {
             Ok(mut m) => *m = true,
             Err(e) => log::error!("Failed to write to transfer death mutex: {e}"),
         }
-        if let Some(t) = self.transfer_thread.take() {
-            log::debug!("Waiting for transfer to finish");
+        if let Some(t) = self.sync_thread.take() {
+            log::debug!("Waiting for sync to finish");
             t.join().unwrap();
         }
         std::thread::sleep(Duration::from_secs(1));
