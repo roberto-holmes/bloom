@@ -124,7 +124,9 @@ fn find_queue_families(
             && queue_family.queue_count > 0
         {
             for i in 0..queue_family.queue_count {
-                if !queue_family_indices.is_index_taken(family_index as u32, i) {
+                if !queue_family_indices.is_index_taken(family_index as u32, i)
+                    && queue_family.queue_count >= i
+                {
                     queue_family_indices.compute_family = Some((family_index as u32, i));
                     break;
                 } else if fallback_compute_queue_index.is_none() {
@@ -140,7 +142,9 @@ fn find_queue_families(
             && queue_family.queue_count > 0
         {
             for i in 0..queue_family.queue_count {
-                if !queue_family_indices.is_index_taken(family_index as u32, i) {
+                if !queue_family_indices.is_index_taken(family_index as u32, i)
+                    && queue_family.queue_count >= i
+                {
                     queue_family_indices.transfer_family = Some((family_index as u32, i));
                     break;
                 } else if fallback_transfer_queue_index.is_none() {
@@ -367,26 +371,26 @@ pub fn create_logical_device(
     let indices = find_queue_families(instance, physical_device, surface_stuff);
 
     let mut queue_families = vec![];
-    queue_families.push(indices.graphics_family.unwrap().0);
-    queue_families.push(indices.present_family.unwrap().0);
-    queue_families.push(indices.compute_family.unwrap().0);
-    queue_families.push(indices.transfer_family.unwrap().0);
+    queue_families.push(indices.graphics_family.unwrap());
+    queue_families.push(indices.present_family.unwrap());
+    queue_families.push(indices.compute_family.unwrap());
+    queue_families.push(indices.transfer_family.unwrap());
 
     let mut queue_priorities = vec![1.0];
 
     // Create a set to store all the queue families we want in case a single queue has satisfies multiple requirements
-    let mut unique_queue_families = HashSet::new();
+    let mut unique_queue_families: HashSet<u32> = HashSet::new();
     for q in &queue_families {
-        unique_queue_families.insert(q);
+        unique_queue_families.insert(q.0);
         // Set up priorities for as many queues as there are
         queue_priorities.push(0.5);
     }
 
     let mut queue_create_infos = vec![];
-    for &queue_family in unique_queue_families {
+    for queue_family in unique_queue_families {
         let mut queue_count = 0;
         for &q in &queue_families {
-            if q == queue_family {
+            if q.0 == queue_family {
                 queue_count += 1;
             }
         }
@@ -537,8 +541,7 @@ pub fn create_storage_image_pair<'a>(
     let width = std::cmp::min(size.width, get_max_image_size(instance, physical_device));
     let height = std::cmp::min(size.height, get_max_image_size(instance, physical_device));
 
-    let mut images = vec![];
-    images.reserve_exact(2);
+    let mut images = Vec::with_capacity(2);
 
     for i in 0..2 {
         images.push(vulkan::Image::new(
