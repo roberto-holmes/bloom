@@ -13,6 +13,7 @@ Vulkan app to demonstrate path traced lenses
 
 ### Features
 
+- Instructions in README
 - Rayon?
 - [Text](https://youtu.be/SO83KQuuZvg)
 - [Ocean](https://youtu.be/yPfagLeUa7k)
@@ -20,6 +21,14 @@ Vulkan app to demonstrate path traced lenses
 - [Proper PBR](https://pbr-book.org/4ed/)
 - Support for curved displays
 - Proper physics
+- Click to focus (Re-enable depth of field effect and add selection rays)
+- Splitscreen
+- Network Multiplayer
+
+### Projects
+
+- Lens based puzzle game
+- Multiplayer sailing racing game
 
 # Used Resources
 
