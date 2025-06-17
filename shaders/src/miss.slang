@@ -9,8 +9,8 @@ void main(inout Payload p) {
 
 	// p.radiance = float3(0.4, 0.1, 0.3);
 	// p.radiance = float3(0.3, 0.5, 1.0);
-	p.radiance = float3(0.0);
+	// p.radiance = float3(0.0);
 	// p.radiance = float3(1.0, 1.0, 1.0);
-	p.attenuation = float3(1.0, 1.0, 1.0);
+	// p.attenuation = float3(1.0, 1.0, 1.0);
 	p.done = 1;
 }

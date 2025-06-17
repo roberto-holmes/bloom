@@ -8,6 +8,8 @@ __import ocean;
 ConstantBuffer<UBO> ubo;
 [[vk::binding(4, 0)]]
 StructuredBuffer<Buffers> scene;
+[[vk::binding(6, 0)]]
+RWTexture2D<float4> ocean_map;
 
 [shader("intersection")]
 void main() {
@@ -322,4 +324,48 @@ float f_prime(float t, float3 axis, float3 center, float R, float k) {
 
 	// Apply chain rule
 	return aspheric_surface_prime(r(t, a, b, c), R, k) * r_prime(t, a, b, c) - dot(WorldRayDirection(), axis);
+}
+
+public float4 hit_ocean(const Ocean* ocean) {
+	// TODO: get initial t from intersection with AABB
+	float t_max = 100.0;
+	float dt = 0.01;
+	// Ray march to see if we hit the ocean
+	// TODO: Optimise
+	for (float t = 0.0; t < t_max; t += dt) {
+		let p = WorldRayOrigin() + WorldRayDirection() * t;
+		let point = get_ocean_point(ocean, p.xz);
+		if (p.y < point.r) {
+			return point;
+		}
+	}
+	return float4(F32_MAX);
+}
+
+float4 get_ocean_point(const Ocean* ocean, float2 coordinates) {
+	// printf("P: %v2f\n", coordinates);
+	// return float4(coordinates.x);
+
+	// Tile coordinates over size
+	coordinates -= ocean.size * floor(coordinates / ocean.size);
+	// Bilinear Interpolation
+	// TODO: Verify interpolation implementation
+	// TODO: Consider a better algorithm
+	let h_11 = ocean_map[uint2(floor(coordinates))];
+	let h_22 = ocean_map[uint2(ceil(coordinates))];
+	let h_21 = ocean_map[uint2((uint)floor(coordinates.x), (uint)ceil(coordinates.y))];
+	let h_12 = ocean_map[uint2((uint)ceil(coordinates.x), (uint)floor(coordinates.y))];
+
+	let x_lerp1 = lerp(h_11, h_12, ceil(coordinates.x) - floor(coordinates.x));
+	let x_lerp2 = lerp(h_21, h_22, ceil(coordinates.x) - floor(coordinates.x));
+	let y_lerp1 = lerp(h_11, h_21, ceil(coordinates.y) - floor(coordinates.y));
+	let y_lerp2 = lerp(h_12, h_22, ceil(coordinates.y) - floor(coordinates.y));
+
+	let x_lerp = lerp(x_lerp1, x_lerp2, ceil(coordinates.x) - floor(coordinates.x));
+	let y_lerp = lerp(y_lerp1, y_lerp2, ceil(coordinates.y) - floor(coordinates.y));
+
+	return (x_lerp + y_lerp) / 2.0;
+
+	// return ocean_map[uint2(floor(coordinates))];
+	// return ocean_map[uint2(0, 0)];
 }

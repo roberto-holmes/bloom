@@ -402,7 +402,7 @@ impl<'a> Ray<'a> {
         // Set a default material for primitives that are missing one or have not been properly set up
         materials.push(Material::new_basic(Vec3::new(1.0, 0.1, 0.7), 0.));
 
-        let ocean = Ocean::new(&device, &allocator, queue, command_pool.get())?;
+        let ocean = Ocean::new(&device, &allocator, queue_family_indices)?;
 
         Ok(Self {
             device,
@@ -672,6 +672,14 @@ impl<'a> Ray<'a> {
 
             let mut primitives = Vec::with_capacity(RESERVED_SIZE);
             for (entity, primitive) in w.query::<&mut Primitive>().iter() {
+
+                if let Primitive::Ocean(o)=primitive{
+                    if !self.ocean.update(entity, o){
+                        // We don't want to include the ocean primitive if the ocean struct is ignoring it
+                        continue;
+                    }
+                }
+
                 // log::debug!("Initialising primitive {:?}: {:?}", entity, primitive);
                 primitives.push(entity);
                 if self.add_primitive(entity, primitive)? {
@@ -791,7 +799,8 @@ impl<'a> Ray<'a> {
             return Ok(());
         }
 
-        self.ocean.update();
+        
+        let(ocean_semaphore, ocean_timestamp)=self.ocean.dispatch(&self.device, current_frame_index)?;
 
         let height = self.images.as_ref().unwrap()[current_frame_index].height;
         let width = self.images.as_ref().unwrap()[current_frame_index].width;
@@ -804,14 +813,17 @@ impl<'a> Ray<'a> {
         let wait_timestamps = [
             transfer_timestamp_to_wait,
             ray_timestamp_to_wait,
+            ocean_timestamp
         ];
         let wait_semaphores = [
             transfer_semaphore,
             self.semaphore.get(),
+            ocean_semaphore
         ];
         let wait_stages = [
             vk::PipelineStageFlags::TRANSFER,
             vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
+            vk::PipelineStageFlags::COMPUTE_SHADER,
         ];
 
         let signal_timestamps = [timestamp_to_signal];
@@ -1089,8 +1101,6 @@ impl<'a> Ray<'a> {
         unsafe {
             self.device
                 .begin_command_buffer(command_buffer, &begin_info)?;
-
-            self.ocean.dispatch(&self.device, frame_index, command_buffer);
 
             let single_handle_size_aligned = aligned_size(
                 self.ray_tracing_pipeline_properties

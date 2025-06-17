@@ -1,10 +1,11 @@
-use std::{ffi::CString, path::Path, sync::Arc, time::Instant};
+use std::{array, ffi::CString, path::Path, sync::Arc, time::Instant};
 
 use anyhow::{anyhow, Result};
 use ash::vk;
 
 use crate::{
     core::{self, begin_single_time_commands, create_shader_module, end_single_time_command},
+    primitives::{self},
     structures,
     tools::read_shader_code,
     vulkan::{Destructor, Image},
@@ -12,15 +13,22 @@ use crate::{
 };
 
 const FFT_IMAGES: usize = 1; // How many images do we need?
-const OCEAN_RESOLUTION: u32 = 1024;
+pub const OCEAN_RESOLUTION: u32 = 1024;
+
+enum PipelineType {
+    SpectraGeneration,
+    FFT,
+}
 
 #[derive(Debug, Default)]
 #[repr(C)]
 struct PushConstants {
-    pub wind_speed_x: f32, // At 10m in m/s
-    pub wind_speed_z: f32,
-    pub wind_fetch_x: f32, // Distannce from shore in m
-    pub wind_fetch_z: f32,
+    pub wind_speed: f32,    // At 10m in m/s
+    pub wind_angle: f32,    // Radians from north
+    pub leeward_fetch: f32, // Distance in m from nearest shore downwind
+    pub depth: f32,         // Depth in m
+    pub length_scale: f32,
+    pub size: u32,
     pub timestamp_ns: u64, // Nanoseconds from start of running
 }
 
@@ -34,23 +42,55 @@ pub struct Ocean<'a> {
     start_time: Instant,
     pub images: [Image<'a>; FFT_IMAGES * MAX_FRAMES_IN_FLIGHT],
 
+    entity: Option<hecs::Entity>,
     push_constants: PushConstants,
 
-    _descriptor_pool: Destructor<vk::DescriptorPool>,
-    _descriptor_set_layout: Destructor<vk::DescriptorSetLayout>,
-    descriptor_sets: [vk::DescriptorSet; MAX_FRAMES_IN_FLIGHT],
-    pipeline_layout: Destructor<vk::PipelineLayout>,
-    pipeline: Destructor<vk::Pipeline>,
+    _spectra_descriptor_pool: Destructor<vk::DescriptorPool>,
+    _spectra_descriptor_set_layout: Destructor<vk::DescriptorSetLayout>,
+    spectra_descriptor_sets: [vk::DescriptorSet; MAX_FRAMES_IN_FLIGHT],
+    spectra_pipeline_layout: Destructor<vk::PipelineLayout>,
+    spectra_pipeline: Destructor<vk::Pipeline>,
+    spectra_commands: [vk::CommandBuffer; MAX_FRAMES_IN_FLIGHT],
+    _spectra_command_pool: Destructor<vk::CommandPool>,
+
+    _fft_descriptor_pool: Destructor<vk::DescriptorPool>,
+    _fft_descriptor_set_layout: Destructor<vk::DescriptorSetLayout>,
+    _fft_descriptor_sets: [vk::DescriptorSet; MAX_FRAMES_IN_FLIGHT],
+    _fft_pipeline_layout: Destructor<vk::PipelineLayout>,
+    _fft_pipeline: Destructor<vk::Pipeline>,
+    fft_commands: [vk::CommandBuffer; MAX_FRAMES_IN_FLIGHT],
+    _fft_command_pool: Destructor<vk::CommandPool>,
+
+    semaphore_values: [u64; MAX_FRAMES_IN_FLIGHT],
+
+    #[allow(dead_code)]
+    queue: vk::Queue,
+    semaphores: [Destructor<vk::Semaphore>; MAX_FRAMES_IN_FLIGHT],
 }
 
 impl<'a> Ocean<'a> {
     pub fn new(
         device: &ash::Device,
         allocator: &Arc<vk_mem::Allocator>,
-        queue: vk::Queue,
-        command_pool: vk::CommandPool,
+        queue_family_indices: structures::QueueFamilyIndices,
     ) -> Result<Self> {
-        let images = create_images(device, allocator, OCEAN_RESOLUTION, command_pool, queue)?;
+        let queue = core::create_queue(&device, queue_family_indices.compute_family.unwrap());
+        let (spectra_command_pool, spectra_commands) = core::create_commands_flight_frames(
+            &device,
+            queue_family_indices.compute_family.unwrap().0,
+        )?;
+        let (fft_command_pool, fft_commands) = core::create_commands_flight_frames(
+            &device,
+            queue_family_indices.compute_family.unwrap().0,
+        )?;
+
+        let images = create_images(
+            device,
+            allocator,
+            OCEAN_RESOLUTION,
+            spectra_command_pool.get(),
+            queue,
+        )?;
 
         log::trace!(
             "FFT has images {:?} and {:?}",
@@ -58,33 +98,144 @@ impl<'a> Ocean<'a> {
             images[1].get()
         );
 
-        let (descriptor_pool, descriptor_set_layout, descriptor_sets, pipeline_layout, pipeline) =
-            create_pipeline(device, &images)?;
+        let (
+            spectra_descriptor_pool,
+            spectra_descriptor_set_layout,
+            spectra_descriptor_sets,
+            spectra_pipeline_layout,
+            spectra_pipeline,
+        ) = create_pipeline(device, &images, PipelineType::SpectraGeneration)?;
+        let (
+            fft_descriptor_pool,
+            fft_descriptor_set_layout,
+            fft_descriptor_sets,
+            fft_pipeline_layout,
+            fft_pipeline,
+        ) = create_pipeline(device, &images, PipelineType::FFT)?;
+
+        create_fft_commands(
+            device,
+            &fft_commands,
+            &images,
+            fft_pipeline.get(),
+            fft_pipeline_layout.get(),
+            &fft_descriptor_sets,
+        )?;
+
+        let semaphores = array::from_fn(|_| {
+            Destructor::new(
+                &device,
+                core::create_semaphore(&device).unwrap(),
+                device.fp_v1_0().destroy_semaphore,
+            )
+        });
 
         Ok(Self {
             start_time: Instant::now(),
             images,
+            entity: None,
             push_constants: PushConstants::default(),
-            _descriptor_set_layout: descriptor_set_layout,
-            pipeline_layout,
-            pipeline,
-            _descriptor_pool: descriptor_pool,
-            descriptor_sets,
+            _spectra_descriptor_set_layout: spectra_descriptor_set_layout,
+            spectra_pipeline_layout,
+            spectra_pipeline,
+            _spectra_descriptor_pool: spectra_descriptor_pool,
+            spectra_descriptor_sets,
+            _spectra_command_pool: spectra_command_pool,
+            spectra_commands,
+
+            _fft_descriptor_set_layout: fft_descriptor_set_layout,
+            _fft_pipeline_layout: fft_pipeline_layout,
+            _fft_pipeline: fft_pipeline,
+            _fft_descriptor_pool: fft_descriptor_pool,
+            _fft_descriptor_sets: fft_descriptor_sets,
+            _fft_command_pool: fft_command_pool,
+            fft_commands,
+
+            queue,
+            semaphores,
+            semaphore_values: [0; 2],
         })
     }
-    pub fn update(&mut self) {
-        self.push_constants.timestamp_ns = self.start_time.elapsed().as_nanos() as u64;
+    pub fn update(&mut self, entity: hecs::Entity, ocean: &primitives::ocean::Ocean) -> bool {
+        match self.entity {
+            None => self.entity = Some(entity),
+            Some(e) if e != entity => {
+                log::warn!("Multiple ocean primitives declared, ignoring {:?}", e);
+                return false;
+            }
+            _ => {}
+        }
+        self.push_constants.wind_speed = ocean.params.wind_speed;
+        self.push_constants.wind_angle = ocean.params.wind_angle;
+        self.push_constants.leeward_fetch = ocean.params.leeward_fetch;
+        self.push_constants.depth = ocean.params.depth;
+        self.push_constants.length_scale = ocean.params.length_scale;
+        self.push_constants.size = ocean.params.size;
+        return true;
     }
     pub fn dispatch(
-        &self,
+        &mut self,
         device: &ash::Device,
         frame_index: usize,
-        command_buffer: vk::CommandBuffer,
-    ) {
+    ) -> Result<(vk::Semaphore, u64)> {
+        // If we haven't initialised an ocean we don't want to run the compute shaders
+        if let None = self.entity {
+            return Ok((self.semaphores[frame_index].get(), 0));
+        }
+
+        // Update Push constants
+        self.push_constants.timestamp_ns = self.start_time.elapsed().as_nanos() as u64;
+        // Generate the ocean wave spectra in the images
+        self.dispatch_spectra_generation(device, frame_index)?;
+        self.semaphore_values[frame_index] += 1;
+        // Convert the ocean wave spectra to a height and normal map
+        self.dispatch_fft(device, frame_index)?;
+        self.semaphore_values[frame_index] += 1;
+        Ok((
+            self.semaphores[frame_index].get(),
+            self.semaphore_values[frame_index],
+        ))
+    }
+    fn dispatch_fft(&mut self, device: &ash::Device, frame_index: usize) -> Result<()> {
+        let command_buffer_infos = [vk::CommandBufferSubmitInfo {
+            command_buffer: self.fft_commands[frame_index],
+            ..Default::default()
+        }];
+        // Wait for the spectra generation to finish
+        let wait_semaphore_infos = [vk::SemaphoreSubmitInfo {
+            semaphore: self.semaphores[frame_index].get(),
+            value: self.semaphore_values[frame_index],
+            stage_mask: vk::PipelineStageFlags2::COMPUTE_SHADER,
+            ..Default::default()
+        }];
+        // Let Ray know that we are finished
+        let signal_semaphore_infos = [vk::SemaphoreSubmitInfo {
+            semaphore: self.semaphores[frame_index].get(),
+            value: self.semaphore_values[frame_index] + 1,
+            stage_mask: vk::PipelineStageFlags2::COMPUTE_SHADER, // TODO: Should this be Ray Tracing?
+            ..Default::default()
+        }];
+        let submits = [vk::SubmitInfo2::default()
+            .command_buffer_infos(&command_buffer_infos)
+            .signal_semaphore_infos(&signal_semaphore_infos)
+            .wait_semaphore_infos(&wait_semaphore_infos)];
+
+        unsafe {
+            device.queue_submit2(self.queue, &submits, vk::Fence::null())?;
+        };
+        Ok(())
+    }
+    fn dispatch_spectra_generation(
+        &mut self,
+        device: &ash::Device,
+        frame_index: usize,
+    ) -> Result<()> {
+        let begin_info = vk::CommandBufferBeginInfo::default();
+        unsafe { device.begin_command_buffer(self.spectra_commands[frame_index], &begin_info)? };
         // Convert Images from Ray to be able to write to them
         convert_images(
             device,
-            command_buffer,
+            self.spectra_commands[frame_index],
             &self.images[frame_index * FFT_IMAGES..(frame_index + 1) * FFT_IMAGES],
             false,
         );
@@ -92,8 +243,8 @@ impl<'a> Ocean<'a> {
         unsafe {
             // Update the push constants
             device.cmd_push_constants(
-                command_buffer,
-                self.pipeline_layout.get(),
+                self.spectra_commands[frame_index],
+                self.spectra_pipeline_layout.get(),
                 vk::ShaderStageFlags::COMPUTE,
                 0,
                 self.push_constants.as_slice(),
@@ -101,30 +252,57 @@ impl<'a> Ocean<'a> {
 
             // Dispatch the compute shader
             device.cmd_bind_pipeline(
-                command_buffer,
+                self.spectra_commands[frame_index],
                 vk::PipelineBindPoint::COMPUTE,
-                self.pipeline.get(),
+                self.spectra_pipeline.get(),
             );
-            let descriptor_sets_to_bind = [self.descriptor_sets[frame_index]];
+            let descriptor_sets_to_bind = [self.spectra_descriptor_sets[frame_index]];
             device.cmd_bind_descriptor_sets(
-                command_buffer,
+                self.spectra_commands[frame_index],
                 vk::PipelineBindPoint::COMPUTE,
-                self.pipeline_layout.get(),
+                self.spectra_pipeline_layout.get(),
                 0,
                 &descriptor_sets_to_bind,
                 &[],
             );
-            // build_barrier(device, command_buffer, true);
-            device.cmd_dispatch(command_buffer, 8, 8, 1); // TODO: Sizes
-
-            // Convert Images for Ray to be able to read them
-            convert_images(
-                device,
-                command_buffer,
-                &self.images[frame_index * FFT_IMAGES..(frame_index + 1) * FFT_IMAGES],
-                true,
+            // build_barrier(device, self.spectra_commands[frame_index], true);
+            device.cmd_dispatch(
+                self.spectra_commands[frame_index],
+                OCEAN_RESOLUTION / 16,
+                OCEAN_RESOLUTION / 16,
+                1,
             );
+
+            device.end_command_buffer(self.spectra_commands[frame_index])?;
         }
+
+        let command_buffer_infos = [vk::CommandBufferSubmitInfo {
+            command_buffer: self.spectra_commands[frame_index],
+            ..Default::default()
+        }];
+        // Wait for the last run to finish
+        let wait_semaphore_infos = [vk::SemaphoreSubmitInfo {
+            semaphore: self.semaphores[frame_index].get(),
+            value: self.semaphore_values[frame_index],
+            stage_mask: vk::PipelineStageFlags2::COMPUTE_SHADER,
+            ..Default::default()
+        }];
+        // Let FFT know that we are finished
+        let signal_semaphore_infos = [vk::SemaphoreSubmitInfo {
+            semaphore: self.semaphores[frame_index].get(),
+            value: self.semaphore_values[frame_index] + 1,
+            stage_mask: vk::PipelineStageFlags2::COMPUTE_SHADER,
+            ..Default::default()
+        }];
+        let submits = [vk::SubmitInfo2::default()
+            .command_buffer_infos(&command_buffer_infos)
+            .signal_semaphore_infos(&signal_semaphore_infos)
+            .wait_semaphore_infos(&wait_semaphore_infos)];
+
+        unsafe {
+            device.queue_submit2(self.queue, &submits, vk::Fence::null())?;
+        };
+        Ok(())
     }
 }
 
@@ -189,6 +367,7 @@ fn create_images<'a>(
 fn create_pipeline(
     device: &ash::Device,
     output_images: &[Image; FFT_IMAGES * MAX_FRAMES_IN_FLIGHT],
+    pipeline_type: PipelineType,
 ) -> Result<(
     Destructor<vk::DescriptorPool>,
     Destructor<vk::DescriptorSetLayout>,
@@ -270,7 +449,12 @@ fn create_pipeline(
         unsafe { device.update_descriptor_sets(&descriptor_writes, &[]) };
     }
 
-    let shader_code = read_shader_code(Path::new("shaders/spv/fft.slang.spv"))?;
+    let shader_code = match pipeline_type {
+        PipelineType::SpectraGeneration => {
+            read_shader_code(Path::new("shaders/spv/ocean.slang.spv"))?
+        }
+        PipelineType::FFT => read_shader_code(Path::new("shaders/spv/fft.slang.spv"))?,
+    };
     let shader_module = create_shader_module(&device, &shader_code)?;
     let main_function_name = CString::new("main").unwrap(); // the beginning function name in shader code.
     let stage = vk::PipelineShaderStageCreateInfo::default()
@@ -304,6 +488,55 @@ fn create_pipeline(
         pipeline_layout,
         pipeline,
     ))
+}
+
+fn create_fft_commands(
+    device: &ash::Device,
+    command_buffers: &[vk::CommandBuffer; MAX_FRAMES_IN_FLIGHT],
+    images: &[Image; FFT_IMAGES * MAX_FRAMES_IN_FLIGHT],
+    pipeline: vk::Pipeline,
+    pipeline_layout: vk::PipelineLayout,
+    descriptor_sets: &[vk::DescriptorSet; MAX_FRAMES_IN_FLIGHT],
+) -> Result<()> {
+    for frame_index in 0..MAX_FRAMES_IN_FLIGHT {
+        let begin_info = vk::CommandBufferBeginInfo::default();
+        unsafe { device.begin_command_buffer(command_buffers[frame_index], &begin_info)? };
+        // Convert Images from Ray to be able to write to them
+        convert_images(
+            device,
+            command_buffers[frame_index],
+            &images[frame_index * FFT_IMAGES..(frame_index + 1) * FFT_IMAGES],
+            false,
+        );
+
+        unsafe {
+            // Dispatch the compute shader
+            device.cmd_bind_pipeline(
+                command_buffers[frame_index],
+                vk::PipelineBindPoint::COMPUTE,
+                pipeline,
+            );
+            let descriptor_sets_to_bind = [descriptor_sets[frame_index]];
+            device.cmd_bind_descriptor_sets(
+                command_buffers[frame_index],
+                vk::PipelineBindPoint::COMPUTE,
+                pipeline_layout,
+                0,
+                &descriptor_sets_to_bind,
+                &[],
+            );
+            device.cmd_dispatch(command_buffers[frame_index], OCEAN_RESOLUTION, 1, 1);
+            // Convert Images for Ray to be able to read them
+            convert_images(
+                device,
+                command_buffers[frame_index],
+                &images[frame_index * FFT_IMAGES..(frame_index + 1) * FFT_IMAGES],
+                true,
+            );
+            device.end_command_buffer(command_buffers[frame_index])?;
+        }
+    }
+    Ok(())
 }
 
 fn convert_images(

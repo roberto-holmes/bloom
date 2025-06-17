@@ -107,10 +107,15 @@ impl Bloomable for Demo {
         let blu = w.spawn((Material::new_basic(Vec3::new(0.0, 0.0, 1.0), 0.),));
 
         // Spawn in ocean
-        let o = w.spawn((Primitive::Ocean(Ocean::new(blu)),));
+        let o = w.spawn((Primitive::Ocean(Ocean::new(
+            blu, 1.9, 0.0, 500.0, 50.0, 1.1,
+        )),));
         let _ = w.spawn((Instance::new(o), Orientation::default()));
 
-        let camera = w.spawn((Camera::default(), Orientation::default()));
+        let camera = w.spawn((
+            Camera::default(),
+            Orientation::new(Vec3::new(0.0, 2.0, -5.0), Quaternion::identity()),
+        ));
         self.camera = Arc::new(RwLock::new(Some(camera)));
 
         Ok(())
