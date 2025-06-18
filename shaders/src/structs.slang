@@ -65,6 +65,15 @@ public struct Vertex {
 	uint pad2;
 }
 
+public struct AABB {
+	public float3 min;
+	public float3 max;
+	public __init(float3 minimum, float3 maximum) {
+		min = minimum;
+		max = maximum;
+	}
+}
+
 public struct Mesh {
 	public uint64_t object_type;
 	public Vertex* vertices;

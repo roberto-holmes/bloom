@@ -49,6 +49,17 @@ void main() {
 	}
 }
 
+float hit_aabb(const AABB aabb) {
+	float3 invDir = 1.0 / WorldRayDirection();
+	float3 tbot = invDir * (aabb.min - WorldRayOrigin());
+	float3 ttop = invDir * (aabb.max - WorldRayOrigin());
+	float3 tmin = min(ttop, tbot);
+	float3 tmax = max(ttop, tbot);
+	float t0 = max(tmin.x, max(tmin.y, tmin.z));
+	float t1 = min(tmax.x, min(tmax.y, tmax.z));
+	return t1 > max(t0, 0.0) ? t0 : F32_MAX;
+}
+
 // Ray-Sphere intersection
 float hit_sphere(float3 center, float radius) {
 	let v = WorldRayOrigin() - center;
@@ -326,25 +337,31 @@ float f_prime(float t, float3 axis, float3 center, float R, float k) {
 	return aspheric_surface_prime(r(t, a, b, c), R, k) * r_prime(t, a, b, c) - dot(WorldRayDirection(), axis);
 }
 
-public float4 hit_ocean(const Ocean* ocean) {
-	// TODO: get initial t from intersection with AABB
-	float t_max = 100.0;
-	float dt = 0.01;
+public float hit_ocean(const Ocean* ocean) {
+	// Get initial t from intersection with AABB
+	let aabb = AABB(float3(-2.0, -1.0, -2.0), float3(2.0, 1.0, 2.0));
+	let aabb_hit = hit_aabb(aabb);
+
+	float t_max = 5.0;
+	float dt = 0.001;
 	// Ray march to see if we hit the ocean
 	// TODO: Optimise
-	for (float t = 0.0; t < t_max; t += dt) {
+	for (float t = aabb_hit; t < aabb_hit + t_max; t += dt) {
 		let p = WorldRayOrigin() + WorldRayDirection() * t;
-		let point = get_ocean_point(ocean, p.xz);
+		var point = get_ocean_point(ocean, p.xz);
+		if (!isfinite(point.r)) {
+			point.r = 1000.0;
+		}
 		if (p.y < point.r) {
-			return point;
+			return t;
+			// TODO: Send normal map
 		}
 	}
-	return float4(F32_MAX);
+	return float(F32_MAX);
 }
 
 float4 get_ocean_point(const Ocean* ocean, float2 coordinates) {
-	// printf("P: %v2f\n", coordinates);
-	// return float4(coordinates.x);
+	coordinates *= 10;
 
 	// Tile coordinates over size
 	coordinates -= ocean.size * floor(coordinates / ocean.size);
@@ -367,5 +384,6 @@ float4 get_ocean_point(const Ocean* ocean, float2 coordinates) {
 	return (x_lerp + y_lerp) / 2.0;
 
 	// return ocean_map[uint2(floor(coordinates))];
+	// return saturate(ocean_map[uint2(floor(coordinates))]);
 	// return ocean_map[uint2(0, 0)];
 }
