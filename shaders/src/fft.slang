@@ -7,18 +7,38 @@ static const int FFT_WG_SIZE = 128;
 static const int RADIX2 = 10;
 static const float TWO_PI = 2.0f * PI;
 
+// struct PushConstants {
+// 	uint32_t dispatch;
+// }
+
 [[vk::binding(0)]]
 RWTexture2D<float4> image;
+// [[vk::push_constant]]
+// ConstantBuffer<PushConstants> pc;
 
 [shader("compute")]
 [numthreads(FFT_WG_SIZE, 1, 1)]
-void main(uint3 gtid: SV_GroupThreadID, uint3 gid: SV_GroupID) {
+void fftx(uint3 gtid: SV_GroupThreadID, uint3 gid: SV_GroupID) {
+	fft(gtid.x, gid.x, 0, true);
 	// TODO: Figure out how to do a 2D FFT
 	// Perform horizontal FFT first
-	fft(gtid.x, gid.x, 0, true);
+	// fft(gtid.x, gid.x, pc.dispatch, true);
 	// GroupMemoryBarrierWithGroupSync();
 	// Now do vertical FFT
-	// fft(gtid.x, gid.x, 1, true);
+	// float4 pixel = float4(1.0, 0.5, 0.5, 1.0);
+	// output[id.xy] = pixel;
+	// output[id.xy] = float4(id.x / 32, id.y / 32, 0.0, 1.0);
+}
+
+[shader("compute")]
+[numthreads(FFT_WG_SIZE, 1, 1)]
+void ffty(uint3 gtid: SV_GroupThreadID, uint3 gid: SV_GroupID) {
+	// TODO: Figure out how to do a 2D FFT
+	fft(gtid.x, gid.x, 1, true);
+	// Perform horizontal FFT first
+	// fft(gtid.x, gid.x, pc.dispatch, true);
+	// GroupMemoryBarrierWithGroupSync();
+	// Now do vertical FFT
 	// float4 pixel = float4(1.0, 0.5, 0.5, 1.0);
 	// output[id.xy] = pixel;
 	// output[id.xy] = float4(id.x / 32, id.y / 32, 0.0, 1.0);

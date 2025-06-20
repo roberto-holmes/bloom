@@ -25,7 +25,7 @@ float jonswap(float dispersion, float dispersion_peak, float speed, float fetch)
 		return 0.0;
 	}
 
-	let alpha = intensity(dispersion_peak, speed);
+	let alpha = intensity(speed, fetch);
 
 	let beta = 5.0 / 4.0;
 	let exponent = -beta * powr(dispersion_peak, 4) / powr(dispersion, 4);
@@ -126,7 +126,7 @@ public float2 fourier_spectrum(float2 wave_vector, float wind_speed, float fetch
 	var conj = h_0_tilde(-wave_vector, wave_vector_mag, dispersion, wind_speed, fetch, wind_angle, depth, delta_k);
 	conj.y = -conj.y;
 
-	var x = dispersion * t;
+	let x = dispersion * t;
 	base *= float2(sin(x), cos(x));
 	conj *= float2(sin(-x), cos(-x));
 
@@ -138,16 +138,19 @@ public float2 fourier_spectrum(float2 wave_vector, float wind_speed, float fetch
 void main(uint3 id: SV_DispatchThreadID) {
 	init_rng(id.xy, pc.size, 0);
 
-	float2 wave_vector = float2(id.xy) / float2(pc.size) * 2 * PI;
+	float2 wave_vector = float2(id.xy) / float2(pc.size) * 2 * PI - PI;
 	wave_vector /= pc.length_scale;
 	float2 delta_k = float2(2 * PI / float(pc.size));
 
 	float time_stamp_s = float(pc.time_stamp_ns) / float(1_000_000_000);
 	// if (all(id.xy == uint2(10, 10))) {
-	// 	printf("0: %v2f\n", delta_k);
-	// 	printf("wind %.6f\n", fourier_spectrum(wave_vector, pc.wind_speed, pc.leeward_fetch, pc.wind_angle, pc.depth, delta_k, time_stamp_s));
-	// 	printf("1\n");
+	// 	// printf("0: %v2f\n", delta_k);
+	// 	// printf("ws: %.6f\n", pc.wind_speed);
+	// 	printf("(%v2f) ws: %.2f,  lf: %.2f, wa: %.2f, d: %.2f (%v2f) %.2f\n", wave_vector, pc.wind_speed, pc.leeward_fetch, pc.wind_angle, pc.depth, delta_k, time_stamp_s);
+	// 	// printf("1\n");
 	// }
-	ocean_map[id.xy] = float4(fourier_spectrum(wave_vector, pc.wind_speed, pc.leeward_fetch, pc.wind_angle, pc.depth, delta_k, time_stamp_s) * 1000000, 0.0, 1.0);
-	// ocean_map[id.xy] = float4(1.0, 1.0, 0.0, 1.0);
+	ocean_map[id.xy] = float4(fourier_spectrum(wave_vector, 1.9, pc.leeward_fetch, pc.wind_angle, pc.depth, delta_k, time_stamp_s) * 10000000, 0.0, 1.0);
+	// ocean_map[id.xy] = float4(fourier_spectrum(wave_vector, pc.wind_speed, pc.leeward_fetch, pc.wind_angle, pc.depth, delta_k, time_stamp_s) * 10000000, 0.0, 1.0);
+	// ocean_map[id.xy] = float4(wave_vector, 0.0, 1.0);
+	// ocean_map[id.xy] = float4(1.0, 0.5, 0.0, 1.0);
 }

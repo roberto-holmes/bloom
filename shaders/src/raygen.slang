@@ -82,5 +82,6 @@ void main() {
 	write_image[int2(LaunchID.xy)] = float4(sample, 0.0);
 	// write_image[int2(LaunchID.xy)] = float4(0.1, 0.4, 1.0, 1.0);
 	// write_image[int2(LaunchID.xy)] = ocean[int2(0, 0)];
-	// write_image[int2(LaunchID.xy)] = ocean[int2(LaunchID.xy)];
+	// write_image[int2(LaunchID.xy)] = ocean[int2(LaunchID.xy)] * 10;
+	// 	write_image[int2(LaunchID.xy)] = float4(ocean[int2(LaunchID.xy)].r * 100, 0.0, 0.0, 1.0);
 }

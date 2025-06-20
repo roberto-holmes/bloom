@@ -39,8 +39,8 @@ struct PushConstants {
 }
 
 impl PushConstants {
-    pub fn as_slice(&self) -> &[u8; size_of::<PushConstants>()] {
-        unsafe { &*(self as *const Self as *const [u8; size_of::<PushConstants>()]) }
+    pub fn as_slice(&self) -> &[u8; size_of::<Self>()] {
+        unsafe { &*(self as *const Self as *const [u8; size_of::<Self>()]) }
     }
 }
 

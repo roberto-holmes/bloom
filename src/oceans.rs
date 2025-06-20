@@ -17,7 +17,8 @@ pub const OCEAN_RESOLUTION: u32 = 1024;
 
 enum PipelineType {
     SpectraGeneration,
-    FFT,
+    FFTx,
+    FFTy,
 }
 
 #[derive(Debug, Default)]
@@ -33,8 +34,8 @@ struct PushConstants {
 }
 
 impl PushConstants {
-    pub fn as_slice(&self) -> &[u8; size_of::<PushConstants>()] {
-        unsafe { &*(self as *const Self as *const [u8; size_of::<PushConstants>()]) }
+    pub fn as_slice(&self) -> &[u8; size_of::<Self>()] {
+        unsafe { &*(self as *const Self as *const [u8; size_of::<Self>()]) }
     }
 }
 
@@ -53,13 +54,21 @@ pub struct Ocean<'a> {
     spectra_commands: [vk::CommandBuffer; MAX_FRAMES_IN_FLIGHT],
     _spectra_command_pool: Destructor<vk::CommandPool>,
 
-    _fft_descriptor_pool: Destructor<vk::DescriptorPool>,
-    _fft_descriptor_set_layout: Destructor<vk::DescriptorSetLayout>,
-    _fft_descriptor_sets: [vk::DescriptorSet; MAX_FRAMES_IN_FLIGHT],
-    _fft_pipeline_layout: Destructor<vk::PipelineLayout>,
-    _fft_pipeline: Destructor<vk::Pipeline>,
-    fft_commands: [vk::CommandBuffer; MAX_FRAMES_IN_FLIGHT],
-    _fft_command_pool: Destructor<vk::CommandPool>,
+    _fftx_descriptor_pool: Destructor<vk::DescriptorPool>,
+    _fftx_descriptor_set_layout: Destructor<vk::DescriptorSetLayout>,
+    _fftx_descriptor_sets: [vk::DescriptorSet; MAX_FRAMES_IN_FLIGHT],
+    _fftx_pipeline_layout: Destructor<vk::PipelineLayout>,
+    _fftx_pipeline: Destructor<vk::Pipeline>,
+    fftx_commands: [vk::CommandBuffer; MAX_FRAMES_IN_FLIGHT],
+    _fftx_command_pool: Destructor<vk::CommandPool>,
+
+    _ffty_descriptor_pool: Destructor<vk::DescriptorPool>,
+    _ffty_descriptor_set_layout: Destructor<vk::DescriptorSetLayout>,
+    _ffty_descriptor_sets: [vk::DescriptorSet; MAX_FRAMES_IN_FLIGHT],
+    _ffty_pipeline_layout: Destructor<vk::PipelineLayout>,
+    _ffty_pipeline: Destructor<vk::Pipeline>,
+    ffty_commands: [vk::CommandBuffer; MAX_FRAMES_IN_FLIGHT],
+    _ffty_command_pool: Destructor<vk::CommandPool>,
 
     semaphore_values: [u64; MAX_FRAMES_IN_FLIGHT],
 
@@ -79,7 +88,11 @@ impl<'a> Ocean<'a> {
             &device,
             queue_family_indices.compute_family.unwrap().0,
         )?;
-        let (fft_command_pool, fft_commands) = core::create_commands_flight_frames(
+        let (fftx_command_pool, fftx_commands) = core::create_commands_flight_frames(
+            &device,
+            queue_family_indices.compute_family.unwrap().0,
+        )?;
+        let (ffty_command_pool, ffty_commands) = core::create_commands_flight_frames(
             &device,
             queue_family_indices.compute_family.unwrap().0,
         )?;
@@ -106,20 +119,36 @@ impl<'a> Ocean<'a> {
             spectra_pipeline,
         ) = create_pipeline(device, &images, PipelineType::SpectraGeneration)?;
         let (
-            fft_descriptor_pool,
-            fft_descriptor_set_layout,
-            fft_descriptor_sets,
-            fft_pipeline_layout,
-            fft_pipeline,
-        ) = create_pipeline(device, &images, PipelineType::FFT)?;
+            fftx_descriptor_pool,
+            fftx_descriptor_set_layout,
+            fftx_descriptor_sets,
+            fftx_pipeline_layout,
+            fftx_pipeline,
+        ) = create_pipeline(device, &images, PipelineType::FFTx)?;
+        let (
+            ffty_descriptor_pool,
+            ffty_descriptor_set_layout,
+            ffty_descriptor_sets,
+            ffty_pipeline_layout,
+            ffty_pipeline,
+        ) = create_pipeline(device, &images, PipelineType::FFTy)?;
 
         create_fft_commands(
             device,
-            &fft_commands,
+            &fftx_commands,
             &images,
-            fft_pipeline.get(),
-            fft_pipeline_layout.get(),
-            &fft_descriptor_sets,
+            fftx_pipeline.get(),
+            fftx_pipeline_layout.get(),
+            &fftx_descriptor_sets,
+        )?;
+
+        create_fft_commands(
+            device,
+            &ffty_commands,
+            &images,
+            ffty_pipeline.get(),
+            ffty_pipeline_layout.get(),
+            &ffty_descriptor_sets,
         )?;
 
         let semaphores = array::from_fn(|_| {
@@ -143,13 +172,21 @@ impl<'a> Ocean<'a> {
             _spectra_command_pool: spectra_command_pool,
             spectra_commands,
 
-            _fft_descriptor_set_layout: fft_descriptor_set_layout,
-            _fft_pipeline_layout: fft_pipeline_layout,
-            _fft_pipeline: fft_pipeline,
-            _fft_descriptor_pool: fft_descriptor_pool,
-            _fft_descriptor_sets: fft_descriptor_sets,
-            _fft_command_pool: fft_command_pool,
-            fft_commands,
+            _fftx_descriptor_set_layout: fftx_descriptor_set_layout,
+            _fftx_pipeline_layout: fftx_pipeline_layout,
+            _fftx_pipeline: fftx_pipeline,
+            _fftx_descriptor_pool: fftx_descriptor_pool,
+            _fftx_descriptor_sets: fftx_descriptor_sets,
+            _fftx_command_pool: fftx_command_pool,
+            fftx_commands,
+
+            _ffty_descriptor_set_layout: ffty_descriptor_set_layout,
+            _ffty_pipeline_layout: ffty_pipeline_layout,
+            _ffty_pipeline: ffty_pipeline,
+            _ffty_descriptor_pool: ffty_descriptor_pool,
+            _ffty_descriptor_sets: ffty_descriptor_sets,
+            _ffty_command_pool: ffty_command_pool,
+            ffty_commands,
 
             queue,
             semaphores,
@@ -189,16 +226,30 @@ impl<'a> Ocean<'a> {
         self.dispatch_spectra_generation(device, frame_index)?;
         self.semaphore_values[frame_index] += 1;
         // Convert the ocean wave spectra to a height and normal map
-        self.dispatch_fft(device, frame_index)?;
+        self.dispatch_fft(device, frame_index, PipelineType::FFTx)?;
+        self.semaphore_values[frame_index] += 1;
+        self.dispatch_fft(device, frame_index, PipelineType::FFTy)?;
         self.semaphore_values[frame_index] += 1;
         Ok((
             self.semaphores[frame_index].get(),
             self.semaphore_values[frame_index],
         ))
     }
-    fn dispatch_fft(&mut self, device: &ash::Device, frame_index: usize) -> Result<()> {
+    fn dispatch_fft(
+        &mut self,
+        device: &ash::Device,
+        frame_index: usize,
+        fft_type: PipelineType,
+    ) -> Result<()> {
         let command_buffer_infos = [vk::CommandBufferSubmitInfo {
-            command_buffer: self.fft_commands[frame_index],
+            command_buffer: match fft_type {
+                PipelineType::FFTx => self.fftx_commands[frame_index],
+                PipelineType::FFTy => self.ffty_commands[frame_index],
+                _ => {
+                    log::warn!("Tried to dispatch FFT with wrong type of pipeline");
+                    return Ok(());
+                }
+            },
             ..Default::default()
         }];
         // Wait for the spectra generation to finish
@@ -249,8 +300,7 @@ impl<'a> Ocean<'a> {
                 0,
                 self.push_constants.as_slice(),
             );
-
-            // Dispatch the compute shader
+            // Set up the spectra generation shader
             device.cmd_bind_pipeline(
                 self.spectra_commands[frame_index],
                 vk::PipelineBindPoint::COMPUTE,
@@ -265,14 +315,13 @@ impl<'a> Ocean<'a> {
                 &descriptor_sets_to_bind,
                 &[],
             );
-            // build_barrier(device, self.spectra_commands[frame_index], true);
+            // Dispatch the generation of the ocean wave spectra
             device.cmd_dispatch(
                 self.spectra_commands[frame_index],
                 OCEAN_RESOLUTION / 16,
                 OCEAN_RESOLUTION / 16,
                 1,
             );
-
             device.end_command_buffer(self.spectra_commands[frame_index])?;
         }
 
@@ -453,10 +502,17 @@ fn create_pipeline(
         PipelineType::SpectraGeneration => {
             read_shader_code(Path::new("shaders/spv/ocean.slang.spv"))?
         }
-        PipelineType::FFT => read_shader_code(Path::new("shaders/spv/fft.slang.spv"))?,
+        PipelineType::FFTx | PipelineType::FFTy => {
+            read_shader_code(Path::new("shaders/spv/fft.slang.spv"))?
+        }
     };
     let shader_module = create_shader_module(&device, &shader_code)?;
-    let main_function_name = CString::new("main").unwrap(); // the beginning function name in shader code.
+    log::info!("Processing shader {:?}", shader_module.get());
+    let main_function_name = match pipeline_type {
+        PipelineType::SpectraGeneration => CString::new("main").unwrap(),
+        PipelineType::FFTx => CString::new("fftx").unwrap(),
+        PipelineType::FFTy => CString::new("ffty").unwrap(),
+    };
     let stage = vk::PipelineShaderStageCreateInfo::default()
         .stage(vk::ShaderStageFlags::COMPUTE)
         .module(shader_module.get())
