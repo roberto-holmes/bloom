@@ -54,7 +54,8 @@ public float3 random_unit_vector3() {
 }
 
 public float2 random_unit_vector2() {
-	return normalize(float2(rand_f32() * 2. - 1., rand_f32() * 2. - 1.));
+	let theta = rand_f32() * TAU;
+	return float2(cos(theta), sin(theta));
 }
 
 public float3 random_vector_in_unit_disk() {
