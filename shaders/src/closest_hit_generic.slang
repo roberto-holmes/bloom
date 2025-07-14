@@ -38,7 +38,7 @@ void main(inout Payload ray, in CustomAttributes att) {
 		let ocean = (Ocean*)scene[InstanceID()].primitive;
 		mat = materials[ocean.material];
 		let pos = point_on_ray(RayTCurrent());
-		float4 ocean_point = get_ocean_point(ocean, pos.xz);
+		float4 ocean_point = get_ocean_point(ocean, pos.xz, ocean_map);
 		// float2 normal_map = get_ocean_point(ocean, pos.xz).ba * 1024 * 1024 * 5 * 5;
 
 		// let normal = normalize(float3(-normal_map.x, 1, -normal_map.y));
@@ -95,34 +95,4 @@ void main(inout Payload ray, in CustomAttributes att) {
 		ray.done = 1;
 		return;
 	}
-}
-
-float4 get_ocean_point(const Ocean* ocean, float2 coordinates) {
-	// TODO: Combine with intersection::get_ocean_point
-	coordinates *= 100;
-	float scaling_factor = ocean.size * ocean.size;
-
-	// Tile coordinates over size
-	coordinates %= float2(ocean.size);
-	coordinates += float2(ocean.size);
-	coordinates %= float2(ocean.size);
-
-	let floored = uint2(floor(coordinates));
-
-	// Bilinear Interpolation
-	// TODO: Consider a better algorithm
-	// Bottom left
-	let h_11 = ocean_map[uint2(floored.x, floored.y + 1) % uint2(ocean.size)] * scaling_factor;
-	// Top right
-	let h_22 = ocean_map[uint2(floored.x + 1, floored.y) % uint2(ocean.size)] * scaling_factor;
-	// Top left
-	let h_21 = ocean_map[floored] * scaling_factor;
-	// Bottom right
-	let h_12 = ocean_map[(floored + uint(1)) % uint2(ocean.size)] * scaling_factor;
-
-	let x_lerp1 = lerp(abs(h_11), abs(h_12), coordinates.x - floored.x);
-	let x_lerp2 = lerp(abs(h_21), abs(h_22), coordinates.x - floored.x);
-	let y_lerp = lerp(x_lerp2, x_lerp1, coordinates.y - floored.y);
-
-	return y_lerp;
 }

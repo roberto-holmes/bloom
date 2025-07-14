@@ -347,7 +347,7 @@ public float hit_ocean(const Ocean* ocean) {
 	// TODO: Optimise
 	for (float t = aabb_hit; t < aabb_hit + t_max; t += dt) {
 		let p = WorldRayOrigin() + WorldRayDirection() * t;
-		var point = get_ocean_point(ocean, p.xz);
+		var point = get_ocean_point(ocean, p.xz, ocean_map);
 		if (!isfinite(point.r)) {
 			// There is a discontinuity in the ocean
 			point.r = 1000.0;
@@ -358,34 +358,4 @@ public float hit_ocean(const Ocean* ocean) {
 		}
 	}
 	return float(F32_MAX);
-}
-
-float4 get_ocean_point(const Ocean* ocean, float2 coordinates) {
-	// TODO: Combine with closest_hit_generic::get_ocean_point
-	coordinates *= 100;
-	float scaling_factor = ocean.size * ocean.size;
-
-	// Tile coordinates over size
-	coordinates %= float2(ocean.size);
-	coordinates += float2(ocean.size);
-	coordinates %= float2(ocean.size);
-
-	let floored = uint2(floor(coordinates));
-
-	// Bilinear Interpolation
-	// TODO: Consider a better algorithm
-	// Bottom left
-	let h_11 = ocean_map[uint2(floored.x, floored.y + 1) % uint2(ocean.size)] * scaling_factor;
-	// Top right
-	let h_22 = ocean_map[uint2(floored.x + 1, floored.y) % uint2(ocean.size)] * scaling_factor;
-	// Top left
-	let h_21 = ocean_map[floored] * scaling_factor;
-	// Bottom right
-	let h_12 = ocean_map[(floored + uint(1)) % uint2(ocean.size)] * scaling_factor;
-
-	let x_lerp1 = lerp(abs(h_11), abs(h_12), coordinates.x - floored.x);
-	let x_lerp2 = lerp(abs(h_21), abs(h_22), coordinates.x - floored.x);
-	let y_lerp = lerp(x_lerp2, x_lerp1, coordinates.y - floored.y);
-
-	return y_lerp;
 }
