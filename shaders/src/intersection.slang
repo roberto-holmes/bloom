@@ -368,25 +368,24 @@ float4 get_ocean_point(const Ocean* ocean, float2 coordinates) {
 	// Tile coordinates over size
 	coordinates %= float2(ocean.size);
 	coordinates += float2(ocean.size);
-	coordinates %= float2(ocean.size - 1);
-	// coordinates -= 2 * ocean.size * floor(coordinates / ocean.size);
-	// if (coordinates.x > float(ocean.size)) {
-	// 	coordinates.x = ocean.size - coordinates.x;
-	// }
-	// if (coordinates.y > float(ocean.size)) {
-	// 	coordinates.y = ocean.size - coordinates.y;
-	// }
+	coordinates %= float2(ocean.size);
+
+	let floored = uint2(floor(coordinates));
+
 	// Bilinear Interpolation
 	// TODO: Consider a better algorithm
-	let h_11 = ocean_map[uint2(floor(coordinates))] * scaling_factor;
-	let h_22 = ocean_map[uint2(ceil(coordinates))] * scaling_factor;
-	let h_21 = ocean_map[uint2((uint)floor(coordinates.x), (uint)ceil(coordinates.y))] * scaling_factor;
-	let h_12 = ocean_map[uint2((uint)ceil(coordinates.x), (uint)floor(coordinates.y))] * scaling_factor;
+	// Bottom left
+	let h_11 = ocean_map[uint2(floored.x, floored.y + 1) % uint2(ocean.size)] * scaling_factor;
+	// Top right
+	let h_22 = ocean_map[uint2(floored.x + 1, floored.y) % uint2(ocean.size)] * scaling_factor;
+	// Top left
+	let h_21 = ocean_map[floored] * scaling_factor;
+	// Bottom right
+	let h_12 = ocean_map[(floored + uint(1)) % uint2(ocean.size)] * scaling_factor;
 
-	let x_lerp1 = lerp(h_11, h_12, coordinates.x - floor(coordinates.x));
-	let x_lerp2 = lerp(h_21, h_22, coordinates.x - floor(coordinates.x));
-	let y_lerp = lerp(x_lerp1, x_lerp2, coordinates.y - floor(coordinates.y));
+	let x_lerp1 = lerp(abs(h_11), abs(h_12), coordinates.x - floored.x);
+	let x_lerp2 = lerp(abs(h_21), abs(h_22), coordinates.x - floored.x);
+	let y_lerp = lerp(x_lerp2, x_lerp1, coordinates.y - floored.y);
 
-	return h_11;
-	// return y_lerp;
+	return y_lerp;
 }
