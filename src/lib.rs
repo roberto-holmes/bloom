@@ -44,8 +44,8 @@ use winit::{
     window::{Window, WindowId},
 };
 
-const WINDOW_WIDTH: u32 = 1920;
-const WINDOW_HEIGHT: u32 = 1080;
+const WINDOW_WIDTH: u32 = 2048;
+const WINDOW_HEIGHT: u32 = 1024;
 // const WINDOW_WIDTH: u32 = 400;
 // const WINDOW_HEIGHT: u32 = 300;
 const MAX_FRAMES_IN_FLIGHT: usize = 2;

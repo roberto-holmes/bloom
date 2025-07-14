@@ -1,5 +1,6 @@
 // FFT implementation based on https://compute.toys/view/1922 by michael0884
 __import constants;
+__import helpers;
 
 static const int SIZE = 1024;
 static const int FFT_WG_SIZE = 128;
@@ -19,29 +20,19 @@ RWTexture2D<float4> image;
 [shader("compute")]
 [numthreads(FFT_WG_SIZE, 1, 1)]
 void fftx(uint3 gtid: SV_GroupThreadID, uint3 gid: SV_GroupID) {
-	fft(gtid.x, gid.x, 0, true);
-	// TODO: Figure out how to do a 2D FFT
-	// Perform horizontal FFT first
-	// fft(gtid.x, gid.x, pc.dispatch, true);
-	// GroupMemoryBarrierWithGroupSync();
-	// Now do vertical FFT
-	// float4 pixel = float4(1.0, 0.5, 0.5, 1.0);
-	// output[id.xy] = pixel;
-	// output[id.xy] = float4(id.x / 32, id.y / 32, 0.0, 1.0);
+	// Do the inverse fft of the height map in the x direction
+	fft(gtid.x, gid.x, 0, true, false);
+	// same for the normal map
+	fft(gtid.x, gid.x, 0, true, true);
 }
 
 [shader("compute")]
 [numthreads(FFT_WG_SIZE, 1, 1)]
 void ffty(uint3 gtid: SV_GroupThreadID, uint3 gid: SV_GroupID) {
-	// TODO: Figure out how to do a 2D FFT
-	fft(gtid.x, gid.x, 1, true);
-	// Perform horizontal FFT first
-	// fft(gtid.x, gid.x, pc.dispatch, true);
-	// GroupMemoryBarrierWithGroupSync();
-	// Now do vertical FFT
-	// float4 pixel = float4(1.0, 0.5, 0.5, 1.0);
-	// output[id.xy] = pixel;
-	// output[id.xy] = float4(id.x / 32, id.y / 32, 0.0, 1.0);
+	// Now the ifft in the y direction of the height map
+	fft(gtid.x, gid.x, 1, true, false);
+	// and the normal map
+	fft(gtid.x, gid.x, 1, true, true);
 }
 
 uint linearIndex(uint2 id) {
@@ -53,14 +44,6 @@ uint2 getAxisIndex(uint id, uint group, uint axis) {
 	idx[axis] = id;
 	idx[1 - axis] = group;
 	return idx;
-}
-
-float2 expi(float angle) {
-	return float2(cos(angle), sin(angle));
-}
-
-float2 cmul(float2 a, float2 b) {
-	return float2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
 }
 
 uint fftshift(uint index) {
@@ -98,7 +81,7 @@ void radix2(uint span, uint index, bool inverse) {
 	temp[k2] = v1 - v2;
 }
 
-void fft(uint index, uint group, uint axis, bool inverse) {
+void fft(uint index, uint group, uint axis, bool inverse, bool normal) {
 	// number of elements to load per workgroup thread
 	uint M = SIZE / FFT_WG_SIZE;
 
@@ -106,7 +89,11 @@ void fft(uint index, uint group, uint axis, bool inverse) {
 	for (uint i = 0u; i < M; i++) {
 		uint rowIndex = index + i * FFT_WG_SIZE;
 		uint idx = reversebits(rowIndex) >> (32u - RADIX2);
-		temp[idx] = image[getAxisIndex(rowIndex, group, axis)].rg;
+		if (!normal) {
+			temp[idx] = image[getAxisIndex(rowIndex, group, axis)].rg;
+		} else {
+			temp[idx] = image[getAxisIndex(rowIndex, group, axis)].ba;
+		}
 	}
 
 	// wait for data be loaded
@@ -126,6 +113,10 @@ void fft(uint index, uint group, uint axis, bool inverse) {
 	for (uint i = 0u; i < M; i++) {
 		uint rowIndex = index + i * FFT_WG_SIZE;
 		uint2 idx = getAxisIndex(rowIndex, group, axis);
-		image[idx].rg = temp[rowIndex] / (inverse ? SIZE : 1.0);
+		if (!normal) {
+			image[idx].rg = temp[rowIndex] / (inverse ? SIZE : 1.0);
+		} else {
+			image[idx].ba = temp[rowIndex] / (inverse ? SIZE : 1.0);
+		}
 	}
 }

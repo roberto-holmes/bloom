@@ -11,8 +11,8 @@ use vk_mem;
 use winit::dpi::PhysicalSize;
 
 use crate::core::create_commands_flight_frames;
-use crate::oceans::Ocean;
 use crate::material::Material;
+use crate::oceans::Ocean;
 use crate::primitives::{
     Addressable, ObjectType, Objectionable, Primitive, PrimitiveAddresses, AABB,
 };
@@ -345,7 +345,8 @@ impl<'a> Ray<'a> {
         // Populates queue
         let queue = core::create_queue(&device, queue_family_indices.compute_family.unwrap());
 
-        let (command_pool, commands) = create_commands_flight_frames(&device, queue_family_indices.compute_family.unwrap().0)?;
+        let (command_pool, commands) =
+            create_commands_flight_frames(&device, queue_family_indices.compute_family.unwrap().0)?;
 
         let materials_buffer = vulkan::Buffer::new_gpu(
             &allocator,
@@ -672,9 +673,8 @@ impl<'a> Ray<'a> {
 
             let mut primitives = Vec::with_capacity(RESERVED_SIZE);
             for (entity, primitive) in w.query::<&mut Primitive>().iter() {
-
-                if let Primitive::Ocean(o)=primitive{
-                    if !self.ocean.update(entity, o){
+                if let Primitive::Ocean(o) = primitive {
+                    if !self.ocean.update(entity, o) {
                         // We don't want to include the ocean primitive if the ocean struct is ignoring it
                         continue;
                     }
@@ -799,8 +799,8 @@ impl<'a> Ray<'a> {
             return Ok(());
         }
 
-        
-        let(ocean_semaphore, ocean_timestamp)=self.ocean.dispatch(&self.device, current_frame_index)?;
+        let (ocean_semaphore, ocean_timestamp) =
+            self.ocean.dispatch(&self.device, current_frame_index)?;
 
         let height = self.images.as_ref().unwrap()[current_frame_index].height;
         let width = self.images.as_ref().unwrap()[current_frame_index].width;
@@ -813,13 +813,9 @@ impl<'a> Ray<'a> {
         let wait_timestamps = [
             transfer_timestamp_to_wait,
             ray_timestamp_to_wait,
-            ocean_timestamp
+            ocean_timestamp,
         ];
-        let wait_semaphores = [
-            transfer_semaphore,
-            self.semaphore.get(),
-            ocean_semaphore
-        ];
+        let wait_semaphores = [transfer_semaphore, self.semaphore.get(), ocean_semaphore];
         let wait_stages = [
             vk::PipelineStageFlags::TRANSFER,
             vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
@@ -1773,7 +1769,9 @@ fn create_pipeline<'a>(
             binding: 6,
             descriptor_type: vk::DescriptorType::STORAGE_IMAGE,
             descriptor_count: 1,
-            stage_flags: vk::ShaderStageFlags::RAYGEN_KHR | vk::ShaderStageFlags::INTERSECTION_KHR, // TODO: Just Intersection?
+            stage_flags: vk::ShaderStageFlags::RAYGEN_KHR // TODO: Remove Raygen (it's just for debugging)
+                | vk::ShaderStageFlags::INTERSECTION_KHR
+                | vk::ShaderStageFlags::CLOSEST_HIT_KHR,
             ..Default::default()
         },
     ];

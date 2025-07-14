@@ -1,7 +1,6 @@
 __import structs;
 __import helpers;
 __import constants;
-__import ocean;
 
 // (Binding, Set)
 [[vk::binding(3, 0)]]
@@ -350,24 +349,34 @@ public float hit_ocean(const Ocean* ocean) {
 		let p = WorldRayOrigin() + WorldRayDirection() * t;
 		var point = get_ocean_point(ocean, p.xz);
 		if (!isfinite(point.r)) {
+			// There is a discontinuity in the ocean
 			point.r = 1000.0;
 		}
 		if (p.y < point.r) {
+			// The ray marched point is below the surface so we consider it a hit
 			return t;
-			// TODO: Send normal map
 		}
 	}
 	return float(F32_MAX);
 }
 
 float4 get_ocean_point(const Ocean* ocean, float2 coordinates) {
-	coordinates *= 10;
-	let scaling_factor = 500;
+	// TODO: Combine with closest_hit_generic::get_ocean_point
+	coordinates *= 100;
+	float scaling_factor = ocean.size * ocean.size;
 
 	// Tile coordinates over size
-	coordinates -= ocean.size * floor(coordinates / ocean.size);
+	coordinates %= float2(ocean.size);
+	coordinates += float2(ocean.size);
+	coordinates %= float2(ocean.size - 1);
+	// coordinates -= 2 * ocean.size * floor(coordinates / ocean.size);
+	// if (coordinates.x > float(ocean.size)) {
+	// 	coordinates.x = ocean.size - coordinates.x;
+	// }
+	// if (coordinates.y > float(ocean.size)) {
+	// 	coordinates.y = ocean.size - coordinates.y;
+	// }
 	// Bilinear Interpolation
-	// TODO: Verify interpolation implementation
 	// TODO: Consider a better algorithm
 	let h_11 = ocean_map[uint2(floor(coordinates))] * scaling_factor;
 	let h_22 = ocean_map[uint2(ceil(coordinates))] * scaling_factor;
@@ -376,11 +385,8 @@ float4 get_ocean_point(const Ocean* ocean, float2 coordinates) {
 
 	let x_lerp1 = lerp(h_11, h_12, coordinates.x - floor(coordinates.x));
 	let x_lerp2 = lerp(h_21, h_22, coordinates.x - floor(coordinates.x));
-	let x_lerp = lerp(x_lerp1, x_lerp2, coordinates.y - floor(coordinates.y));
+	let y_lerp = lerp(x_lerp1, x_lerp2, coordinates.y - floor(coordinates.y));
 
-	return x_lerp;
-
-	// return ocean_map[uint2(floor(coordinates))];
-	// return saturate(ocean_map[uint2(floor(coordinates))]);
-	// return ocean_map[uint2(0, 0)];
+	return h_11;
+	// return y_lerp;
 }

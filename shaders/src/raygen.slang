@@ -79,9 +79,34 @@ void main() {
 		}
 	}
 	sample += throughput * payload.radiance;
+
+	// let ocean_sample = ocean[int2(LaunchID.xy)].r * 1024 * 1024;
+
+	// let o = -ocean[int2(LaunchID.xy)] * 1024 * 1024 * 5 * 5;
+
+	// let normal = normalize(float3(o.b, 1, o.a));
+
+	// if (all(LaunchID.xy == uint2(10, 10))) {
+	// 	printf("n: %v3f\n", normal);
+	// }
+	// if (LaunchID.x > 1024) {
+	// 	let pos = int2(LaunchID.x - 1024, LaunchID.y);
+	// 	let ocean_sample = ocean[pos].r * 1024 * 1024;
+	// write_image[int2(LaunchID.xy)] = float4(ocean_sample, 0.0, ocean_sample, 1.0);
+
+	// } else {
+	// 	write_image[int2(LaunchID.xy)] = float4(normal, 1.0);
+	// }
+
 	write_image[int2(LaunchID.xy)] = float4(sample, 0.0);
 	// write_image[int2(LaunchID.xy)] = float4(0.1, 0.4, 1.0, 1.0);
 	// write_image[int2(LaunchID.xy)] = ocean[int2(0, 0)];
-	// write_image[int2(LaunchID.xy)] = ocean[int2(LaunchID.xy)] * 10;
-	// 	write_image[int2(LaunchID.xy)] = float4(ocean[int2(LaunchID.xy)].r * 100, 0.0, 0.0, 1.0);
+	// write_image[int2(LaunchID.xy)] = ocean[int2(LaunchID.xy)] * 1024;
+	// write_image[int2(LaunchID.xy)] = float4(ocean_sample, 0.0, ocean_sample, 1.0);
+
+	// write_image[int2(LaunchID.xy)] = float4(ocean[int2(LaunchID.xy)].b * 1024, 0.0, 0.0, 1.0);
+
+	// float2 normal_map = ocean[int2(LaunchID.xy)].ba * 1024 * 1024;
+	// let normal = normalize(float3(-normal_map.x, 1, -normal_map.y));
+	// write_image[int2(LaunchID.xy)] = float4(normal, 1.0);
 }

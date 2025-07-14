@@ -1,6 +1,7 @@
 __import structs;
 __import constants;
 __import rng;
+__import helpers;
 
 static const int IMG_WG_SIZE = 16;
 
@@ -98,6 +99,7 @@ float wave_spectrum(float2 wave_vector, float wave_vector_mag, float dispersion,
 	} else if (relative_wind_angle < -PI) {
 		relative_wind_angle += 2 * PI;
 	}
+
 	let dispersion_peak = peak_dispersion(wind_speed, fetch);
 
 	let S_j = jonswap(dispersion, dispersion_peak, wind_speed, fetch);
@@ -118,7 +120,7 @@ float2 h_0_tilde(float2 wave_vector, float wave_vector_mag, float dispersion, fl
 	return common * random_unit_vector2();
 }
 
-public float2 fourier_spectrum(float2 wave_vector, float wind_speed, float fetch, float wind_angle, float depth, float2 delta_k, float t) {
+float2 fourier_spectrum(float2 wave_vector, float wind_speed, float fetch, float wind_angle, float depth, float2 delta_k, float t) {
 	let wave_vector_mag = length(wave_vector);
 	let dispersion = sqrt(g * wave_vector_mag);
 
@@ -126,11 +128,18 @@ public float2 fourier_spectrum(float2 wave_vector, float wind_speed, float fetch
 	var conj = h_0_tilde(-wave_vector, wave_vector_mag, dispersion, wind_speed, fetch, wind_angle, depth, delta_k);
 	conj.y = -conj.y;
 
-	let x = dispersion * t;
-	base *= float2(sin(x), cos(x));
-	conj *= float2(sin(-x), cos(-x));
+	var phase = dispersion * t;
+
+	base = cmul(base, float2(sin(phase), cos(phase)));
+	conj = cmul(conj, float2(sin(-phase), cos(-phase)));
 
 	return base + conj;
+}
+
+float2 calculate_normal(float2 wave_vector, float2 spectra) {
+	let kh = cmul(wave_vector, spectra);
+	// Multiply by i
+	return float2(-kh.y, kh.x);
 }
 
 [shader("compute")]
@@ -144,12 +153,20 @@ void main(uint3 id: SV_DispatchThreadID) {
 
 	float time_stamp_s = float(pc.time_stamp_ns) / float(1_000_000_000);
 	// if (all(id.xy == uint2(10, 10))) {
-	// 	// printf("0: %v2f\n", delta_k);
-	// 	// printf("ws: %.6f\n", pc.wind_speed);
-	// 	printf("(%v2f) ws: %.2f,  lf: %.2f, wa: %.2f, d: %.2f (%v2f) %.2f\n", wave_vector, pc.wind_speed, pc.leeward_fetch, pc.wind_angle, pc.depth, delta_k, time_stamp_s);
-	// 	// printf("1\n");
+	// printf("0: %v2f\n", delta_k);
+	// printf("scale: %.2f, size: %u\n", pc.length_scale, pc.size);
+	// printf("(%v2f) ws: %.2f,  lf: %.2f, wa: %.2f, d: %.2f (%v2f) %.2f\n", wave_vector, pc.wind_speed, pc.leeward_fetch, pc.wind_angle, pc.depth, delta_k, time_stamp_s);
+	// printf("1\n");
 	// }
-	ocean_map[id.xy] = float4(fourier_spectrum(wave_vector, 1.9, pc.leeward_fetch, pc.wind_angle, pc.depth, delta_k, time_stamp_s) * 10000000, 0.0, 1.0);
+
+	let spectra = fourier_spectrum(wave_vector, pc.wind_speed, pc.leeward_fetch, pc.wind_angle, pc.depth, delta_k, time_stamp_s);
+
+	let ispectra = float2(-spectra.y, spectra.x);
+
+	let normal = calculate_normal(wave_vector, spectra);
+
+	ocean_map[id.xy] = float4(ispectra, normal);
+
 	// ocean_map[id.xy] = float4(fourier_spectrum(wave_vector, pc.wind_speed, pc.leeward_fetch, pc.wind_angle, pc.depth, delta_k, time_stamp_s) * 10000000, 0.0, 1.0);
 	// ocean_map[id.xy] = float4(wave_vector, 0.0, 1.0);
 	// ocean_map[id.xy] = float4(1.0, 0.5, 0.0, 1.0);

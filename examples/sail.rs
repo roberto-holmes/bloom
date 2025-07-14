@@ -108,7 +108,7 @@ impl Bloomable for Demo {
 
         // Spawn in ocean
         let o = w.spawn((Primitive::Ocean(Ocean::new(
-            blu, 1.9, 0.0, 500.0, 50.0, 1.1,
+            blu, 7.9, 1.29, 50000.0, 50.0, 0.2,
         )),));
         let _ = w.spawn((Instance::new(o), Orientation::default()));
 
