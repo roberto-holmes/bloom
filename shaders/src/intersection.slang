@@ -343,6 +343,8 @@ public float hit_ocean(const Ocean* ocean) {
 
 	float t_max = 5.0;
 	float dt = 0.001;
+	float lh = 0.0;
+	float ly = 0.0;
 	// Ray march to see if we hit the ocean
 	// TODO: Optimise
 	for (float t = aabb_hit; t < aabb_hit + t_max; t += dt) {
@@ -354,8 +356,11 @@ public float hit_ocean(const Ocean* ocean) {
 		}
 		if (p.y < point.r) {
 			// The ray marched point is below the surface so we consider it a hit
-			return t;
+			// interpolate intersection distance
+			return t - dt + dt * (lh - ly) / (p.y - ly - point.r + lh);
 		}
+		lh = point.r;
+		ly = p.y;
 	}
 	return float(F32_MAX);
 }
