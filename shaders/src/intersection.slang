@@ -338,11 +338,11 @@ float f_prime(float t, float3 axis, float3 center, float R, float k) {
 
 public float hit_ocean(const Ocean* ocean) {
 	// Get initial t from intersection with AABB
-	let aabb = AABB(float3(-2.0, -1.0, -2.0), float3(2.0, 1.0, 2.0));
+	let aabb = AABB(float3(-10.0, -1.0, -10.0), float3(10.0, 1.0, 10.0));
 	let aabb_hit = hit_aabb(aabb);
 
-	float t_max = 5.0;
-	float dt = 0.001;
+	float t_max = 20.0;
+	float dt = 0.01;
 	float lh = 0.0;
 	float ly = 0.0;
 	// Ray march to see if we hit the ocean
@@ -356,8 +356,14 @@ public float hit_ocean(const Ocean* ocean) {
 		}
 		if (p.y < point.r) {
 			// The ray marched point is below the surface so we consider it a hit
-			// interpolate intersection distance
+			// interpolate to get the intersection
 			return t - dt + dt * (lh - ly) / (p.y - ly - point.r + lh);
+		}
+		// Accuracy goes down as we are checking further away
+		if (t > 0) {
+			dt = 0.01 * t;
+		} else {
+			dt *= 1.001;
 		}
 		lh = point.r;
 		ly = p.y;
