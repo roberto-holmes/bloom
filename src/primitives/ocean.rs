@@ -86,8 +86,6 @@ impl Extrema for Ocean {
         // TODO: Figure out how we are going to describe the dimensions of the ocean
         let min = Vec3::new(-10.0, -1.0, -10.0);
         let max = Vec3::new(10.0, 1.0, 10.0);
-        // let min = Vec3::all(-1.0);
-        // let max = Vec3::all(1.0);
         (min, max)
     }
 }

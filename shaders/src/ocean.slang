@@ -16,7 +16,7 @@ struct PushConstants {
 }
 
 [[vk::binding(0, 0)]]
-RWTexture2D<float4> ocean_map;
+RWTexture2D<float4> ocean_map;	// TODO: Consider replacing with a float2 texture
 [[vk::push_constant]]
 ConstantBuffer<PushConstants> pc;
 
@@ -163,9 +163,9 @@ void main(uint3 id: SV_DispatchThreadID) {
 
 	let ispectra = float2(-spectra.y, spectra.x);
 
-	let normal = calculate_normal(wave_vector, spectra);
+	// let normal = calculate_normal(wave_vector, spectra);
 
-	ocean_map[id.xy] = float4(ispectra, normal);
+	ocean_map[id.xy] = float4(ispectra, 0.0, 0.0);
 
 	// ocean_map[id.xy] = float4(fourier_spectrum(wave_vector, pc.wind_speed, pc.leeward_fetch, pc.wind_angle, pc.depth, delta_k, time_stamp_s) * 10000000, 0.0, 1.0);
 	// ocean_map[id.xy] = float4(wave_vector, 0.0, 1.0);

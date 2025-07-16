@@ -23,7 +23,7 @@ void fftx(uint3 gtid: SV_GroupThreadID, uint3 gid: SV_GroupID) {
 	// Do the inverse fft of the height map in the x direction
 	fft(gtid.x, gid.x, 0, true, false);
 	// same for the normal map
-	fft(gtid.x, gid.x, 0, true, true);
+	// fft(gtid.x, gid.x, 0, true, true);
 }
 
 [shader("compute")]
@@ -32,7 +32,7 @@ void ffty(uint3 gtid: SV_GroupThreadID, uint3 gid: SV_GroupID) {
 	// Now the ifft in the y direction of the height map
 	fft(gtid.x, gid.x, 1, true, false);
 	// and the normal map
-	fft(gtid.x, gid.x, 1, true, true);
+	// fft(gtid.x, gid.x, 1, true, true);
 }
 
 uint linearIndex(uint2 id) {

@@ -6,6 +6,7 @@ use std::time::Duration;
 use anyhow::Result;
 use bloom::api::{Instance, Orientation};
 use bloom::material::Material;
+use bloom::primitives::model::Model;
 use bloom::primitives::ocean::Ocean;
 use bloom::quaternion::Quaternion;
 use bloom::{
@@ -14,6 +15,7 @@ use bloom::{
     primitives::Primitive,
     vec::Vec3,
 };
+use cgmath::Matrix4;
 use hecs::Entity;
 use winit::event::DeviceEvent;
 use winit::{
@@ -104,7 +106,25 @@ impl Bloomable for Demo {
     fn init(&mut self, world: &Arc<RwLock<hecs::World>>) -> Result<()> {
         let mut w = world.write().unwrap();
 
-        let blu = w.spawn((Material::new_basic(Vec3::new(0.0, 0.0, 1.0), 0.),));
+        let glass = w.spawn((Material::new_clear(Vec3::new(0.9, 1.0, 1.0)),));
+        let blu = w.spawn((Material::new_basic(Vec3::new(0.8, 0.9, 1.0), 0.999),));
+        let green = w.spawn((Material::new_basic(Vec3::new(0.0, 1.0, 0.5), 0.0),));
+        // let mirror_mat = w.spawn((Material::new_basic(Vec3::new(1.0, 1.0, 1.0), 0.992),));
+
+        let cube1 = w.spawn((Primitive::Model(Model::new_cube(glass)?),));
+        let _ = w.spawn((
+            Instance::new(cube1),
+            Orientation::new(Vec3::new(0.0, 3.0, 0.0), Quaternion::identity()),
+        ));
+
+        let cube2 = w.spawn((Primitive::Model(Model::new_cube(green)?),));
+        let _ = w.spawn((
+            Instance {
+                primitive: cube2,
+                base_transform: Matrix4::<f32>::from_nonuniform_scale(1.0, 10.0, 1.0),
+            },
+            Orientation::new(Vec3::new(0.0, 0.0, 10.0), Quaternion::identity()),
+        ));
 
         // Spawn in ocean
         let o = w.spawn((Primitive::Ocean(Ocean::new(
