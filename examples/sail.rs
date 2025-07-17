@@ -1,6 +1,6 @@
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::f32;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, RwLock, RwLockWriteGuard};
 use std::time::Duration;
 
 use anyhow::Result;
@@ -8,6 +8,7 @@ use bloom::api::{Instance, Orientation};
 use bloom::material::Material;
 use bloom::primitives::model::Model;
 use bloom::primitives::ocean::Ocean;
+use bloom::primitives::sphere::Sphere;
 use bloom::quaternion::Quaternion;
 use bloom::{
     self,
@@ -17,6 +18,7 @@ use bloom::{
 };
 use cgmath::Matrix4;
 use hecs::Entity;
+use rand::Rng;
 use winit::event::DeviceEvent;
 use winit::{
     dpi::PhysicalPosition,
@@ -41,6 +43,10 @@ struct Demo {
     yaw_rad: Arc<Mutex<f32>>,
 
     camera: Arc<RwLock<Option<Entity>>>,
+
+    mat: Option<Entity>,
+    cube: Option<Entity>,
+    cubes: VecDeque<Entity>,
 }
 
 unsafe impl Send for Demo {}
@@ -58,6 +64,10 @@ impl Demo {
             are_angles_updated: Arc::new(Mutex::new(false)),
             pitch_rad: Arc::new(Mutex::new(0.0)),
             yaw_rad: Arc::new(Mutex::new(0.0)),
+
+            mat: None,
+            cube: None,
+            cubes: VecDeque::new(),
         }
     }
     pub fn translate(&mut self, dx: f32, dz: f32, dy: f32, world: &Arc<RwLock<hecs::World>>) {
@@ -105,32 +115,38 @@ impl Bloomable for Demo {
     }
     fn init(&mut self, world: &Arc<RwLock<hecs::World>>) -> Result<()> {
         let mut w = world.write().unwrap();
-
         let glass = w.spawn((Material::new_clear(Vec3::new(0.9, 1.0, 1.0)),));
         let blu = w.spawn((Material::new_basic(Vec3::new(0.8, 0.9, 1.0), 0.999),));
         let green = w.spawn((Material::new_basic(Vec3::new(0.0, 1.0, 0.5), 0.0),));
-        // let mirror_mat = w.spawn((Material::new_basic(Vec3::new(1.0, 1.0, 1.0), 0.992),));
+        let mirror_mat = w.spawn((Material::new_basic(Vec3::new(1.0, 1.0, 1.0), 0.992),));
 
-        let cube1 = w.spawn((Primitive::Model(Model::new_cube(glass)?),));
-        let _ = w.spawn((
-            Instance::new(cube1),
-            Orientation::new(Vec3::new(0.0, 3.0, 0.0), Quaternion::identity()),
-        ));
+        spawn_duck(&mut w, mirror_mat);
 
-        let cube2 = w.spawn((Primitive::Model(Model::new_cube(green)?),));
-        let _ = w.spawn((
-            Instance {
-                primitive: cube2,
-                base_transform: Matrix4::<f32>::from_nonuniform_scale(1.0, 10.0, 1.0),
-            },
-            Orientation::new(Vec3::new(0.0, 0.0, 10.0), Quaternion::identity()),
-        ));
+        let sphere = w.spawn((Primitive::Sphere(Sphere::new(1.0, glass)?),));
+        let _ = w.spawn((Instance {
+            primitive: sphere,
+            base_transform: Matrix4::<f32>::from_translation(cgmath::Vector3 {
+                x: 0.0,
+                y: 3.0,
+                z: 0.0,
+            }),
+        },));
+
+        let cube = w.spawn((Primitive::Model(Model::new_cube(green)?),));
+        let _ = w.spawn((Instance {
+            primitive: cube,
+            base_transform: Matrix4::<f32>::from_translation(cgmath::Vector3 {
+                x: 0.0,
+                y: 0.0,
+                z: 10.0,
+            }) * Matrix4::<f32>::from_nonuniform_scale(1.0, 10.0, 1.0),
+        },));
 
         // Spawn in ocean
         let o = w.spawn((Primitive::Ocean(Ocean::new(
             blu, 7.9, 1.29, 50000.0, 50.0, 0.2,
         )),));
-        let _ = w.spawn((Instance::new(o), Orientation::default()));
+        let _ = w.spawn((Instance::new(o),));
 
         let camera = w.spawn((
             Camera::default(),
@@ -162,7 +178,7 @@ impl Bloomable for Demo {
     fn input(
         &mut self,
         event: winit::event::WindowEvent,
-        _world: &std::sync::Arc<RwLock<hecs::World>>,
+        world: &std::sync::Arc<RwLock<hecs::World>>,
     ) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
@@ -233,6 +249,49 @@ impl Bloomable for Demo {
                         },
                         Err(e) => log::error!("Window is poisoned: {e}"),
                     }
+                }
+            }
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        state: ElementState::Pressed,
+                        physical_key: PhysicalKey::Code(KeyCode::KeyQ),
+                        ..
+                    },
+                ..
+            } => {
+                let mut w = world.write().unwrap();
+                if self.mat == None {
+                    self.mat = Some(w.spawn((Material::new_basic(Vec3::new(1.0, 0.0, 0.1), 0.0),)));
+                }
+                if self.cube == None {
+                    self.cube = Some(w.spawn((Primitive::Model(
+                        Model::new_cube(self.mat.unwrap()).unwrap(),
+                    ),)));
+                }
+
+                let mut rng = rand::rng();
+                self.cubes.push_back(w.spawn((Instance {
+                    primitive: self.cube.unwrap(),
+                    base_transform: Matrix4::<f32>::from_translation(cgmath::Vector3 {
+                        x: rng.random_range(-10.0..10.0),
+                        y: rng.random_range(-10.0..10.0),
+                        z: rng.random_range(-10.0..10.0),
+                    }),
+                },)));
+            }
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        state: ElementState::Pressed,
+                        physical_key: PhysicalKey::Code(KeyCode::KeyR),
+                        ..
+                    },
+                ..
+            } => {
+                let mut w = world.write().unwrap();
+                if let Some(i) = self.cubes.pop_front() {
+                    w.remove_one::<Instance>(i).unwrap();
                 }
             }
             WindowEvent::KeyboardInput {
@@ -377,4 +436,24 @@ impl KeyboardState {
     fn is_pressed(&self, key: KeyCode) -> bool {
         self.pressed_keys.contains(&key)
     }
+}
+
+fn spawn_duck(w: &mut RwLockWriteGuard<hecs::World>, mat: Entity) {
+    let (document, buffers, _) = gltf::import("models/Duck.glb").unwrap();
+    let p = document
+        .meshes()
+        .next()
+        .unwrap()
+        .primitives()
+        .next()
+        .unwrap();
+    let duck_model = Model::new_gltf_primitive(p.clone(), &buffers, mat);
+    let d = w.spawn((Primitive::Model(duck_model),));
+
+    let _ = w.spawn((Instance {
+        primitive: d,
+        base_transform: Matrix4::<f32>::from_translation(cgmath::Vector3::new(0.0, -1.0, 0.0))
+            * Matrix4::from_angle_y(cgmath::Rad(-0.23 - std::f32::consts::FRAC_PI_2))
+            * Matrix4::from_scale(1.0 / 100.0),
+    },));
 }

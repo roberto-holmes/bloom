@@ -1,10 +1,9 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::CString;
 use std::path::Path;
 use std::sync::{mpsc, Arc, RwLock};
 
 use anyhow::{anyhow, Result};
-use ash::vk::AccelerationStructureInstanceKHR;
 use ash::{vk, RawPtr};
 use hecs::{Entity, World};
 use vk_mem;
@@ -16,10 +15,13 @@ use crate::oceans::Ocean;
 use crate::primitives::{
     Addressable, ObjectType, Objectionable, Primitive, PrimitiveAddresses, AABB,
 };
+use crate::ray::instance_buffer::InstanceBuffer;
 use crate::uniforms::{self, UniformBufferObject};
 use crate::vec::Vec3;
 use crate::vulkan::Destructor;
 use crate::{api, core, primitives, structures, sync, tools, vulkan, MAX_FRAMES_IN_FLIGHT};
+
+mod instance_buffer;
 
 const RESERVED_SIZE: usize = 100;
 
@@ -302,19 +304,17 @@ struct Ray<'a> {
     descriptor_sets: Option<[vk::DescriptorSet; 2]>,
 
     material_location_map: HashMap<Entity, usize>,
-    instance_location_map: HashMap<Entity, usize>,
     /// Map the IDs of objects to their position in the blass vector and store the object
     primitive_location_map: HashMap<Entity, (ObjectType, usize)>,
     primitive_addresses: Vec<PrimitiveAddresses>,
     materials_buffer: vulkan::Buffer,
     aabbs_buffers: Vec<vulkan::Buffer>,
     buffer_references: vulkan::Buffer,
-    instances_buffer: vulkan::Buffer,
+    instances_buffer: InstanceBuffer,
 
     materials: Vec<Material>,
     aabbs: Vec<AABB>,
     blass: Vec<AccelerationStructure>,
-    blas_instances: Vec<AccelerationStructureInstanceKHR>,
     tlas: AccelerationStructure,
 
     ocean: Ocean<'a>,
@@ -364,16 +364,7 @@ impl<'a> Ray<'a> {
                 | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
                 | vk::BufferUsageFlags::TRANSFER_DST,
         )?;
-        let instances_buffer = vulkan::Buffer::new_generic(
-            &allocator,
-            (size_of::<vk::AccelerationStructureInstanceKHR>() * RESERVED_SIZE) as u64,
-            vk_mem::MemoryUsage::Auto,
-            vk_mem::AllocationCreateFlags::HOST_ACCESS_SEQUENTIAL_WRITE,
-            vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
-                | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-        )?;
-
-        let blas_instances = Vec::with_capacity(RESERVED_SIZE);
+        let instances_buffer = InstanceBuffer::new(&allocator)?;
 
         let tlas = AccelerationStructure::new(&as_device);
 
@@ -432,11 +423,9 @@ impl<'a> Ray<'a> {
             materials,
             aabbs: Vec::with_capacity(RESERVED_SIZE),
             blass: Vec::with_capacity(RESERVED_SIZE),
-            blas_instances,
             materials_buffer,
             primitive_addresses: Vec::with_capacity(RESERVED_SIZE),
             aabbs_buffers: Vec::with_capacity(RESERVED_SIZE),
-            instance_location_map: HashMap::with_capacity(RESERVED_SIZE),
             primitive_location_map: HashMap::with_capacity(RESERVED_SIZE),
             material_location_map: HashMap::with_capacity(RESERVED_SIZE),
             uniform,
@@ -641,7 +630,7 @@ impl<'a> Ray<'a> {
     pub fn update(&mut self, world: &Arc<RwLock<World>>) -> Result<()> {
         let mut need_new_references = false;
         let mut primitives_changed = false;
-        let mut need_rebuild: Option<TlasProcess> = None;
+        let mut need_rebuild = false;
 
         {
             let mut w = world.write().unwrap();
@@ -697,50 +686,47 @@ impl<'a> Ray<'a> {
 
             // TODO: Do something with `orphaned_primitives` (Remove from primitive addresses and blass)
 
-            for (entity, (instance, ori)) in w.query_mut::<(&api::Instance, &api::Orientation)>() {
-                let transform = ori.transformation * instance.base_transform;
-                match self.instance_location_map.get(&entity) {
-                    None => {
-                        // We need to create a new BLAS
-                        log::trace!("Adding an instance: {:?}", instance);
-                        // TODO: How are we keeping track of instance_id?
-                        let (primitive_type, location_in_blas) =
-                            match self.primitive_location_map.get(&instance.primitive) {
-                                Some(v) => v,
-                                None => {
-                                    return Err(anyhow!(
-                                        "Failed to find primitive {:?} in the blas",
-                                        instance.primitive
-                                    ))
-                                }
-                            };
-
-                        self.instance_location_map
-                            .insert(entity, self.blas_instances.len());
-                        // Create a Bottom Level Acceleration structure for each instance
-                        self.blas_instances.push(create_blas_instance(
-                            &self.as_device,
-                            &mut self.blass,
-                            *location_in_blas,
-                            transform,
-                            *primitive_type,
-                        )?);
-                        need_rebuild = Some(TlasProcess::Build);
-                    }
-                    Some(&instance_index) => {
-                        need_rebuild = Some(TlasProcess::Update);
-                        #[rustfmt::skip]
-                    let transform_matrix = vk::TransformMatrixKHR {matrix:[
-                        transform.x[0], transform.y[0], transform.z[0], transform.w[0],
-                        transform.x[1], transform.y[1], transform.z[1], transform.w[1],
-                        transform.x[2], transform.y[2], transform.z[2], transform.w[2]],
+            let mut instances = HashSet::with_capacity(RESERVED_SIZE);
+            for (entity, instance) in w.query_mut::<&api::Instance>() {
+                // Get the primitive that this is an instance of
+                let (primitive_type, location_in_blas) =
+                    match self.primitive_location_map.get(&instance.primitive) {
+                        Some(v) => v,
+                        None => {
+                            return Err(anyhow!(
+                                "Failed to find primitive {:?} in the blas",
+                                instance.primitive
+                            ))
+                        }
                     };
-                        self.blas_instances[instance_index].transform = transform_matrix;
-                    }
+
+                // We only add the instance if it isn't already there
+                if self.instances_buffer.try_add(
+                    &self.device,
+                    self.command_pool.get(),
+                    self.queue,
+                    &self.allocator,
+                    entity,
+                    create_blas_instance(
+                        &self.as_device,
+                        &mut self.blass,
+                        *location_in_blas,
+                        instance.base_transform,
+                        *primitive_type,
+                    )?,
+                )? {
+                    log::trace!("Adding an instance: {:?}", instance);
+                    need_rebuild = true;
                 }
+
+                // Keep track of the indices that were found so we can drop dead ones
+                instances.insert(entity);
+            }
+            if self.instances_buffer.remove_orphans(&instances) > 0 {
+                need_rebuild = true;
             }
         }
-
+        log::trace!("Instances sorted");
         if primitives_changed {
             if self
                 .buffer_references
@@ -771,16 +757,13 @@ impl<'a> Ray<'a> {
                 need_new_references = true;
             }
         }
-        match need_rebuild {
-            None => {}
-            Some(v) => {
-                self.create_top_level_acceleration_structure(v)?;
-            }
-        }
+        self.create_top_level_acceleration_structure(if need_rebuild {
+            TlasProcess::Build
+        } else {
+            TlasProcess::Update
+        })?;
 
-        if let Some(TlasProcess::Build) = need_rebuild {
-            self.rebuild_references()?;
-        } else if need_new_references {
+        if need_rebuild || need_new_references {
             self.rebuild_references()?;
         }
 
@@ -845,62 +828,20 @@ impl<'a> Ray<'a> {
     }
 
     fn create_top_level_acceleration_structure(&mut self, process: TlasProcess) -> Result<()> {
-        match process {
-            TlasProcess::Build => {
-                log::trace!(
-                    "Building a TLAS with {} instances",
-                    self.blas_instances.len()
-                );
-                if !self
-                    .instances_buffer
-                    .check_available_space::<AccelerationStructureInstanceKHR>(
-                        self.blas_instances.len(),
-                    )
-                {
-                    self.instances_buffer = vulkan::Buffer::new_generic(
-                        &self.allocator,
-                        (size_of::<vk::AccelerationStructureInstanceKHR>()
-                            * (self.blas_instances.len() + RESERVED_SIZE))
-                            as u64,
-                        vk_mem::MemoryUsage::Auto,
-                        vk_mem::AllocationCreateFlags::HOST_ACCESS_SEQUENTIAL_WRITE,
-                        vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
-                            | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-                    )?;
-                }
-            }
-            TlasProcess::Update => {
-                log::trace!(
-                    "Updating a TLAS with {} instances",
-                    self.blas_instances.len()
-                );
-                if self.instances_buffer.get_populated_bytes()
-                    != (size_of::<vk::AccelerationStructureInstanceKHR>()
-                        * self.blas_instances.len()) as u64
-                {
-                    log::warn!(
-                        "Updating the TLAS with a different number of BLAS {} != {}x{}={}",
-                        self.instances_buffer.get_populated_bytes(),
-                        size_of::<vk::AccelerationStructureInstanceKHR>(),
-                        self.blas_instances.len(),
-                        (size_of::<vk::AccelerationStructureInstanceKHR>()
-                            * self.blas_instances.len())
-                    );
-                    return Ok(());
-                }
-            }
-        }
         log::trace!(
             "Populating instances with {}x{}={} Bytes",
             size_of::<vk::AccelerationStructureInstanceKHR>(),
-            self.blas_instances.len(),
-            (size_of::<vk::AccelerationStructureInstanceKHR>() * self.blas_instances.len())
+            self.instances_buffer.instance_count,
+            (size_of::<vk::AccelerationStructureInstanceKHR>()
+                * self.instances_buffer.instance_count)
         );
-        self.instances_buffer
-            .populate(self.blas_instances.as_ptr(), self.blas_instances.len())?;
-
         let instance_data_device_address = vk::DeviceOrHostAddressConstKHR {
-            device_address: get_buffer_device_address(&self.device, self.instances_buffer.get()),
+            device_address: self.instances_buffer.get_address_array(
+                &self.device,
+                self.command_pool.get(),
+                self.queue,
+                &self.allocator,
+            )?,
         };
 
         // The top level acceleration structure contains (bottom level) instances as the input geometry
@@ -909,7 +850,7 @@ impl<'a> Ray<'a> {
             flags: vk::GeometryFlagsKHR::OPAQUE,
             geometry: vk::AccelerationStructureGeometryDataKHR {
                 instances: vk::AccelerationStructureGeometryInstancesDataKHR {
-                    array_of_pointers: vk::FALSE,
+                    array_of_pointers: vk::TRUE,
                     data: instance_data_device_address,
                     ..Default::default()
                 },
@@ -926,7 +867,7 @@ impl<'a> Ray<'a> {
         };
         as_build_geometry_info = as_build_geometry_info.geometries(&as_geometries);
 
-        let primitive_count = [self.blas_instances.len() as u32];
+        let primitive_count = [self.instances_buffer.instance_count as u32];
 
         let mut as_build_sizes_info = vk::AccelerationStructureBuildSizesInfoKHR::default();
         unsafe {

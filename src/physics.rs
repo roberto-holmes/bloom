@@ -6,16 +6,16 @@ use std::{
 };
 
 pub fn system<T: Bloomable>(user: &mut T, _delta: Duration, world: &Arc<RwLock<World>>) {
-    let mut w = world.write().unwrap();
+    // let mut w = world.write().unwrap();
 
-    // Make sure that all transformations matrices are calculated and up to date
-    for o in w.query_mut::<&mut Orientation>().view().iter_mut() {
-        o.1.update();
-    }
+    // // Make sure that all transformations matrices are calculated and up to date
+    // for o in w.query_mut::<&mut Orientation>().view().iter_mut() {
+    //     o.1.update();
+    // }
 
-    evaluate_collisions(user, &mut w);
-    // Update all parents
-    evaluate_relative_transforms(&mut w);
+    // evaluate_collisions(user, &mut w);
+    // // Update all parents
+    // evaluate_relative_transforms(&mut w);
 }
 
 fn evaluate_collisions<T: Bloomable>(user: &mut T, w: &mut World) {

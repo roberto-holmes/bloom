@@ -279,6 +279,65 @@ impl Buffer {
             type_name: "aligned",
         })
     }
+    pub fn new_populated<T>(
+        allocator: &vk_mem::Allocator,
+        usage: vk::BufferUsageFlags,
+        data: *const T,
+        data_len: usize,
+    ) -> Result<Self> {
+        let mut buffer = Self::new_generic(
+            allocator,
+            (size_of::<T>() * data_len) as u64,
+            vk_mem::MemoryUsage::Auto,
+            vk_mem::AllocationCreateFlags::HOST_ACCESS_SEQUENTIAL_WRITE,
+            usage,
+        )?;
+        buffer.type_name = std::any::type_name::<T>();
+        buffer.populate(data, data_len)?;
+        // log::trace!("Created buffer of {}", buffer.type_name);
+        Ok(buffer)
+    }
+    pub fn new_populated_staged<T>(
+        device: &ash::Device,
+        command_pool: vk::CommandPool,
+        queue: vk::Queue,
+        allocator: &vk_mem::Allocator,
+        usage: vk::BufferUsageFlags,
+        data: *const T,
+        data_len: usize,
+        reserved_len: usize,
+    ) -> Result<Self> {
+        let size = (size_of::<T>() * data_len) as u64;
+        let mut reserved_size = (size_of::<T>() * reserved_len) as u64;
+        reserved_size = reserved_size.max(size);
+
+        let staging_buffer = Self::new_populated(
+            allocator,
+            vk::BufferUsageFlags::TRANSFER_SRC,
+            data,
+            data_len,
+        )?;
+        let mut buffer = Self::new_gpu(
+            allocator,
+            reserved_size,
+            usage | vk::BufferUsageFlags::TRANSFER_DST,
+        )?;
+
+        core::copy_buffer(
+            device,
+            staging_buffer.get(),
+            buffer.get(),
+            size,
+            command_pool,
+            queue,
+        )?;
+
+        buffer.populated_size = size;
+
+        buffer.type_name = std::any::type_name::<T>();
+
+        Ok(buffer)
+    }
     pub fn populate<T>(&mut self, data: *const T, size: usize) -> Result<()> {
         if !self.total_size < (size_of::<T>() * size) as u64 {
             return Err(anyhow!(
@@ -352,65 +411,6 @@ impl Buffer {
 
         Ok(())
     }
-    pub fn new_populated<T>(
-        allocator: &vk_mem::Allocator,
-        usage: vk::BufferUsageFlags,
-        data: *const T,
-        data_len: usize,
-    ) -> Result<Self> {
-        let mut buffer = Self::new_generic(
-            allocator,
-            (size_of::<T>() * data_len) as u64,
-            vk_mem::MemoryUsage::Auto,
-            vk_mem::AllocationCreateFlags::HOST_ACCESS_SEQUENTIAL_WRITE,
-            usage,
-        )?;
-        buffer.type_name = std::any::type_name::<T>();
-        buffer.populate(data, data_len)?;
-        // log::trace!("Created buffer of {}", buffer.type_name);
-        Ok(buffer)
-    }
-    pub fn new_populated_staged<T>(
-        device: &ash::Device,
-        command_pool: vk::CommandPool,
-        queue: vk::Queue,
-        allocator: &vk_mem::Allocator,
-        usage: vk::BufferUsageFlags,
-        data: *const T,
-        data_len: usize,
-        reserved_len: usize,
-    ) -> Result<Self> {
-        let size = (size_of::<T>() * data_len) as u64;
-        let mut reserved_size = (size_of::<T>() * reserved_len) as u64;
-        reserved_size = reserved_size.max(size);
-
-        let staging_buffer = Self::new_populated(
-            allocator,
-            vk::BufferUsageFlags::TRANSFER_SRC,
-            data,
-            data_len,
-        )?;
-        let mut buffer = Self::new_gpu(
-            allocator,
-            reserved_size,
-            usage | vk::BufferUsageFlags::TRANSFER_DST,
-        )?;
-
-        core::copy_buffer(
-            device,
-            staging_buffer.get(),
-            buffer.get(),
-            size,
-            command_pool,
-            queue,
-        )?;
-
-        buffer.populated_size = size;
-
-        buffer.type_name = std::any::type_name::<T>();
-
-        Ok(buffer)
-    }
     #[allow(unused)]
     pub fn append_staged<T>(
         &mut self,
@@ -453,6 +453,40 @@ impl Buffer {
 
         self.populated_size += size;
 
+        Ok(())
+    }
+    pub fn insert_staged<T>(
+        &mut self,
+        device: &ash::Device,
+        command_pool: vk::CommandPool,
+        queue: vk::Queue,
+        allocator: &vk_mem::Allocator,
+        offset: u64,
+        data: *const T,
+        data_len: usize,
+    ) -> Result<()> {
+        let staging_buffer = Self::new_populated(
+            allocator,
+            vk::BufferUsageFlags::TRANSFER_SRC,
+            data,
+            data_len,
+        )?;
+
+        let command_buffer = core::begin_single_time_commands(device, command_pool)?;
+        unsafe {
+            let copy_region = [vk::BufferCopy {
+                src_offset: 0,
+                dst_offset: offset * size_of::<T>() as u64,
+                size: (size_of::<T>() * data_len) as u64,
+            }];
+            device.cmd_copy_buffer(
+                command_buffer,
+                staging_buffer.get(),
+                self.buffer,
+                &copy_region,
+            );
+        }
+        core::end_single_time_command(device, command_pool, queue, command_buffer)?;
         Ok(())
     }
     pub fn check_available_space<T>(&self, data_len: usize) -> bool {
