@@ -336,7 +336,7 @@ float f_prime(float t, float3 axis, float3 center, float R, float k) {
 	return aspheric_surface_prime(r(t, a, b, c), R, k) * r_prime(t, a, b, c) - dot(WorldRayDirection(), axis);
 }
 
-public float hit_ocean(const Ocean* ocean) {
+float hit_ocean(const Ocean* ocean) {
 	// Get initial t from intersection with AABB
 	// TODO: Get AABB size from Ocean object
 	let aabb = AABB(float3(-10.0, -1.0, -10.0), float3(10.0, 1.0, 10.0));
@@ -363,6 +363,7 @@ public float hit_ocean(const Ocean* ocean) {
 			return t - dt + dt * (lh - ly) / (p.y - ly - point + lh);
 		}
 		// Accuracy goes down as we are checking further away
+		// TODO: Figure out current total ray length (including bounces) and use this as accuracy should also be lower for subsequent bounces
 		if (t > 0) {
 			dt = 0.05 * t;
 		} else {
