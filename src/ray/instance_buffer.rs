@@ -37,6 +37,7 @@ impl InstanceBuffer {
                 INSTANCE_SIZE * RESERVED_SIZE as u64,
                 vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
                     | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
+                    | vk::BufferUsageFlags::TRANSFER_SRC
                     | vk::BufferUsageFlags::TRANSFER_DST,
             )?,
             address_buffer: vulkan::Buffer::new_gpu(
@@ -44,6 +45,7 @@ impl InstanceBuffer {
                 (size_of::<vk::DeviceAddress>() * RESERVED_SIZE) as u64,
                 vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
                     | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
+                    | vk::BufferUsageFlags::TRANSFER_SRC
                     | vk::BufferUsageFlags::TRANSFER_DST,
             )?,
             empty_indices: Vec::with_capacity(RESERVED_SIZE),
@@ -72,11 +74,20 @@ impl InstanceBuffer {
         for (_, index) in &self.entity_location {
             v.push(base + index * size_of::<vk::AccelerationStructureInstanceKHR>() as u64);
         }
+
+        if v.len() != self.instance_count {
+            log::warn!(
+                "Number of addresses {} != number of instances {}",
+                v.len(),
+                self.instance_count
+            );
+        }
+
         // Fill the address buffer with the data from the vector, allowing it to grow if necessary
         // TODO: Consider shrinking the array if the data is much smaller than the allocated memory?
         if !self
             .address_buffer
-            .check_available_space::<vk::DeviceAddress>(self.instance_count)
+            .check_total_space::<vk::DeviceAddress>(v.len())
         {
             self.address_buffer = vulkan::Buffer::new_populated_staged(
                 device,
@@ -84,7 +95,9 @@ impl InstanceBuffer {
                 queue,
                 allocator,
                 vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
-                    | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+                    | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
+                    | vk::BufferUsageFlags::TRANSFER_SRC
+                    | vk::BufferUsageFlags::TRANSFER_DST,
                 v.as_ptr(),
                 v.len(),
                 v.len() + RESERVED_SIZE,
@@ -122,7 +135,7 @@ impl InstanceBuffer {
         // Try to add the new instance into a gap in the buffer, if possible
         match self.empty_indices.pop() {
             Some(i) => {
-                log::trace!("Inserting instance into index {i}");
+                log::debug!("Inserting instance into index {i}");
                 self.buffer.insert_staged(
                     device,
                     command_pool,
@@ -135,7 +148,11 @@ impl InstanceBuffer {
                 self.entity_location.insert(entity, i);
             }
             None => {
-                log::trace!("Appending instance");
+                log::debug!(
+                    "Appending entity {} to instance {}",
+                    entity.id(),
+                    self.instance_count
+                );
                 self.buffer.append_staged(
                     device,
                     command_pool,
@@ -191,24 +208,28 @@ impl InstanceBuffer {
         // We only need to reallocate the buffer if the current one is not big enough to deal with all the instances we have
         if !self
             .buffer
-            .check_available_space::<vk::AccelerationStructureInstanceKHR>(self.instance_count + 1)
+            .check_available_space::<vk::AccelerationStructureInstanceKHR>(1)
         {
+            log::debug!(
+                "Resizing instance buffer to {} B",
+                INSTANCE_SIZE * (self.instance_count + RESERVED_SIZE) as u64
+            );
             // Create a new (larger) buffer
-            let new_buffer = vulkan::Buffer::new_gpu(
+            let mut new_buffer = vulkan::Buffer::new_gpu(
                 allocator,
                 INSTANCE_SIZE * (self.instance_count + RESERVED_SIZE) as u64,
                 vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
-                    | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+                    | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
+                    | vk::BufferUsageFlags::TRANSFER_SRC
+                    | vk::BufferUsageFlags::TRANSFER_DST,
             )?;
 
-            // Copy over the old buffer
-            core::copy_buffer(
+            new_buffer.copy_from::<vk::AccelerationStructureInstanceKHR>(
                 device,
-                self.buffer.get(),
-                new_buffer.get(),
-                INSTANCE_SIZE * self.instance_count as u64,
                 command_pool,
                 queue,
+                &self.buffer,
+                self.instance_count,
             )?;
 
             // Drop and replace old buffer

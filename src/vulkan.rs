@@ -155,6 +155,7 @@ pub struct Buffer {
 
 impl Buffer {
     #[allow(unused)]
+    #[track_caller]
     pub fn new_cpu(
         allocator: &vk_mem::Allocator,
         size: vk::DeviceSize,
@@ -169,6 +170,7 @@ impl Buffer {
         )
     }
     #[allow(unused)]
+    #[track_caller]
     pub fn new_gpu(
         allocator: &vk_mem::Allocator,
         size: vk::DeviceSize,
@@ -183,6 +185,7 @@ impl Buffer {
         )
     }
     #[allow(unused)]
+    #[track_caller]
     pub fn new(
         allocator: &vk_mem::Allocator,
         size: vk::DeviceSize,
@@ -196,6 +199,7 @@ impl Buffer {
             usage,
         )
     }
+    #[track_caller]
     pub fn new_mapped(
         allocator: &vk_mem::Allocator,
         size: vk::DeviceSize,
@@ -211,6 +215,7 @@ impl Buffer {
         )?;
         Ok(new_buffer)
     }
+    #[track_caller]
     pub fn new_generic(
         allocator: &vk_mem::Allocator,
         size: vk::DeviceSize,
@@ -244,6 +249,7 @@ impl Buffer {
             type_name: "generic",
         })
     }
+    #[track_caller]
     pub fn new_aligned(
         allocator: &vk_mem::Allocator,
         size: vk::DeviceSize,
@@ -279,6 +285,7 @@ impl Buffer {
             type_name: "aligned",
         })
     }
+    #[track_caller]
     pub fn new_populated<T>(
         allocator: &vk_mem::Allocator,
         usage: vk::BufferUsageFlags,
@@ -297,6 +304,7 @@ impl Buffer {
         // log::trace!("Created buffer of {}", buffer.type_name);
         Ok(buffer)
     }
+    #[track_caller]
     pub fn new_populated_staged<T>(
         device: &ash::Device,
         command_pool: vk::CommandPool,
@@ -338,6 +346,7 @@ impl Buffer {
 
         Ok(buffer)
     }
+    #[track_caller]
     pub fn populate<T>(&mut self, data: *const T, size: usize) -> Result<()> {
         if !self.total_size < (size_of::<T>() * size) as u64 {
             return Err(anyhow!(
@@ -372,6 +381,7 @@ impl Buffer {
         self.type_name = std::any::type_name::<T>();
         Ok(())
     }
+    #[track_caller]
     pub fn populate_staged<T>(
         &mut self,
         device: &ash::Device,
@@ -381,8 +391,9 @@ impl Buffer {
         data: *const T,
         data_len: usize,
     ) -> Result<()> {
-        if !self.check_available_space::<T>(data_len) {
-            return Err(anyhow!("Tried to populate a buffer with too much data"));
+        if !self.check_total_space::<T>(data_len) {
+            log::error!("Tried to populate a buffer with too much data");
+            return Err(anyhow!("Buffer Overrun"));
         }
         let size = (size_of::<T>() * data_len) as u64;
 
@@ -411,7 +422,35 @@ impl Buffer {
 
         Ok(())
     }
-    #[allow(unused)]
+    #[track_caller]
+    pub fn copy_from<T>(
+        &mut self,
+        device: &ash::Device,
+        command_pool: vk::CommandPool,
+        queue: vk::Queue,
+        src: &Buffer,
+        data_len: usize,
+    ) -> Result<()> {
+        if !self.check_total_space::<T>(data_len) {
+            log::error!("Tried to populate a buffer with too much data");
+            return Err(anyhow!("Buffer Overrun"));
+        }
+        let size = (size_of::<T>() * data_len) as u64;
+
+        let command_buffer = core::begin_single_time_commands(device, command_pool)?;
+        unsafe {
+            let copy_region = [vk::BufferCopy::default().size(size)];
+            device.cmd_copy_buffer(command_buffer, src.get(), self.buffer, &copy_region);
+        }
+        core::end_single_time_command(device, command_pool, queue, command_buffer)?;
+
+        self.populated_size = size;
+
+        self.type_name = std::any::type_name::<T>();
+
+        Ok(())
+    }
+    #[track_caller]
     pub fn append_staged<T>(
         &mut self,
         device: &ash::Device,
@@ -424,9 +463,10 @@ impl Buffer {
         let size = (size_of::<T>() * data_len) as u64;
         let available_space = self.total_size - self.populated_size;
         if size > available_space {
-            return Err(anyhow!(
+            log::error!(
                 "Tried to append data to a buffer that is too full ({size}B > {available_space}B)"
-            ));
+            );
+            return Err(anyhow!("Buffer overrun"));
         }
         let staging_buffer = Self::new_populated(
             allocator,
@@ -455,6 +495,7 @@ impl Buffer {
 
         Ok(())
     }
+    #[track_caller]
     pub fn insert_staged<T>(
         &mut self,
         device: &ash::Device,
@@ -489,6 +530,8 @@ impl Buffer {
         core::end_single_time_command(device, command_pool, queue, command_buffer)?;
         Ok(())
     }
+    /// Returns true if the passed data length would fit in the unused portion of the buffer
+    #[track_caller]
     pub fn check_available_space<T>(&self, data_len: usize) -> bool {
         if self.total_size < self.populated_size {
             log::warn!(
@@ -498,18 +541,14 @@ impl Buffer {
             );
             return false;
         }
-        // log::info!(
-        //     "Considering putting {} B of data in a space {}-{} B big",
-        //     (size_of::<T>() * data_len),
-        //     self.total_size,
-        //     self.populated_size,
-        //     // (self.total_size - self.populated_size)
-        // );
         (size_of::<T>() * data_len) as u64 <= (self.total_size - self.populated_size)
     }
-    pub fn get_populated_bytes(&self) -> vk::DeviceSize {
-        self.populated_size
+    /// Returns true if the passed data length would fit in the buffer
+    #[track_caller]
+    pub fn check_total_space<T>(&self, data_len: usize) -> bool {
+        (size_of::<T>() * data_len) as u64 <= self.total_size
     }
+    #[track_caller]
     pub fn create_descriptor(&self) -> vk::DescriptorBufferInfo {
         vk::DescriptorBufferInfo {
             buffer: self.buffer,
@@ -517,6 +556,7 @@ impl Buffer {
             range: self.total_size,
         }
     }
+    #[track_caller]
     pub fn get_device_address(&self, device: &ash::Device) -> vk::DeviceAddress {
         let buffer_device_ai = vk::BufferDeviceAddressInfo::default().buffer(self.buffer);
         unsafe { device.get_buffer_device_address(&buffer_device_ai) }

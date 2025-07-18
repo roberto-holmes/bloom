@@ -730,8 +730,12 @@ impl<'a> Ray<'a> {
         if primitives_changed {
             if self
                 .buffer_references
-                .check_available_space::<PrimitiveAddresses>(self.primitive_addresses.len())
+                .check_total_space::<PrimitiveAddresses>(self.primitive_addresses.len())
             {
+                log::trace!(
+                    "Using old buffer reference buffer to store {} addresses",
+                    self.primitive_addresses.len()
+                );
                 self.buffer_references.populate_staged(
                     &self.device,
                     self.command_pool.get(),
@@ -741,6 +745,7 @@ impl<'a> Ray<'a> {
                     self.primitive_addresses.len(),
                 )?;
             } else {
+                log::trace!("Growing buffer reference buffer");
                 // Grow the buffer by creating a new one (overwriting the old one and causing it to drop and cleanup)
                 self.buffer_references = vulkan::Buffer::new_populated_staged(
                     &self.device,
@@ -881,6 +886,7 @@ impl<'a> Ray<'a> {
 
         match process {
             TlasProcess::Build => {
+                log::trace!("TLAS needs rebuilding");
                 self.tlas
                     .grow_buffer(&self.allocator, as_build_sizes_info)?;
                 let as_create_info = vk::AccelerationStructureCreateInfoKHR {
@@ -1191,6 +1197,7 @@ impl AccelerationStructure {
     ) -> Result<bool> {
         match self.buffer.as_mut() {
             None => {
+                log::trace!("Growing AS buffer from 0");
                 self.create_buffer(allocator, build_size_info)?;
                 return Ok(true);
             }
@@ -1200,6 +1207,7 @@ impl AccelerationStructure {
                 if !b.check_available_space::<u8>(
                     build_size_info.acceleration_structure_size as usize,
                 ) {
+                    log::trace!("Growing AS buffer");
                     self.create_buffer(allocator, build_size_info)?;
                     return Ok(true);
                 }
