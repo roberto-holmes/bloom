@@ -26,16 +26,16 @@
 		{
 			"type": "lldb",
 			"request": "launch",
-			"name": "Debug executable 'demo'",
+			"name": "Debug example 'maze'",
 			"cargo": {
 				"args": [
 					"build",
-					"--bin=demo",
+					"--example=maze",
 					"--package=bloom"
 				],
 				"filter": {
-					"name": "demo",
-					"kind": "bin"
+					"name": "maze",
+					"kind": "example"
 				}
 			},
 			"args": [],
@@ -44,17 +44,54 @@
 		{
 			"type": "lldb",
 			"request": "launch",
-			"name": "Debug unit tests in executable 'demo'",
+			"name": "Debug unit tests in example 'maze'",
 			"cargo": {
 				"args": [
 					"test",
 					"--no-run",
-					"--bin=demo",
+					"--example=maze",
 					"--package=bloom"
 				],
 				"filter": {
-					"name": "demo",
-					"kind": "bin"
+					"name": "maze",
+					"kind": "example"
+				}
+			},
+			"args": [],
+			"cwd": "${workspaceFolder}"
+		},
+		{
+			"type": "lldb",
+			"request": "launch",
+			"name": "Debug example 'sail'",
+			"cargo": {
+				"args": [
+					"build",
+					"--example=sail",
+					"--package=bloom"
+				],
+				"filter": {
+					"name": "sail",
+					"kind": "example"
+				}
+			},
+			"args": [],
+			"cwd": "${workspaceFolder}"
+		},
+		{
+			"type": "lldb",
+			"request": "launch",
+			"name": "Debug unit tests in example 'sail'",
+			"cargo": {
+				"args": [
+					"test",
+					"--no-run",
+					"--example=sail",
+					"--package=bloom"
+				],
+				"filter": {
+					"name": "sail",
+					"kind": "example"
 				}
 			},
 			"args": [],
