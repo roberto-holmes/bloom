@@ -3,7 +3,10 @@ __import constants;
 __import rng;
 __import helpers;
 
-static const int IMG_WG_SIZE = 16;
+struct Instance {
+	AccelerationStructureInstanceKHR asi;
+	uint32_t id;
+}
 
 struct AccelerationStructureInstanceKHR {
 	float4 row1;
@@ -29,8 +32,10 @@ ConstantBuffer<PushConstants> pc;
 
 [shader("compute")]
 [numthreads(16, 16, 1)]
+// [numthreads(8, 1, 1)]
 void main(uint3 id: SV_DispatchThreadID) {
 	if (all(id.xy == uint2(10, 10))) {
+		// if (id.x == 10) {
 		// StructuredBuffer<AccelerationStructureInstanceKHR> instance_buffer = *pc.instances;
 		// printf("%u instances, addr: %u, 1st: %u\n", pc.instance_count, pc.instances, *((uint32_t*)pc.instances));
 
@@ -71,9 +76,9 @@ void main(uint3 id: SV_DispatchThreadID) {
 		// printf("64:%u - 4: %v2u\n", i, *((uint64_t2*)pc.instances + 3));
 		// }
 		// printf("%u instances, top: %v4f\n", pc.instance_count, *(float4*)pc.instances);
-		printf("1: %v4f\n", (*(AccelerationStructureInstanceKHR*)*(uint64_t*)pc.instances).row1);
-		printf("2: %v4f\n", (*(AccelerationStructureInstanceKHR*)*(uint64_t*)pc.instances).row2);
-		printf("3: %v4f\n", (*(AccelerationStructureInstanceKHR*)*(uint64_t*)pc.instances).row3);
+		// printf("1: %v4f\n", (*(Instance*)*(uint64_t*)pc.instances).asi.row1);
+		// printf("2: %v4f\n", (*(Instance*)*(uint64_t*)pc.instances).asi.row2);
+		// printf("3: %v4f\n", (*(Instance*)*(uint64_t*)pc.instances).asi.row3);
 		// printf("1: %v4f\n", *(float4*)*(uint64_t*)pc.instances);
 		// printf("2: %v4f\n", *(float4*)((*(uint64_t*)pc.instances) + 1));
 		// printf("3: %v4f\n", *(float4*)((*(uint64_t*)pc.instances) + 2));
@@ -83,6 +88,10 @@ void main(uint3 id: SV_DispatchThreadID) {
 		// printf("3: %v4f\n", instance_buffer[0].row3);
 
 		// TODO: Figure out how to identify entity
-		(*(AccelerationStructureInstanceKHR*)*(uint64_t*)pc.instances).row1 = float4(1.0, 0.0, 0.0, pc.time_stamp_ns / float(100_000_000));
+		(*(Instance*)*(uint64_t*)pc.instances).asi.row1 = float4(1.0, 0.0, 0.0, pc.time_stamp_ns / float(100_000_000));
+
+		if (pc.time_stamp_ns < 50_000_000) {
+			printf("Moving entity %u\n", (*(Instance*)*(uint64_t*)pc.instances).id);
+		}
 	}
 }

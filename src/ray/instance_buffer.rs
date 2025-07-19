@@ -6,10 +6,19 @@ use std::{
     sync::Arc,
 };
 
-use crate::{core, ray::RESERVED_SIZE, vulkan};
+use crate::{physics, ray::RESERVED_SIZE, vulkan};
 
-// TODO: Consider storing another struct alongside vk::AccelerationStructureInstanceKHR with physics info, inputs, etc.
-const INSTANCE_SIZE: u64 = size_of::<vk::AccelerationStructureInstanceKHR>() as u64;
+#[repr(C)]
+struct Instance {
+    pub asi: vk::AccelerationStructureInstanceKHR,
+    pub entity: physics::EntityData,
+}
+
+impl Instance {
+    pub const fn size() -> u64 {
+        size_of::<Self>() as u64
+    }
+}
 
 /// Store the Bottom Level Acceleration Structures (BLAS)
 pub struct InstanceBuffer {
@@ -34,7 +43,7 @@ impl InstanceBuffer {
         Ok(Self {
             buffer: vulkan::Buffer::new_gpu(
                 &allocator,
-                INSTANCE_SIZE * RESERVED_SIZE as u64,
+                Instance::size() * RESERVED_SIZE as u64,
                 vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
                     | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
                     | vk::BufferUsageFlags::TRANSFER_SRC
@@ -74,7 +83,7 @@ impl InstanceBuffer {
         let base = self.buffer.get_device_address(device);
         let mut v = Vec::with_capacity(self.instance_count);
         for (_, index) in &self.entity_location {
-            v.push(base + index * size_of::<vk::AccelerationStructureInstanceKHR>() as u64);
+            v.push(base + index * Instance::size());
         }
 
         log::debug!("BLAS Addresses: {:?}", v);
@@ -134,13 +143,22 @@ impl InstanceBuffer {
         queue: vk::Queue,
         allocator: &Arc<vk_mem::Allocator>,
         entity: Entity,
-        new_instance: vk::AccelerationStructureInstanceKHR,
+        new_as_instance: vk::AccelerationStructureInstanceKHR,
     ) -> Result<bool> {
         if self.entity_location.contains_key(&entity) {
             return Ok(false);
         }
         // Ensure the buffer is big enough for the new instance
         self.grow(device, command_pool, queue, allocator)?;
+
+        let new_instance = Instance {
+            asi: new_as_instance,
+            entity: physics::EntityData {
+                entity: entity.id(),
+                pad: [0; 3],
+            },
+        };
+
         // Try to add the new instance into a gap in the buffer, if possible
         match self.empty_indices.pop() {
             Some(i) => {
@@ -162,7 +180,10 @@ impl InstanceBuffer {
                     entity.id(),
                     self.instance_count
                 );
-                log::warn!("Instance has transform {:?}", new_instance.transform.matrix);
+                log::warn!(
+                    "Instance has transform {:?}",
+                    new_instance.asi.transform.matrix
+                );
                 self.buffer.append_staged(
                     device,
                     command_pool,
@@ -216,18 +237,15 @@ impl InstanceBuffer {
         allocator: &Arc<vk_mem::Allocator>,
     ) -> Result<()> {
         // We only need to reallocate the buffer if the current one is not big enough to deal with all the instances we have
-        if !self
-            .buffer
-            .check_available_space::<vk::AccelerationStructureInstanceKHR>(1)
-        {
+        if !self.buffer.check_available_space::<Instance>(1) {
             log::debug!(
                 "Resizing instance buffer to {} B",
-                INSTANCE_SIZE * (self.instance_count + RESERVED_SIZE) as u64
+                Instance::size() * (self.instance_count + RESERVED_SIZE) as u64
             );
             // Create a new (larger) buffer
             let mut new_buffer = vulkan::Buffer::new_gpu(
                 allocator,
-                INSTANCE_SIZE * (self.instance_count + RESERVED_SIZE) as u64,
+                Instance::size() * (self.instance_count + RESERVED_SIZE) as u64,
                 vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
                     | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
                     | vk::BufferUsageFlags::TRANSFER_SRC

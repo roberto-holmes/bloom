@@ -40,6 +40,12 @@ impl PushConstants {
     }
 }
 
+#[repr(C)]
+pub struct EntityData {
+    pub entity: u32,
+    pub pad: [u32; 3],
+}
+
 pub struct Physics {
     start_time: Instant,
     instances: Arc<RwLock<InstanceBuffer>>, // TODO: Make 2 so that ray can use it at the same time
@@ -143,6 +149,10 @@ impl Physics {
             //     &[],
             // );
             // Dispatch the generation of the ocean wave spectra
+
+            // let group_count = 1.max(self.push_constants.instance_count);
+            // device.cmd_dispatch(self.commands[frame_index], group_count, 1, 1);
+
             device.cmd_dispatch(self.commands[frame_index], 32, 32, 1);
             device.end_command_buffer(self.commands[frame_index])?;
         }
