@@ -144,6 +144,8 @@ impl InstanceBuffer {
         allocator: &Arc<vk_mem::Allocator>,
         entity: Entity,
         new_as_instance: vk::AccelerationStructureInstanceKHR,
+        base_transform: cgmath::Matrix4<f32>,
+        world_transform: cgmath::Matrix4<f32>,
     ) -> Result<bool> {
         if self.entity_location.contains_key(&entity) {
             return Ok(false);
@@ -154,6 +156,8 @@ impl InstanceBuffer {
         let new_instance = Instance {
             asi: new_as_instance,
             entity: physics::EntityData {
+                base_transform: base_transform,
+                world_transform: world_transform,
                 entity: entity.id(),
                 pad: [0; 3],
             },

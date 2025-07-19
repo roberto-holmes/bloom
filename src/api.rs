@@ -95,6 +95,7 @@ pub struct Child {
 pub struct Instance {
     pub primitive: Entity,
     pub base_transform: Matrix4<f32>,
+    pub initial_transform: Matrix4<f32>,
 }
 
 impl Instance {
@@ -102,6 +103,7 @@ impl Instance {
         Self {
             primitive,
             base_transform: Matrix4::identity(),
+            initial_transform: Matrix4::identity(),
         }
     }
 }

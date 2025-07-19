@@ -16,7 +16,7 @@ use bloom::{
     primitives::Primitive,
     vec::Vec3,
 };
-use cgmath::Matrix4;
+use cgmath::{Matrix4, SquareMatrix};
 use hecs::Entity;
 use rand::Rng;
 use winit::event::DeviceEvent;
@@ -125,7 +125,8 @@ impl Bloomable for Demo {
         let sphere = w.spawn((Primitive::Sphere(Sphere::new(1.0, glass)?),));
         let _ = w.spawn((Instance {
             primitive: sphere,
-            base_transform: Matrix4::<f32>::from_translation(cgmath::Vector3 {
+            base_transform: Matrix4::<f32>::identity(),
+            initial_transform: Matrix4::<f32>::from_translation(cgmath::Vector3 {
                 x: 0.0,
                 y: 3.0,
                 z: 0.0,
@@ -135,11 +136,12 @@ impl Bloomable for Demo {
         let cube = w.spawn((Primitive::Model(Model::new_cube(green)?),));
         let _ = w.spawn((Instance {
             primitive: cube,
-            base_transform: Matrix4::<f32>::from_translation(cgmath::Vector3 {
+            base_transform: Matrix4::<f32>::from_nonuniform_scale(1.0, 10.0, 1.0),
+            initial_transform: Matrix4::<f32>::from_translation(cgmath::Vector3 {
                 x: 0.0,
                 y: 0.0,
                 z: 10.0,
-            }) * Matrix4::<f32>::from_nonuniform_scale(1.0, 10.0, 1.0),
+            }),
         },));
 
         // Spawn in ocean
@@ -273,7 +275,8 @@ impl Bloomable for Demo {
                 let mut rng = rand::rng();
                 self.cubes.push_back(w.spawn((Instance {
                     primitive: self.cube.unwrap(),
-                    base_transform: Matrix4::<f32>::from_translation(cgmath::Vector3 {
+                    base_transform: Matrix4::<f32>::identity(),
+                    initial_transform: Matrix4::<f32>::from_translation(cgmath::Vector3 {
                         x: rng.random_range(-10.0..10.0),
                         y: rng.random_range(-10.0..10.0),
                         z: rng.random_range(-10.0..10.0),
@@ -452,8 +455,8 @@ fn spawn_duck(w: &mut RwLockWriteGuard<hecs::World>, mat: Entity) {
 
     let _ = w.spawn((Instance {
         primitive: d,
-        base_transform: Matrix4::<f32>::from_translation(cgmath::Vector3::new(0.0, -1.0, 0.0))
-            * Matrix4::from_angle_y(cgmath::Rad(-0.23 - std::f32::consts::FRAC_PI_2))
+        base_transform: Matrix4::from_angle_y(cgmath::Rad(-0.23 - std::f32::consts::FRAC_PI_2))
             * Matrix4::from_scale(1.0 / 100.0),
+        initial_transform: Matrix4::<f32>::from_translation(cgmath::Vector3::new(0.0, -1.0, 0.0)),
     },));
 }

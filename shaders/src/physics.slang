@@ -5,6 +5,8 @@ __import helpers;
 
 struct Instance {
 	AccelerationStructureInstanceKHR asi;
+	float4x4 base_transform;  // Investigate if we can use float4x3 instead (to save on space)
+	float4x4 world_transform;
 	uint32_t id;
 	uint32_t pad0;
 	uint32_t pad1;
@@ -12,9 +14,7 @@ struct Instance {
 }
 
 struct AccelerationStructureInstanceKHR {
-	float4 row1;
-	float4 row2;
-	float4 row3;
+	float4x3 transform;
 	uint32_t index_mask;
 	uint32_t offset_flags;
 	uint64_t reference;
@@ -41,10 +41,12 @@ void main(uint3 id: SV_DispatchThreadID) {
 	Instance* inst = ((Instance*)*(pc.instances + id.x));
 
 	// if (pc.time_stamp_ns < 25_000_000) {
-	// 	printf("%u: %u [%lu]\n", id.x, inst.id, (uint64_t)inst);
+	//  printf("%u: %u [%lu] %f\n", id.x, inst.id, (uint64_t)inst, inst.asi.transform[3][1]);
 	// }
 
-	if (inst.id == 7) {
-		inst.asi.row2 = float4(0.0, 1.0, 0.0, pc.time_stamp_ns / float(1000_000_000));
+	if (inst.id == 5) {
+		inst.world_transform[1][3] = float(pc.time_stamp_ns / float(1000_000_000));
 	}
+	// Acceleration structure uses opposite matrix layout
+	inst.asi.transform = float4x3(transpose(mul(inst.world_transform, inst.base_transform)));
 }

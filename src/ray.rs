@@ -720,9 +720,11 @@ impl<'a> Ray<'a> {
                         &self.as_device,
                         &mut self.blass,
                         *location_in_blas,
-                        instance.base_transform,
+                        instance.initial_transform * instance.base_transform,
                         *primitive_type,
                     )?,
+                    instance.base_transform,
+                    instance.initial_transform,
                 )? {
                     log::trace!("Adding an instance: {:?}", instance);
                     need_rebuild = true;

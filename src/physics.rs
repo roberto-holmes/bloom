@@ -42,6 +42,8 @@ impl PushConstants {
 
 #[repr(C)]
 pub struct EntityData {
+    pub base_transform: cgmath::Matrix4<f32>,
+    pub world_transform: cgmath::Matrix4<f32>,
     pub entity: u32,
     pub pad: [u32; 3],
 }
