@@ -12,6 +12,7 @@ use winit::dpi::PhysicalSize;
 use crate::core::create_commands_flight_frames;
 use crate::material::Material;
 use crate::oceans::Ocean;
+use crate::physics::Physics;
 use crate::primitives::{
     Addressable, ObjectType, Objectionable, Primitive, PrimitiveAddresses, AABB,
 };
@@ -21,7 +22,7 @@ use crate::vec::Vec3;
 use crate::vulkan::Destructor;
 use crate::{api, core, primitives, structures, sync, tools, vulkan, MAX_FRAMES_IN_FLIGHT};
 
-mod instance_buffer;
+pub mod instance_buffer;
 
 const RESERVED_SIZE: usize = 100;
 
@@ -310,7 +311,7 @@ struct Ray<'a> {
     materials_buffer: vulkan::Buffer,
     aabbs_buffers: Vec<vulkan::Buffer>,
     buffer_references: vulkan::Buffer,
-    instances_buffer: InstanceBuffer,
+    instances_buffer: Arc<RwLock<InstanceBuffer>>,
 
     materials: Vec<Material>,
     aabbs: Vec<AABB>,
@@ -318,6 +319,7 @@ struct Ray<'a> {
     tlas: AccelerationStructure,
 
     ocean: Ocean<'a>,
+    physics: Physics,
 
     allocator: Arc<vk_mem::Allocator>,
     physical_device: vk::PhysicalDevice,
@@ -364,7 +366,7 @@ impl<'a> Ray<'a> {
                 | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
                 | vk::BufferUsageFlags::TRANSFER_DST,
         )?;
-        let instances_buffer = InstanceBuffer::new(&allocator)?;
+        let instances_buffer = Arc::new(RwLock::new(InstanceBuffer::new(&allocator)?));
 
         let tlas = AccelerationStructure::new(&as_device);
 
@@ -395,6 +397,12 @@ impl<'a> Ray<'a> {
         materials.push(Material::new_basic(Vec3::new(1.0, 0.1, 0.7), 0.));
 
         let ocean = Ocean::new(&device, &allocator, queue_family_indices)?;
+        let physics = Physics::new(
+            &device,
+            Arc::clone(&allocator),
+            queue_family_indices,
+            Arc::clone(&instances_buffer),
+        )?;
 
         Ok(Self {
             device,
@@ -431,6 +439,7 @@ impl<'a> Ray<'a> {
             uniform,
             instances_buffer,
             ocean,
+            physics,
         })
     }
     pub fn need_resize(&self, size: PhysicalSize<u32>) -> bool {
@@ -701,7 +710,7 @@ impl<'a> Ray<'a> {
                     };
 
                 // We only add the instance if it isn't already there
-                if self.instances_buffer.try_add(
+                if self.instances_buffer.write().unwrap().try_add(
                     &self.device,
                     self.command_pool.get(),
                     self.queue,
@@ -722,7 +731,13 @@ impl<'a> Ray<'a> {
                 // Keep track of the indices that were found so we can drop dead ones
                 instances.insert(entity);
             }
-            if self.instances_buffer.remove_orphans(&instances) > 0 {
+            if self
+                .instances_buffer
+                .write()
+                .unwrap()
+                .remove_orphans(&instances)
+                > 0
+            {
                 need_rebuild = true;
             }
         }
@@ -790,6 +805,9 @@ impl<'a> Ray<'a> {
         let (ocean_semaphore, ocean_timestamp) =
             self.ocean.dispatch(&self.device, current_frame_index)?;
 
+        let (physics_semaphore, physics_timestamp) =
+            self.physics.dispatch(&self.device, current_frame_index)?;
+
         let height = self.images.as_ref().unwrap()[current_frame_index].height;
         let width = self.images.as_ref().unwrap()[current_frame_index].width;
         self.build_command_buffers(width, height, current_frame_index)?;
@@ -802,11 +820,18 @@ impl<'a> Ray<'a> {
             transfer_timestamp_to_wait,
             ray_timestamp_to_wait,
             ocean_timestamp,
+            physics_timestamp,
         ];
-        let wait_semaphores = [transfer_semaphore, self.semaphore.get(), ocean_semaphore];
+        let wait_semaphores = [
+            transfer_semaphore,
+            self.semaphore.get(),
+            ocean_semaphore,
+            physics_semaphore,
+        ];
         let wait_stages = [
             vk::PipelineStageFlags::TRANSFER,
             vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
+            vk::PipelineStageFlags::COMPUTE_SHADER,
             vk::PipelineStageFlags::COMPUTE_SHADER,
         ];
 
@@ -836,12 +861,12 @@ impl<'a> Ray<'a> {
         log::trace!(
             "Populating instances with {}x{}={} Bytes",
             size_of::<vk::AccelerationStructureInstanceKHR>(),
-            self.instances_buffer.instance_count,
+            self.instances_buffer.read().unwrap().instance_count,
             (size_of::<vk::AccelerationStructureInstanceKHR>()
-                * self.instances_buffer.instance_count)
+                * self.instances_buffer.read().unwrap().instance_count)
         );
         let instance_data_device_address = vk::DeviceOrHostAddressConstKHR {
-            device_address: self.instances_buffer.get_address_array(
+            device_address: self.instances_buffer.write().unwrap().get_address_array(
                 &self.device,
                 self.command_pool.get(),
                 self.queue,
@@ -872,7 +897,7 @@ impl<'a> Ray<'a> {
         };
         as_build_geometry_info = as_build_geometry_info.geometries(&as_geometries);
 
-        let primitive_count = [self.instances_buffer.instance_count as u32];
+        let primitive_count = [self.instances_buffer.read().unwrap().instance_count as u32];
 
         let mut as_build_sizes_info = vk::AccelerationStructureBuildSizesInfoKHR::default();
         unsafe {

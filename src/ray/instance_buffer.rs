@@ -38,7 +38,8 @@ impl InstanceBuffer {
                 vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
                     | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
                     | vk::BufferUsageFlags::TRANSFER_SRC
-                    | vk::BufferUsageFlags::TRANSFER_DST,
+                    | vk::BufferUsageFlags::TRANSFER_DST
+                    | vk::BufferUsageFlags::UNIFORM_BUFFER,
             )?,
             address_buffer: vulkan::Buffer::new_gpu(
                 &allocator,
@@ -46,7 +47,8 @@ impl InstanceBuffer {
                 vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
                     | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
                     | vk::BufferUsageFlags::TRANSFER_SRC
-                    | vk::BufferUsageFlags::TRANSFER_DST,
+                    | vk::BufferUsageFlags::TRANSFER_DST
+                    | vk::BufferUsageFlags::UNIFORM_BUFFER,
             )?,
             empty_indices: Vec::with_capacity(RESERVED_SIZE),
             entity_location: HashMap::with_capacity(RESERVED_SIZE),
@@ -75,6 +77,8 @@ impl InstanceBuffer {
             v.push(base + index * size_of::<vk::AccelerationStructureInstanceKHR>() as u64);
         }
 
+        log::debug!("BLAS Addresses: {:?}", v);
+
         if v.len() != self.instance_count {
             log::warn!(
                 "Number of addresses {} != number of instances {}",
@@ -97,7 +101,8 @@ impl InstanceBuffer {
                 vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
                     | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
                     | vk::BufferUsageFlags::TRANSFER_SRC
-                    | vk::BufferUsageFlags::TRANSFER_DST,
+                    | vk::BufferUsageFlags::TRANSFER_DST
+                    | vk::BufferUsageFlags::UNIFORM_BUFFER,
                 v.as_ptr(),
                 v.len(),
                 v.len() + RESERVED_SIZE,
@@ -113,7 +118,11 @@ impl InstanceBuffer {
             )?;
         }
         self.has_changed = false;
-        Ok(self.address_buffer.get_device_address(device))
+        let address = self.address_buffer.get_device_address(device);
+
+        log::debug!("Buffer of BLAS Addresses address: {address}");
+
+        Ok(address)
     }
 
     /// Add instances to the buffer, taking care to fill in any spaces left by previously removed instances.
@@ -153,6 +162,7 @@ impl InstanceBuffer {
                     entity.id(),
                     self.instance_count
                 );
+                log::warn!("Instance has transform {:?}", new_instance.transform.matrix);
                 self.buffer.append_staged(
                     device,
                     command_pool,
@@ -221,7 +231,8 @@ impl InstanceBuffer {
                 vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
                     | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
                     | vk::BufferUsageFlags::TRANSFER_SRC
-                    | vk::BufferUsageFlags::TRANSFER_DST,
+                    | vk::BufferUsageFlags::TRANSFER_DST
+                    | vk::BufferUsageFlags::UNIFORM_BUFFER,
             )?;
 
             new_buffer.copy_from::<vk::AccelerationStructureInstanceKHR>(

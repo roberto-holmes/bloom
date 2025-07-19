@@ -430,16 +430,16 @@ where
         user_app.physics_tick(Duration::ZERO, &world);
 
         let systems = vec![
-            Self::add_system(
-                user_app.clone(),
-                world.clone(),
-                should_systems_die.clone(),
-                system_sync.0.clone(),
-                api::Event::Physics,
-                "Phys",
-                physics::system,
-                event_broadcaster.add_rx(),
-            ),
+            // Self::add_system(
+            //     user_app.clone(),
+            //     world.clone(),
+            //     should_systems_die.clone(),
+            //     system_sync.0.clone(),
+            //     api::Event::Physics,
+            //     "Phys",
+            //     physics::system,
+            //     event_broadcaster.add_rx(),
+            // ),
             Self::add_system(
                 user_app.clone(),
                 world.clone(),
