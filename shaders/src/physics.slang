@@ -31,11 +31,9 @@ struct PushConstants {
 ConstantBuffer<PushConstants> pc;
 
 [shader("compute")]
-[numthreads(16, 16, 1)]
-// [numthreads(8, 1, 1)]
+[numthreads(8, 1, 1)]
 void main(uint3 id: SV_DispatchThreadID) {
-	if (all(id.xy == uint2(10, 10))) {
-		// if (id.x == 10) {
+	if (id.x == 3) {
 		// StructuredBuffer<AccelerationStructureInstanceKHR> instance_buffer = *pc.instances;
 		// printf("%u instances, addr: %u, 1st: %u\n", pc.instance_count, pc.instances, *((uint32_t*)pc.instances));
 

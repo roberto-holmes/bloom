@@ -150,10 +150,8 @@ impl Physics {
             // );
             // Dispatch the generation of the ocean wave spectra
 
-            // let group_count = 1.max(self.push_constants.instance_count);
-            // device.cmd_dispatch(self.commands[frame_index], group_count, 1, 1);
-
-            device.cmd_dispatch(self.commands[frame_index], 32, 32, 1);
+            let group_count = 1.max(self.push_constants.instance_count / 8);
+            device.cmd_dispatch(self.commands[frame_index], group_count, 1, 1);
             device.end_command_buffer(self.commands[frame_index])?;
         }
 
