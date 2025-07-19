@@ -38,11 +38,11 @@ void main(inout Payload ray, in CustomAttributes att) {
 		let ocean = (Ocean*)scene[InstanceID()].primitive;
 		mat = materials[ocean.material];
 		let pos = point_on_ray(RayTCurrent());
-		float ocean_point = get_ocean_point(ocean, pos.xz * 100.0, ocean_map).x;
+		float ocean_point = get_ocean_point(pos.xz * 100.0, ocean.size, ocean_map).x;
 		// float2 normal_map = get_ocean_point(ocean, pos.xz, ocean_map).ba * 10000;
 		// Get normal from central differences
-		float diff_x = get_ocean_point(ocean, pos.xz * 100.0 + float2(0.5, 0.0), ocean_map) - get_ocean_point(ocean, pos.xz * 100.0 - float2(0.5, 0.0), ocean_map);
-		float diff_y = get_ocean_point(ocean, pos.xz * 100.0 + float2(0.0, 0.5), ocean_map) - get_ocean_point(ocean, pos.xz * 100.0 - float2(0.0, 0.5), ocean_map);
+		float diff_x = get_ocean_point(pos.xz * 100.0 + float2(0.5, 0.0), ocean.size, ocean_map) - get_ocean_point(pos.xz * 100.0 - float2(0.5, 0.0), ocean.size, ocean_map);
+		float diff_y = get_ocean_point(pos.xz * 100.0 + float2(0.0, 0.5), ocean.size, ocean_map) - get_ocean_point(pos.xz * 100.0 - float2(0.0, 0.5), ocean.size, ocean_map);
 		diff_x /= 1.0;
 		diff_y /= 1.0;
 
@@ -54,7 +54,7 @@ void main(inout Payload ray, in CustomAttributes att) {
 
 		scatter(ray, pos, normal, mat);
 		// ray.attenuation = float3(normal);
-		// ray.attenuation = float3(ocean_point.r, 0.0, ocean_point.g);
+		// ray.attenuation = float3(ocean_point.r, 0.0, ocean_point.r);
 		// ray.attenuation = float3(0.5, 0.2, RayTCurrent() / 2.0);
 		// ray.radiance = float3(1.0, 1.0, 1.0);
 		// ray.done = 1;

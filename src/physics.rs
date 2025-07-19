@@ -52,9 +52,9 @@ pub struct Physics {
     start_time: Instant,
     instances: Arc<RwLock<InstanceBuffer>>, // TODO: Make 2 so that ray can use it at the same time
 
-    // _descriptor_pool: Destructor<vk::DescriptorPool>,
-    // _descriptor_set_layout: Destructor<vk::DescriptorSetLayout>,
-    // descriptor_sets: [vk::DescriptorSet; MAX_FRAMES_IN_FLIGHT],
+    _descriptor_pool: Destructor<vk::DescriptorPool>,
+    _descriptor_set_layout: Destructor<vk::DescriptorSetLayout>,
+    descriptor_sets: [vk::DescriptorSet; MAX_FRAMES_IN_FLIGHT],
     pipeline_layout: Destructor<vk::PipelineLayout>,
     pipeline: Destructor<vk::Pipeline>,
     commands: [vk::CommandBuffer; MAX_FRAMES_IN_FLIGHT],
@@ -75,6 +75,7 @@ impl Physics {
         allocator: Arc<vk_mem::Allocator>,
         queue_family_indices: structures::QueueFamilyIndices,
         instances: Arc<RwLock<InstanceBuffer>>,
+        ocean: vk::ImageView,
     ) -> Result<Self> {
         let queue = core::create_queue(&device, queue_family_indices.compute_family.unwrap());
         let (command_pool, commands) = core::create_commands_flight_frames(
@@ -82,8 +83,8 @@ impl Physics {
             queue_family_indices.compute_family.unwrap().0,
         )?;
 
-        // let (descriptor_pool, descriptor_set_layout, descriptor_sets, pipeline_layout, pipeline) =
-        let (pipeline_layout, pipeline) = create_pipeline(device)?;
+        let (descriptor_pool, descriptor_set_layout, descriptor_sets, pipeline_layout, pipeline) =
+            create_pipeline(device, ocean)?;
 
         let semaphores = std::array::from_fn(|_| {
             Destructor::new(
@@ -97,9 +98,9 @@ impl Physics {
             start_time: Instant::now(),
             instances,
             push_constants: PushConstants::new(),
-            // _descriptor_pool: descriptor_pool,
-            // _descriptor_set_layout: descriptor_set_layout,
-            // descriptor_sets,
+            _descriptor_pool: descriptor_pool,
+            _descriptor_set_layout: descriptor_set_layout,
+            descriptor_sets,
             pipeline_layout,
             pipeline,
             commands,
@@ -141,15 +142,15 @@ impl Physics {
                 vk::PipelineBindPoint::COMPUTE,
                 self.pipeline.get(),
             );
-            // let descriptor_sets_to_bind = [self.descriptor_sets[frame_index]];
-            // device.cmd_bind_descriptor_sets(
-            //     self.commands[frame_index],
-            //     vk::PipelineBindPoint::COMPUTE,
-            //     self.pipeline_layout.get(),
-            //     0,
-            //     &descriptor_sets_to_bind,
-            //     &[],
-            // );
+            let descriptor_sets_to_bind = [self.descriptor_sets[frame_index]];
+            device.cmd_bind_descriptor_sets(
+                self.commands[frame_index],
+                vk::PipelineBindPoint::COMPUTE,
+                self.pipeline_layout.get(),
+                0,
+                &descriptor_sets_to_bind,
+                &[],
+            );
             // Dispatch the generation of the ocean wave spectra
 
             let group_count = 1.max(self.push_constants.instance_count / 8);
@@ -194,32 +195,31 @@ impl Physics {
 
 fn create_pipeline(
     device: &ash::Device,
+    ocean: vk::ImageView,
 ) -> Result<(
-    // Destructor<vk::DescriptorPool>,
-    // Destructor<vk::DescriptorSetLayout>,
-    // [vk::DescriptorSet; MAX_FRAMES_IN_FLIGHT],
+    Destructor<vk::DescriptorPool>,
+    Destructor<vk::DescriptorSetLayout>,
+    [vk::DescriptorSet; MAX_FRAMES_IN_FLIGHT],
     Destructor<vk::PipelineLayout>,
     Destructor<vk::Pipeline>,
 )> {
-    // let set_layout_bindings = [
-    //     vk::DescriptorSetLayoutBinding {
-    //     binding: 0,
-    //     descriptor_type: vk::DescriptorType::STORAGE_IMAGE,
-    //     descriptor_count: 1,
-    //     stage_flags: vk::ShaderStageFlags::COMPUTE,
-    //     ..Default::default()
-    //     }
-    // ];
+    let set_layout_bindings = [vk::DescriptorSetLayoutBinding {
+        binding: 0,
+        descriptor_type: vk::DescriptorType::STORAGE_IMAGE,
+        descriptor_count: 1,
+        stage_flags: vk::ShaderStageFlags::COMPUTE,
+        ..Default::default()
+    }];
 
-    // let descriptor_layout =
-    //     vk::DescriptorSetLayoutCreateInfo::default().bindings(&set_layout_bindings);
-    // let descriptor_set_layout = Destructor::new(
-    //     device,
-    //     unsafe { device.create_descriptor_set_layout(&descriptor_layout, None)? },
-    //     device.fp_v1_0().destroy_descriptor_set_layout,
-    // );
-    // let set_layouts: [vk::DescriptorSetLayout; MAX_FRAMES_IN_FLIGHT] =
-    //     std::array::from_fn(|_| descriptor_set_layout.get());
+    let descriptor_layout =
+        vk::DescriptorSetLayoutCreateInfo::default().bindings(&set_layout_bindings);
+    let descriptor_set_layout = Destructor::new(
+        device,
+        unsafe { device.create_descriptor_set_layout(&descriptor_layout, None)? },
+        device.fp_v1_0().destroy_descriptor_set_layout,
+    );
+    let set_layouts: [vk::DescriptorSetLayout; MAX_FRAMES_IN_FLIGHT] =
+        std::array::from_fn(|_| descriptor_set_layout.get());
 
     let push_constants = [vk::PushConstantRange {
         stage_flags: vk::ShaderStageFlags::COMPUTE,
@@ -228,7 +228,7 @@ fn create_pipeline(
     }];
 
     let pipeline_layout_info = vk::PipelineLayoutCreateInfo::default()
-        // .set_layouts(&set_layouts)
+        .set_layouts(&set_layouts)
         .push_constant_ranges(&push_constants);
     let pipeline_layout = Destructor::new(
         device,
@@ -236,44 +236,39 @@ fn create_pipeline(
         device.fp_v1_0().destroy_pipeline_layout,
     );
 
-    // let pool_sizes = [vk::DescriptorPoolSize::default()
-    //     .descriptor_count(MAX_FRAMES_IN_FLIGHT as u32)
-    //     .ty(vk::DescriptorType::STORAGE_IMAGE)];
+    let pool_sizes = [vk::DescriptorPoolSize::default()
+        .descriptor_count(MAX_FRAMES_IN_FLIGHT as u32)
+        .ty(vk::DescriptorType::STORAGE_IMAGE)];
 
-    // let pool_info = vk::DescriptorPoolCreateInfo::default()
-    //     .pool_sizes(&pool_sizes)
-    //     .max_sets(MAX_FRAMES_IN_FLIGHT as u32);
+    let pool_info = vk::DescriptorPoolCreateInfo::default()
+        .pool_sizes(&pool_sizes)
+        .max_sets(MAX_FRAMES_IN_FLIGHT as u32);
 
-    // let descriptor_pool = Destructor::new(
-    //     device,
-    //     unsafe { device.create_descriptor_pool(&pool_info, None)? },
-    //     device.fp_v1_0().destroy_descriptor_pool,
-    // );
+    let descriptor_pool = Destructor::new(
+        device,
+        unsafe { device.create_descriptor_pool(&pool_info, None)? },
+        device.fp_v1_0().destroy_descriptor_pool,
+    );
 
-    // let alloc_info = vk::DescriptorSetAllocateInfo::default()
-    // .descriptor_pool(descriptor_pool.get())
-    // .set_layouts(set_layouts.as_slice());
-    // let descriptor_sets = unsafe { device.allocate_descriptor_sets(&alloc_info)? };
+    let alloc_info = vk::DescriptorSetAllocateInfo::default()
+        .descriptor_pool(descriptor_pool.get())
+        .set_layouts(set_layouts.as_slice());
+    let descriptor_sets = unsafe { device.allocate_descriptor_sets(&alloc_info)? };
 
-    // for (i, &descriptor_set) in descriptor_sets.iter().enumerate() {
-    //     // Swap image views around each frame
-    //     let image_infos: [[vk::DescriptorImageInfo; 1]; FFT_IMAGES] = std::array::from_fn(|j| {
-    //         [vk::DescriptorImageInfo::default()
-    //             .image_layout(vk::ImageLayout::GENERAL)
-    //             .image_view(output_images[FFT_IMAGES * i + j].view())]
-    //     });
-    //     let descriptor_writes: [vk::WriteDescriptorSet<'_>; FFT_IMAGES] =
-    //         std::array::from_fn(|j| {
-    //             vk::WriteDescriptorSet::default()
-    //                 .dst_set(descriptor_set)
-    //                 .dst_binding(j as u32)
-    //                 .dst_array_element(0)
-    //                 .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-    //                 .descriptor_count(1)
-    //                 .image_info(&image_infos[j])
-    //         });
-    //     unsafe { device.update_descriptor_sets(&descriptor_writes, &[]) };
-    // }
+    for (_, &descriptor_set) in descriptor_sets.iter().enumerate() {
+        // Swap image views around each frame
+        let image_info = [vk::DescriptorImageInfo::default()
+            .image_layout(vk::ImageLayout::GENERAL)
+            .image_view(ocean)];
+        let descriptor_writes = [vk::WriteDescriptorSet::default()
+            .dst_set(descriptor_set)
+            .dst_binding(0)
+            .dst_array_element(0)
+            .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+            .descriptor_count(1)
+            .image_info(&image_info)];
+        unsafe { device.update_descriptor_sets(&descriptor_writes, &[]) };
+    }
 
     let shader_code = read_shader_code(Path::new("shaders/spv/physics.slang.spv"))?;
     let shader_module = create_shader_module(&device, &shader_code)?;
@@ -292,21 +287,21 @@ fn create_pipeline(
         match unsafe {
             device.create_compute_pipelines(vk::PipelineCache::null(), &pipeline_create_infos, None)
         } {
-            Ok(v) => v[0], // We are only creating one timeline so we only want the first object in the vector
+            Ok(v) => v[0], // We are only creating one pipeline so we only want the first object in the vector
             Err(e) => return Err(anyhow!(e.1)),
         },
         device.fp_v1_0().destroy_pipeline,
     );
 
-    // let descriptor_sets = <Vec<vk::DescriptorSet> as TryInto<
-    //     [vk::DescriptorSet; MAX_FRAMES_IN_FLIGHT],
-    // >>::try_into(descriptor_sets)
-    // .unwrap();
+    let descriptor_sets = <Vec<vk::DescriptorSet> as TryInto<
+        [vk::DescriptorSet; MAX_FRAMES_IN_FLIGHT],
+    >>::try_into(descriptor_sets)
+    .unwrap();
 
     Ok((
-        // descriptor_pool,
-        // descriptor_set_layout,
-        // descriptor_sets,
+        descriptor_pool,
+        descriptor_set_layout,
+        descriptor_sets,
         pipeline_layout,
         pipeline,
     ))

@@ -351,7 +351,7 @@ float hit_ocean(const Ocean* ocean) {
 	// Ray march to see if we hit the ocean
 	for (float t = aabb_hit; t < aabb_hit + t_max; t += dt) {
 		let p = WorldRayOrigin() + WorldRayDirection() * t;
-		var point = get_ocean_point(ocean, p.xz * 100.0, ocean_map);
+		var point = get_ocean_point(p.xz * 100.0, ocean.size, ocean_map);
 		// float point = 0.0;
 		if (!isfinite(point)) {
 			// There is a discontinuity in the ocean

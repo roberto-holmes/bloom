@@ -26,8 +26,8 @@ struct PushConstants {
 	uint32_t instance_count;
 }
 
-// [[vk::binding(0, 0)]]
-// RWTexture2D<float4> ocean_map;	// TODO: Consider replacing with a float2 texture
+[[vk::binding(0, 0)]]
+RWTexture2D<float4> ocean_map;	// TODO: Consider replacing with a float2 texture
 [[vk::push_constant]]
 ConstantBuffer<PushConstants> pc;
 
@@ -45,7 +45,10 @@ void main(uint3 id: SV_DispatchThreadID) {
 	// }
 
 	if (inst.id == 5) {
-		inst.world_transform[1][3] = float(pc.time_stamp_ns / float(1000_000_000));
+		let ocean_height = get_ocean_point(inst.asi.transform[3].xz * 100.0, 1024, ocean_map);
+
+		// inst.world_transform[1][3] = float(pc.time_stamp_ns / float(1000_000_000));
+		inst.world_transform[1][3] = ocean_height;
 	}
 	// Acceleration structure uses opposite matrix layout
 	inst.asi.transform = float4x3(transpose(mul(inst.world_transform, inst.base_transform)));

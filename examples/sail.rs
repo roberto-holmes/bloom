@@ -455,7 +455,8 @@ fn spawn_duck(w: &mut RwLockWriteGuard<hecs::World>, mat: Entity) {
 
     let _ = w.spawn((Instance {
         primitive: d,
-        base_transform: Matrix4::from_angle_y(cgmath::Rad(-0.23 - std::f32::consts::FRAC_PI_2))
+        base_transform: Matrix4::<f32>::from_translation(cgmath::Vector3::new(0.0, -0.5, 0.0))
+            * Matrix4::from_angle_y(cgmath::Rad(-0.23 - std::f32::consts::FRAC_PI_2))
             * Matrix4::from_scale(1.0 / 100.0),
         initial_transform: Matrix4::<f32>::from_translation(cgmath::Vector3::new(0.0, -1.0, 0.0)),
     },));

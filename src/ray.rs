@@ -402,6 +402,7 @@ impl<'a> Ray<'a> {
             Arc::clone(&allocator),
             queue_family_indices,
             Arc::clone(&instances_buffer),
+            ocean.images[0].view(),
         )?;
 
         Ok(Self {
