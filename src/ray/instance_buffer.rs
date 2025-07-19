@@ -253,7 +253,7 @@ impl InstanceBuffer {
                     | vk::BufferUsageFlags::UNIFORM_BUFFER,
             )?;
 
-            new_buffer.copy_from::<vk::AccelerationStructureInstanceKHR>(
+            new_buffer.copy_from::<Instance>(
                 device,
                 command_pool,
                 queue,
