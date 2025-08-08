@@ -2,26 +2,22 @@ __import rng;
 __import scatter;
 __import structs;
 
-[[vk::binding(0)]]
-RaytracingAccelerationStructure tlas;
-// 1 and 2 are the storage images
-[[vk::binding(3)]]
-ConstantBuffer<UBO> ubo;
-[[vk::binding(4)]]
-StructuredBuffer<Buffers> scene;
-[[vk::binding(5)]]
-StructuredBuffer<Material> materials;
+[[vk::push_constant]]
+ConstantBuffer<RayPushConstants> pc;
+// (Binding, Set)
+[[vk::binding(0, 1)]]
+RWTexture2D<float4> ocean_map[];
 
 [shader("closesthit")]
 void main(inout Payload p, in Attributes attribs) {
-	init_rng(DispatchRaysIndex().xy, ubo.width, ubo.ray_frame_num + uint(length(WorldRayDirection()) * 100) + ubo.random_num);
+	init_rng(DispatchRaysIndex().xy, pc.ubo.width, pc.ubo.ray_frame_num + uint(length(WorldRayDirection()) * 100) + pc.ubo.random_num);
 	// Get the data corresponding to this object from the Instance Index inserted during TLAS creation
-	Mesh* mesh = (Mesh*)scene[InstanceID()].primitive;
+	Mesh* mesh = ((Mesh*)(((Buffers*)pc.scene)[InstanceID()]).primitive);
 	let vertices = mesh.vertices;
 	let indices = mesh.indices;
 
 	let mat_id = mesh.material_indices[PrimitiveIndex()];
-	Material mat = materials[mat_id];
+	Material mat = ((Material*)pc.materials)[mat_id];
 
 	// Indices of the triangle
 	uint3 ind = uint3(indices[3 * PrimitiveIndex()], indices[3 * PrimitiveIndex() + 1], indices[3 * PrimitiveIndex() + 2]);

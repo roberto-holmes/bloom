@@ -2,17 +2,15 @@ __import structs;
 __import helpers;
 __import constants;
 
+[[vk::push_constant]]
+ConstantBuffer<RayPushConstants> pc;
 // (Binding, Set)
-[[vk::binding(3, 0)]]
-ConstantBuffer<UBO> ubo;
-[[vk::binding(4, 0)]]
-StructuredBuffer<Buffers> scene;
-[[vk::binding(6, 0)]]
-RWTexture2D<float4> ocean_map;
+[[vk::binding(0, 1)]]
+RWTexture2D<float4> ocean_map[];
 
 [shader("intersection")]
 void main() {
-	let o = scene[InstanceID()];
+	let o = ((Buffers*)pc.scene)[InstanceID()];
 	CustomAttributes att;
 	att.hit_type = 0;
 
@@ -339,38 +337,38 @@ float f_prime(float t, float3 axis, float3 center, float R, float k) {
 float hit_ocean(const Ocean* ocean) {
 	// Get initial t from intersection with AABB
 	// TODO: Get AABB size from Ocean object
-	let aabb = AABB(float3(-10.0, -1.0, -10.0), float3(10.0, 1.0, 10.0));
-	let aabb_hit = hit_aabb(aabb);
+	// let aabb = AABB(float3(-10.0, -1.0, -10.0), float3(10.0, 1.0, 10.0));
+	// let aabb_hit = hit_aabb(aabb);
 
-	// TODO: Tweak values to improve performance
-	float t_max = 20.0;
-	float dt = 0.01;
-	float lh = 0.0;
-	float ly = 0.0;
+	// // TODO: Tweak values to improve performance
+	// float t_max = 20.0;
+	// float dt = 0.01;
+	// float lh = 0.0;
+	// float ly = 0.0;
 
-	// Ray march to see if we hit the ocean
-	for (float t = aabb_hit; t < aabb_hit + t_max; t += dt) {
-		let p = WorldRayOrigin() + WorldRayDirection() * t;
-		var point = get_ocean_point(p.xz * 100.0, ocean.size, ocean_map);
-		// float point = 0.0;
-		if (!isfinite(point)) {
-			// There is a discontinuity in the ocean
-			point.r = 1000.0;
-		}
-		if (p.y < point) {
-			// The ray marched point is below the surface so we consider it a hit
-			// interpolate to get the intersection
-			return t - dt + dt * (lh - ly) / (p.y - ly - point + lh);
-		}
-		// Accuracy goes down as we are checking further away
-		// TODO: Figure out current total ray length (including bounces) and use this as accuracy should also be lower for subsequent bounces
-		if (t > 0) {
-			dt = 0.05 * t;
-		} else {
-			dt *= 1.001;
-		}
-		lh = point;
-		ly = p.y;
-	}
+	// // Ray march to see if we hit the ocean
+	// for (float t = aabb_hit; t < aabb_hit + t_max; t += dt) {
+	// 	let p = WorldRayOrigin() + WorldRayDirection() * t;
+	// 	var point = get_ocean_point(p.xz * 100.0, ocean.size, ocean_map[0]);
+	// 	// float point = 0.0;
+	// 	if (!isfinite(point)) {
+	// 		// There is a discontinuity in the ocean
+	// 		point.r = 1000.0;
+	// 	}
+	// 	if (p.y < point) {
+	// 		// The ray marched point is below the surface so we consider it a hit
+	// 		// interpolate to get the intersection
+	// 		return t - dt + dt * (lh - ly) / (p.y - ly - point + lh);
+	// 	}
+	// 	// Accuracy goes down as we are checking further away
+	// 	// TODO: Figure out current total ray length (including bounces) and use this as accuracy should also be lower for subsequent bounces
+	// 	if (t > 0) {
+	// 		dt = 0.05 * t;
+	// 	} else {
+	// 		dt *= 1.001;
+	// 	}
+	// 	lh = point;
+	// 	ly = p.y;
+	// }
 	return float(F32_MAX);
 }

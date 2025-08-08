@@ -3,28 +3,24 @@ __import structs;
 __import scatter;
 __import helpers;
 
-[[vk::binding(0)]]
-RaytracingAccelerationStructure tlas;
-// 1 and 2 are the storage images
-[[vk::binding(3)]]
-ConstantBuffer<UBO> ubo;
-[[vk::binding(4)]]
-StructuredBuffer<Buffers> scene;
-[[vk::binding(5)]]
-StructuredBuffer<Material> materials;
-[[vk::binding(6, 0)]]
-RWTexture2D<float4> ocean_map;
+[[vk::push_constant]]
+ConstantBuffer<RayPushConstants> pc;
+// (Binding, Set)
+[[vk::binding(0, 1)]]
+RWTexture2D<float4> ocean_map[];
 
 [shader("closesthit")]
 void main(inout Payload ray, in CustomAttributes att) {
-	init_rng(DispatchRaysIndex().xy, ubo.width, ubo.ray_frame_num + uint(length(WorldRayDirection()) * 100) + ubo.random_num);
+	init_rng(DispatchRaysIndex().xy, pc.ubo.width, pc.ubo.ray_frame_num + uint(length(WorldRayDirection()) * 100) + pc.ubo.random_num);
 	// Get the primitive type from RayTCurrent (The second value from the ReportHit function)
 
 	Material mat;
 
 	if (HitKind() == ObjectType::Sphere) {
-		let sphere = (Sphere*)scene[InstanceID()].primitive;
-		mat = materials[sphere.material];
+		let sphere = ((Sphere*)(((Buffers*)pc.scene)[InstanceID()]).primitive);
+		mat = ((Material*)pc.materials)[sphere.material];
+		// let sphere = (Sphere*)scene[InstanceID()].primitive;
+		// mat = materials[sphere.material];
 		let center = mul(ObjectToWorld(), float4(0.0, 0.0, 0.0, 1.0));
 
 		// Get position on surface
@@ -35,14 +31,14 @@ void main(inout Payload ray, in CustomAttributes att) {
 
 		scatter(ray, pos, normal, mat);
 	} else if (HitKind() == ObjectType::Ocean) {
-		let ocean = (Ocean*)scene[InstanceID()].primitive;
-		mat = materials[ocean.material];
+		let ocean = ((Ocean*)(((Buffers*)pc.scene)[InstanceID()]).primitive);
+		mat = ((Material*)pc.materials)[ocean.material];
 		let pos = point_on_ray(RayTCurrent());
-		float ocean_point = get_ocean_point(pos.xz * 100.0, ocean.size, ocean_map).x;
-		// float2 normal_map = get_ocean_point(ocean, pos.xz, ocean_map).ba * 10000;
+		float ocean_point = get_ocean_point(pos.xz * 100.0, ocean.size, ocean_map[0]).x;
+		// float2 normal_map = get_ocean_point(ocean, pos.xz, ocean_map[0]).ba * 10000;
 		// Get normal from central differences
-		float diff_x = get_ocean_point(pos.xz * 100.0 + float2(0.5, 0.0), ocean.size, ocean_map) - get_ocean_point(pos.xz * 100.0 - float2(0.5, 0.0), ocean.size, ocean_map);
-		float diff_y = get_ocean_point(pos.xz * 100.0 + float2(0.0, 0.5), ocean.size, ocean_map) - get_ocean_point(pos.xz * 100.0 - float2(0.0, 0.5), ocean.size, ocean_map);
+		float diff_x = get_ocean_point(pos.xz * 100.0 + float2(0.5, 0.0), ocean.size, ocean_map[0]) - get_ocean_point(pos.xz * 100.0 - float2(0.5, 0.0), ocean.size, ocean_map[0]);
+		float diff_y = get_ocean_point(pos.xz * 100.0 + float2(0.0, 0.5), ocean.size, ocean_map[0]) - get_ocean_point(pos.xz * 100.0 - float2(0.0, 0.5), ocean.size, ocean_map[0]);
 		diff_x /= 1.0;
 		diff_y /= 1.0;
 
@@ -61,12 +57,12 @@ void main(inout Payload ray, in CustomAttributes att) {
 		return;
 	} else if (HitKind() > ObjectType::Lentil) {
 		// var hit_type = HitKind() - ObjectType::Lentil;
-		let lentil = (Lentil*)scene[InstanceID()].primitive;
-		mat = materials[lentil.material];
+		let lentil = ((Lentil*)(((Buffers*)pc.scene)[InstanceID()]).primitive);
+		mat = ((Material*)pc.materials)[lentil.material];
 		float3 center = mul(ObjectToWorld(), float4(0.0, 0.0, 0.0, 1.0));
 		float3 axis = normalize(mul(ObjectToWorld(), float4(1.0, 0.0, 0.0, 0.0)));
 
-		// if (ubo.ray_frame_num == 1) {
+		// if (pc.ubo.ray_frame_num == 1) {
 		// 	printf("%u\n", att.hit_type);
 		// }
 		let hit_type = att.hit_type;

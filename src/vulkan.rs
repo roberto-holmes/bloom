@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use ash::{vk, RawPtr};
+use colored::Colorize;
 use vk_mem::{self, Alloc};
 
 use crate::core;
@@ -38,10 +39,12 @@ impl<T: Copy + Default> Destructor<T> {
     pub fn get(&self) -> T {
         self.member
     }
+    #[track_caller]
     fn clean(&mut self) {
         log::trace!("Dropping {}", std::any::type_name::<T>());
         unsafe { (self.destructor)(self.device, self.member, None.as_raw_ptr()) };
     }
+    #[track_caller]
     pub fn empty(&mut self) {
         self.clean();
         self.member = T::default();
@@ -151,6 +154,7 @@ pub struct Buffer {
     populated_size: vk::DeviceSize,
     total_size: vk::DeviceSize,
     type_name: &'static str,
+    name: Option<&'static str>,
 }
 
 impl Buffer {
@@ -247,6 +251,7 @@ impl Buffer {
             total_size: size,
             allocation_info,
             type_name: "generic",
+            name: None,
         })
     }
     #[track_caller]
@@ -257,6 +262,7 @@ impl Buffer {
         flags: vk_mem::AllocationCreateFlags,
         usage: vk::BufferUsageFlags,
         alignment: vk::DeviceSize,
+        name: &'static str,
     ) -> Result<Self> {
         // log::trace!("Creating Aligned VMA allocated buffer");
         if size == 0 {
@@ -283,6 +289,7 @@ impl Buffer {
             total_size: size,
             allocation_info,
             type_name: "aligned",
+            name: Some(name),
         })
     }
     #[track_caller]
@@ -564,15 +571,35 @@ impl Buffer {
     pub fn get(&self) -> vk::Buffer {
         self.buffer
     }
+    pub unsafe fn get_mapped_data(
+        &self,
+        size: vk::DeviceSize,
+        offset: vk::DeviceSize,
+    ) -> Result<&mut [u8]> {
+        if self.allocation_info.mapped_data.is_null() {
+            log::error!("Tried to access an unmapped buffer");
+            return Err(anyhow::anyhow!("Invalid buffer configuration"));
+        }
+        Ok(std::slice::from_raw_parts_mut(
+            self.allocation_info
+                .mapped_data
+                .byte_offset(offset as isize) as *mut u8,
+            size as usize,
+        ))
+    }
 }
 
 impl Drop for Buffer {
     #[track_caller]
     fn drop(&mut self) {
-        log::trace!(
-            "Destroying VMA allocated buffer for {} object",
-            self.type_name
-        );
+        match self.name {
+            Some(n) => log::trace!(
+                "Destroying {} buffer [{}]",
+                n.cyan(),
+                self.type_name.green()
+            ),
+            None => log::trace!("Destroying {} buffer", self.type_name.green()),
+        }
         unsafe {
             vk_mem::ffi::vmaDestroyBuffer(self.allocator, self.buffer, self.allocation.0);
         }
@@ -673,6 +700,115 @@ impl<'a> Image<'a> {
             },
         })
     }
+    // pub fn new_populated<T>(
+    //     device: &ash::Device,
+    //     allocator: &Arc<vk_mem::Allocator>,
+    //     command_pool: vk::CommandPool,
+    //     queue: vk::Queue,
+    //     location: vk_mem::MemoryUsage,
+    //     flags: vk_mem::AllocationCreateFlags,
+    //     data: *const T,
+    //     width: u32,
+    //     height: u32,
+    //     format: vk::Format,
+    // ) -> Result<Self> {
+    //     let image = Self::new(
+    //         device,
+    //         allocator,
+    //         location,
+    //         flags,
+    //         width,
+    //         height,
+    //         format,
+    //         vk::ImageTiling::OPTIMAL,
+    //         vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_DST,
+    //         vk::ImageAspectFlags::COLOR,
+    //     )?;
+
+    //     let size = (width * height) as u64;
+
+    //     // Use a staging buffer so that we don't need the image to be able to map to CPU memory
+    //     let mut staging_buffer = Buffer::new_mapped(
+    //         allocator,
+    //         size * size_of::<T>() as u64,
+    //         vk::BufferUsageFlags::TRANSFER_SRC,
+    //     )?;
+    //     staging_buffer.populate_mapped(data, size as usize)?;
+
+    //     // Copy image data into the image proper
+    //     let command_buffer = core::begin_single_time_commands(device, command_pool)?;
+
+    //     // Convert image layout to be able to copy into it
+    //     let barriers = [vk::ImageMemoryBarrier2::default()
+    //         .old_layout(vk::ImageLayout::UNDEFINED)
+    //         .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+    //         .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+    //         .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+    //         .image(image.get())
+    //         .subresource_range(vk::ImageSubresourceRange {
+    //             aspect_mask: vk::ImageAspectFlags::COLOR,
+    //             base_mip_level: 0,
+    //             level_count: 1,
+    //             base_array_layer: 0,
+    //             layer_count: 1,
+    //         })
+    //         .src_stage_mask(vk::PipelineStageFlags2::NONE)
+    //         .dst_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+    //         .src_access_mask(vk::AccessFlags2::NONE)
+    //         .dst_access_mask(vk::AccessFlags2::TRANSFER_WRITE)];
+
+    //     let dependency = vk::DependencyInfo::default().image_memory_barriers(&barriers);
+    //     unsafe { device.cmd_pipeline_barrier2(command_buffer, &dependency) };
+
+    //     unsafe {
+    //         let copy_region = [vk::BufferImageCopy {
+    //             image_extent: vk::Extent3D {
+    //                 width,
+    //                 height,
+    //                 depth: 1,
+    //             },
+    //             image_subresource: vk::ImageSubresourceLayers {
+    //                 aspect_mask: vk::ImageAspectFlags::COLOR,
+    //                 layer_count: 1,
+    //                 ..Default::default()
+    //             },
+    //             ..Default::default()
+    //         }];
+    //         device.cmd_copy_buffer_to_image(
+    //             command_buffer,
+    //             staging_buffer.get(),
+    //             image.image.unwrap(),
+    //             vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+    //             &copy_region,
+    //         );
+    //     }
+
+    //     // Convert image layout to be readable by the shaders
+    //     let barriers = [vk::ImageMemoryBarrier2::default()
+    //         .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+    //         .new_layout(vk::ImageLayout::READ_ONLY_OPTIMAL)
+    //         .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+    //         .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+    //         .image(image.get())
+    //         .subresource_range(vk::ImageSubresourceRange {
+    //             aspect_mask: vk::ImageAspectFlags::COLOR,
+    //             base_mip_level: 0,
+    //             level_count: 1,
+    //             base_array_layer: 0,
+    //             layer_count: 1,
+    //         })
+    //         .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+    //         .dst_stage_mask(vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR)
+    //         .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
+    //         .dst_access_mask(vk::AccessFlags2::SHADER_READ)];
+
+    //     let dependency = vk::DependencyInfo::default().image_memory_barriers(&barriers);
+    //     unsafe { device.cmd_pipeline_barrier2(command_buffer, &dependency) };
+
+    //     core::end_single_time_command(device, command_pool, queue, command_buffer)?;
+
+    //     Ok(image)
+    // }
     fn create_image(&mut self) -> Result<()> {
         unsafe {
             let mut create_info: vk_mem::ffi::VmaAllocationCreateInfo =

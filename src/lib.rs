@@ -328,7 +328,10 @@ where
         let ray_uniform_buffers = create_uniform_buffer::<UniformBufferObject>(&allocator)?;
         let viewport_uniform_buffers = create_uniform_buffer::<UniformBufferObject>(&allocator)?;
 
-        let ray_raw_uniform_buffers = [ray_uniform_buffers[0].get(), ray_uniform_buffers[1].get()];
+        let ray_uniform_buffer_addresses = [
+            ray_uniform_buffers[0].get_device_address(device.get()),
+            ray_uniform_buffers[1].get_device_address(device.get()),
+        ];
         let viewport_raw_uniform_buffers = [
             viewport_uniform_buffers[0].get(),
             viewport_uniform_buffers[1].get(),
@@ -557,7 +560,7 @@ where
                     ray_instance,
                     ray_physical_device,
                     queue_family_indices,
-                    ray_raw_uniform_buffers,
+                    ray_uniform_buffer_addresses,
                     should_ray_die_out,
                     ray_viewport_semaphore,
                     ray_transfer_resize_sender,

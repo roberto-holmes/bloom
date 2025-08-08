@@ -12,7 +12,7 @@ use crate::{
     MAX_FRAMES_IN_FLIGHT,
 };
 
-const FFT_IMAGES: usize = 1; // How many images do we need?
+pub const FFT_IMAGES: usize = 1; // How many images do we need?
 pub const OCEAN_RESOLUTION: u32 = 1024;
 
 enum PipelineType {

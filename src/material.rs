@@ -1,8 +1,10 @@
+use std::path::PathBuf;
+
 use crate::vec::Vec3;
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq)]
-pub struct Material {
+pub(crate) struct MaterialData {
     albedo: Vec3,
     alpha: f32,             // 0.0 = Transparent (Dielectric), 1.0 = Opaque
     refractive_index: f32,  // Relative from air into material (glass is ~1.0/1.5)
@@ -10,7 +12,12 @@ pub struct Material {
     emissivity: f32,        // 0.0 = No emission, 1.0 = every ray will add light to the scene
     emission_strength: f32, // > 0
     emitted_colour: Vec3,
-    _pad: [u32; 1],
+    texture_index: u32,
+}
+
+pub struct Material {
+    data: MaterialData,
+    texture_path: Option<PathBuf>,
 }
 
 impl Material {
@@ -24,37 +31,44 @@ impl Material {
         emitted_colour: Vec3,
     ) -> Self {
         Self {
-            albedo,
-            smoothness,
-            alpha,
-            refractive_index: refraction_index,
-            emissivity,
-            emission_strength,
-            emitted_colour,
-            _pad: [0; 1],
+            texture_path: None,
+            data: MaterialData {
+                albedo,
+                smoothness,
+                alpha,
+                refractive_index: refraction_index,
+                emissivity,
+                emission_strength,
+                emitted_colour,
+                texture_index: 0,
+            },
         }
     }
     #[allow(unused)]
     pub fn new_basic(albedo: Vec3, smoothness: f32) -> Self {
         let mut material = Material::default();
-        material.albedo = albedo;
-        material.smoothness = smoothness;
+        material.data.albedo = albedo;
+        material.data.smoothness = smoothness;
         material
     }
     #[allow(unused)]
     pub fn new_clear(albedo: Vec3) -> Self {
         let mut material = Material::default();
-        material.albedo = albedo;
-        material.alpha = 0.;
+        material.data.albedo = albedo;
+        material.data.alpha = 0.;
         material
     }
     #[allow(unused)]
     pub fn new_emissive(emitted_colour: Vec3, emission_strength: f32) -> Self {
         let mut material = Material::default();
-        material.emissivity = 1.;
-        material.emission_strength = emission_strength;
-        material.emitted_colour = emitted_colour;
+        material.data.emissivity = 1.;
+        material.data.emission_strength = emission_strength;
+        material.data.emitted_colour = emitted_colour;
         material
+    }
+    pub(crate) fn get_data(&self) -> MaterialData {
+        // TODO: how textures?
+        self.data
     }
 
     // pub fn new_random() -> Self {
@@ -82,14 +96,17 @@ impl Material {
 impl Default for Material {
     fn default() -> Self {
         Self {
-            albedo: Vec3::new(1.0, 1.0, 1.0),
-            smoothness: 0.0,
-            alpha: 1.0,
-            refractive_index: 1.4,
-            emissivity: 0.0,
-            emission_strength: 0.0,
-            emitted_colour: Vec3::new(1., 1., 1.),
-            _pad: [0; 1],
+            texture_path: None,
+            data: MaterialData {
+                albedo: Vec3::new(1.0, 1.0, 1.0),
+                smoothness: 0.0,
+                alpha: 1.0,
+                refractive_index: 1.4,
+                emissivity: 0.0,
+                emission_strength: 0.0,
+                emitted_colour: Vec3::new(1., 1., 1.),
+                texture_index: 0,
+            },
         }
     }
 }

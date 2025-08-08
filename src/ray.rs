@@ -4,25 +4,29 @@ use std::path::Path;
 use std::sync::{mpsc, Arc, RwLock};
 
 use anyhow::{anyhow, Result};
-use ash::{vk, RawPtr};
+use ash::vk;
 use hecs::{Entity, World};
 use vk_mem;
 use winit::dpi::PhysicalSize;
 
 use crate::core::create_commands_flight_frames;
-use crate::material::Material;
-use crate::oceans::Ocean;
+use crate::material::{Material, MaterialData};
+use crate::oceans::{Ocean, FFT_IMAGES};
 use crate::physics::Physics;
 use crate::primitives::{
     Addressable, ObjectType, Objectionable, Primitive, PrimitiveAddresses, AABB,
 };
+use crate::ray::acceleration_structure::AccelerationStructure;
 use crate::ray::instance_buffer::InstanceBuffer;
-use crate::uniforms::{self, UniformBufferObject};
+// use crate::ray::texture_buffer::TextureBuffer;
+use crate::uniforms;
 use crate::vec::Vec3;
 use crate::vulkan::Destructor;
 use crate::{api, core, primitives, structures, sync, tools, vulkan, MAX_FRAMES_IN_FLIGHT};
 
+mod acceleration_structure;
 pub mod instance_buffer;
+// mod texture_buffer;
 
 const RESERVED_SIZE: usize = 100;
 
@@ -42,6 +46,117 @@ enum TlasProcess {
     Update,
 }
 
+#[derive(Debug, Default)]
+#[repr(C)]
+struct PushConstants {
+    pub tlas: vk::DeviceAddress,
+    pub ubo: vk::DeviceAddress,
+    pub scene: vk::DeviceAddress,
+    pub materials: vk::DeviceAddress,
+    pub frame_index: u32,
+}
+
+impl PushConstants {
+    pub fn as_slice(&self) -> &[u8; size_of::<Self>()] {
+        unsafe { &*(self as *const Self as *const [u8; size_of::<Self>()]) }
+    }
+}
+
+struct DescriptorData {
+    layout: Destructor<vk::DescriptorSetLayout>,
+    buffer: vulkan::Buffer,
+    size: vk::DeviceSize,
+    offset: vk::DeviceSize,
+}
+
+impl DescriptorData {
+    fn new(
+        binding: u32,
+        allocator: &vk_mem::Allocator,
+        device: &ash::Device,
+        db_device: &ash::ext::descriptor_buffer::Device,
+        descriptor_type: vk::DescriptorType,
+        descriptor_count: u32,
+        stage_flags: vk::ShaderStageFlags,
+        descriptor_buffer_properties: vk::PhysicalDeviceDescriptorBufferPropertiesEXT,
+    ) -> Result<Self> {
+        let layout = core::create_bindless_descriptor_set_layout(
+            device,
+            binding,
+            descriptor_type,
+            descriptor_count,
+            stage_flags,
+        )?;
+        // Compute and align the sizes of the sets so that we can compute the offsets
+        let size = core::aligned_size(
+            unsafe { db_device.get_descriptor_set_layout_size(layout.get()) },
+            descriptor_buffer_properties.descriptor_buffer_offset_alignment,
+        );
+        // Get the offsets of the descriptor bindings of each set layout as they don't necessarily start at
+        // the beginning of the buffer (driver could add metadata at the start or something)
+        let offset = unsafe { db_device.get_descriptor_set_layout_binding_offset(layout.get(), 0) };
+
+        let buffer = vulkan::Buffer::new_aligned(
+            allocator,
+            size,
+            vk_mem::MemoryUsage::Auto,
+            vk_mem::AllocationCreateFlags::MAPPED //? Does it need to be mapped or just HOST_VISIBLE?
+                | vk_mem::AllocationCreateFlags::HOST_ACCESS_RANDOM, // TODO: Random, sequential, or neither?
+            // | vk_mem::AllocationCreateFlags::HOST_ACCESS_SEQUENTIAL_WRITE, // https://www.khronos.org/blog/vk-ext-descriptor-buffer says we can use this flag if we "ensure multiple writes are written contiguously"
+            vk::BufferUsageFlags::RESOURCE_DESCRIPTOR_BUFFER_EXT
+                | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+            descriptor_buffer_properties.descriptor_buffer_offset_alignment, // TODO: Does this buffer need to be aligned?
+            "Descriptor Data",
+        )?;
+        Ok(Self {
+            layout,
+            buffer,
+            size,
+            offset,
+        })
+    }
+
+    fn get_descriptor_image(
+        &mut self,
+        db_device: &ash::ext::descriptor_buffer::Device,
+        image_view: vk::ImageView,
+        offset: usize,
+        descriptor_buffer_properties: vk::PhysicalDeviceDescriptorBufferPropertiesEXT,
+    ) -> Result<()> {
+        // Create a new descriptor pointing at the new image
+        let image_descriptor = vk::DescriptorImageInfo {
+            sampler: vk::Sampler::null(),
+            image_view: image_view,
+            image_layout: vk::ImageLayout::GENERAL,
+        };
+        let image_descriptor_info = vk::DescriptorGetInfoEXT {
+            ty: vk::DescriptorType::STORAGE_IMAGE,
+            data: vk::DescriptorDataEXT {
+                p_storage_image: &image_descriptor,
+            },
+            ..Default::default()
+        };
+        log::info!(
+            "Offsetting data by {}",
+            self.offset
+                + (descriptor_buffer_properties.storage_image_descriptor_size * offset)
+                    as vk::DeviceSize
+        );
+        // Copy the desciptor into the descriptor buffer
+        unsafe {
+            let mapped_data = self.buffer.get_mapped_data(
+                descriptor_buffer_properties.storage_image_descriptor_size as vk::DeviceSize,
+                self.offset
+                    + (descriptor_buffer_properties.storage_image_descriptor_size * offset)
+                        as vk::DeviceSize,
+            )?;
+
+            db_device.get_descriptor(&image_descriptor_info, mapped_data);
+        };
+        Ok(())
+    }
+}
+
 pub fn thread(
     world: Arc<RwLock<World>>,
 
@@ -51,7 +166,7 @@ pub fn thread(
     physical_device: vk::PhysicalDevice,
 
     queue_family_indices: structures::QueueFamilyIndices,
-    uniform_buffers: [vk::Buffer; 2],
+    uniform_buffers: [vk::DeviceAddress; 2],
 
     should_threads_die: Arc<RwLock<bool>>,
     transfer_semaphore: vk::Semaphore,
@@ -77,11 +192,15 @@ pub fn thread(
 
     let rt_device = ash::khr::ray_tracing_pipeline::Device::new(&instance, &device);
     let as_device = ash::khr::acceleration_structure::Device::new(&instance, &device);
+    let db_device = ash::ext::descriptor_buffer::Device::new(&instance, &device);
 
+    let mut descriptor_buffer_properties =
+        vk::PhysicalDeviceDescriptorBufferPropertiesEXT::default();
     let mut ray_tracing_pipeline_properties =
         vk::PhysicalDeviceRayTracingPipelinePropertiesKHR::default();
-    let mut device_properties =
-        vk::PhysicalDeviceProperties2::default().push(&mut ray_tracing_pipeline_properties);
+    let mut device_properties = vk::PhysicalDeviceProperties2::default()
+        .push(&mut ray_tracing_pipeline_properties)
+        .push(&mut descriptor_buffer_properties);
 
     unsafe { instance.get_physical_device_properties2(physical_device, &mut device_properties) };
 
@@ -91,6 +210,8 @@ pub fn thread(
         physical_device,
         rt_device,
         as_device,
+        db_device,
+        descriptor_buffer_properties,
         ray_tracing_pipeline_properties,
         allocator,
         queue_family_indices,
@@ -129,7 +250,8 @@ pub fn thread(
                 }
             }
             Err(e) => {
-                log::error!("rwlock is poisoned, ending thread: {}", e)
+                log::error!("rwlock is poisoned, ending thread: {}", e);
+                break;
             }
         }
 
@@ -172,6 +294,7 @@ pub fn thread(
                 }
                 Ok(()) => {}
             }
+            log::trace!("Previous frame complete");
 
             if final_accumulation {
                 accumulated_frames = 0;
@@ -283,6 +406,7 @@ pub fn thread(
 }
 
 struct Ray<'a> {
+    descriptor_buffer_properties: vk::PhysicalDeviceDescriptorBufferPropertiesEXT<'a>,
     ray_tracing_pipeline_properties: vk::PhysicalDeviceRayTracingPipelinePropertiesKHR<'a>,
     raygen_shader_binding_table: vulkan::Buffer,
     miss_shader_binding_table: vulkan::Buffer,
@@ -291,19 +415,15 @@ struct Ray<'a> {
     uniform: mpsc::Sender<uniforms::Event>,
     semaphore: Destructor<vk::Semaphore>,
 
-    images: Option<[vulkan::Image<'a>; 2]>,
-
-    uniform_buffers: [vk::Buffer; 2],
+    images: Option<[vulkan::Image<'a>; MAX_FRAMES_IN_FLIGHT]>,
+    uniform_buffers: [vk::DeviceAddress; MAX_FRAMES_IN_FLIGHT],
 
     queue: vk::Queue,
-    descriptor_set_layout: Destructor<vk::DescriptorSetLayout>,
     pipeline_layout: Destructor<vk::PipelineLayout>,
     pipeline: Destructor<vk::Pipeline>,
     command_pool: Destructor<vk::CommandPool>,
-    commands: [vk::CommandBuffer; 2],
-    descriptor_pool: Destructor<vk::DescriptorPool>,
-    descriptor_sets: Option<[vk::DescriptorSet; 2]>,
-
+    commands: [vk::CommandBuffer; MAX_FRAMES_IN_FLIGHT],
+    // descriptor_sets: Option<[vk::DescriptorSet; 2]>,
     material_location_map: HashMap<Entity, usize>,
     /// Map the IDs of objects to their position in the blass vector and store the object
     primitive_location_map: HashMap<Entity, (ObjectType, usize)>,
@@ -313,7 +433,12 @@ struct Ray<'a> {
     buffer_references: vulkan::Buffer,
     instances_buffer: Arc<RwLock<InstanceBuffer>>,
 
-    materials: Vec<Material>,
+    output_image_descriptors: DescriptorData,
+    ocean_descriptors: DescriptorData,
+    // texture_descriptors: DescriptorData,
+    push_constants: PushConstants,
+    // textures: TextureBuffer,
+    materials: Vec<MaterialData>,
     aabbs: Vec<AABB>,
     blass: Vec<AccelerationStructure>,
     tlas: AccelerationStructure,
@@ -325,6 +450,7 @@ struct Ray<'a> {
     physical_device: vk::PhysicalDevice,
     rt_device: ash::khr::ray_tracing_pipeline::Device,
     as_device: ash::khr::acceleration_structure::Device,
+    db_device: ash::ext::descriptor_buffer::Device,
     instance: ash::Instance,
     device: ash::Device,
 }
@@ -336,14 +462,17 @@ impl<'a> Ray<'a> {
         physical_device: vk::PhysicalDevice,
         rt_device: ash::khr::ray_tracing_pipeline::Device,
         as_device: ash::khr::acceleration_structure::Device,
+        db_device: ash::ext::descriptor_buffer::Device,
+        descriptor_buffer_properties: vk::PhysicalDeviceDescriptorBufferPropertiesEXT<'a>,
         ray_tracing_pipeline_properties: vk::PhysicalDeviceRayTracingPipelinePropertiesKHR<'a>,
         allocator: Arc<vk_mem::Allocator>,
         queue_family_indices: structures::QueueFamilyIndices,
-        uniform_buffers: [vk::Buffer; 2],
+        uniform_buffers: [vk::DeviceAddress; 2],
 
         uniform: mpsc::Sender<uniforms::Event>,
     ) -> Result<Self> {
         log::trace!("Creating object");
+
         // Populates queue
         let queue = core::create_queue(&device, queue_family_indices.compute_family.unwrap());
 
@@ -352,7 +481,7 @@ impl<'a> Ray<'a> {
 
         let materials_buffer = vulkan::Buffer::new_gpu(
             &allocator,
-            (size_of::<Material>() * RESERVED_SIZE) as u64,
+            (size_of::<MaterialData>() * RESERVED_SIZE) as u64,
             vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
                 | vk::BufferUsageFlags::STORAGE_BUFFER
                 | vk::BufferUsageFlags::TRANSFER_DST,
@@ -370,9 +499,47 @@ impl<'a> Ray<'a> {
 
         let tlas = AccelerationStructure::new(&as_device);
 
+        let output_image_descriptors = DescriptorData::new(
+            0,
+            &allocator,
+            &device,
+            &db_device,
+            vk::DescriptorType::STORAGE_IMAGE,
+            MAX_FRAMES_IN_FLIGHT as u32,
+            vk::ShaderStageFlags::RAYGEN_KHR,
+            descriptor_buffer_properties,
+        )?;
+        let mut ocean_descriptors = DescriptorData::new(
+            0,
+            &allocator,
+            &device,
+            &db_device,
+            vk::DescriptorType::STORAGE_IMAGE,
+            FFT_IMAGES as u32,
+            vk::ShaderStageFlags::RAYGEN_KHR // TODO: Remove Raygen (this is just for debug viewing the image directly)
+                | vk::ShaderStageFlags::INTERSECTION_KHR // Needed for ray marching collisions
+                | vk::ShaderStageFlags::CLOSEST_HIT_KHR, // Needed for calculating normals
+            descriptor_buffer_properties,
+        )?;
+        // let textures = DescriptorData::new(
+        //     &allocator,
+        //     &device,
+        //     &db_device,
+        //     vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+        //     todo!("Figure out how many textures to support"),
+        //     vk::ShaderStageFlags::RAYGEN_KHR // TODO: Remove Raygen (this is just for debug viewing the image directly)
+        //             | vk::ShaderStageFlags::MISS_KHR // For the skybox
+        //             | vk::ShaderStageFlags::CLOSEST_HIT_KHR,
+        //     descriptor_buffer_properties,
+        // )?;
+
         log::trace!("Creating pipeline");
-        let (descriptor_set_layout, shader_groups, pipeline_layout, pipeline) =
-            create_pipeline(&device, &rt_device)?;
+        let (shader_groups, pipeline_layout, pipeline) = create_pipeline(
+            &device,
+            &rt_device,
+            &output_image_descriptors,
+            &ocean_descriptors,
+        )?;
 
         log::trace!("Creating SBT");
         let (raygen_shader_binding_table, miss_shader_binding_table, hit_shader_binding_table) =
@@ -383,7 +550,6 @@ impl<'a> Ray<'a> {
                 &ray_tracing_pipeline_properties,
                 &shader_groups,
             )?;
-        let descriptor_pool = create_descriptor_pool(&device)?;
 
         log::trace!("Building semaphore");
         let semaphore = Destructor::new(
@@ -394,9 +560,26 @@ impl<'a> Ray<'a> {
 
         let mut materials = Vec::with_capacity(RESERVED_SIZE);
         // Set a default material for primitives that are missing one or have not been properly set up
-        materials.push(Material::new_basic(Vec3::new(1.0, 0.1, 0.7), 0.));
+        materials.push(Material::new_basic(Vec3::new(1.0, 0.1, 0.7), 0.).get_data());
 
         let ocean = Ocean::new(&device, &allocator, queue_family_indices)?;
+
+        log::info!("Ocean has provided {} images", ocean.images.len());
+        // Create ocean descriptor
+        // for (i, image) in ocean.images.iter().enumerate()
+        {
+            let i = 0;
+            let image = &ocean.images[0];
+            log::info!("Building ocean image {i}");
+            // Create a new descriptor pointing at the new image
+            ocean_descriptors.get_descriptor_image(
+                &db_device,
+                image.view(),
+                i,
+                descriptor_buffer_properties,
+            )?;
+        }
+
         let physics = Physics::new(
             &device,
             Arc::clone(&allocator),
@@ -404,6 +587,14 @@ impl<'a> Ray<'a> {
             Arc::clone(&instances_buffer),
             ocean.images[0].view(),
         )?;
+
+        let push_constants = PushConstants {
+            tlas: tlas.device_address,
+            frame_index: 0,
+            ubo: uniform_buffers[0],
+            scene: buffer_references.get_device_address(&device),
+            materials: materials_buffer.get_device_address(&device),
+        };
 
         Ok(Self {
             device,
@@ -413,20 +604,17 @@ impl<'a> Ray<'a> {
             semaphore,
             images: None,
             queue,
-            descriptor_set_layout,
             pipeline_layout,
             pipeline,
             command_pool,
             commands,
-            descriptor_pool,
-            descriptor_sets: None,
             rt_device,
             as_device,
+            db_device,
             ray_tracing_pipeline_properties,
             raygen_shader_binding_table,
             miss_shader_binding_table,
             hit_shader_binding_table,
-            uniform_buffers,
             tlas,
             buffer_references,
             materials,
@@ -438,9 +626,14 @@ impl<'a> Ray<'a> {
             primitive_location_map: HashMap::with_capacity(RESERVED_SIZE),
             material_location_map: HashMap::with_capacity(RESERVED_SIZE),
             uniform,
+            uniform_buffers,
             instances_buffer,
             ocean,
             physics,
+            descriptor_buffer_properties,
+            output_image_descriptors,
+            ocean_descriptors,
+            push_constants,
         })
     }
     pub fn need_resize(&self, size: PhysicalSize<u32>) -> bool {
@@ -468,17 +661,16 @@ impl<'a> Ray<'a> {
             size,
             vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
         )?);
-        self.descriptor_sets = Some(create_descriptor_sets(
-            &self.device,
-            self.descriptor_set_layout.get(),
-            self.descriptor_pool.get(),
-            &self.tlas,
-            self.images.as_ref().unwrap(),
-            &self.ocean.images,
-            &self.uniform_buffers,
-            &self.buffer_references,
-            &self.materials_buffer,
-        )?);
+
+        for (i, image) in self.images.as_ref().unwrap().iter().enumerate() {
+            self.output_image_descriptors.get_descriptor_image(
+                &self.db_device,
+                image.view(),
+                i,
+                self.descriptor_buffer_properties,
+            )?;
+        }
+
         let mut raw_images = [vk::Image::null(); 2];
         for i in 0..self.images.as_ref().unwrap().len() {
             raw_images[i] = self.images.as_ref().unwrap()[i].get();
@@ -510,38 +702,13 @@ impl<'a> Ray<'a> {
         }
 
         if resized {
-            for (i, &descriptor_set) in self.descriptor_sets.unwrap().iter().enumerate() {
-                // Now need to update the descriptor to reference the new image
-                let read_image_descriptor = [vk::DescriptorImageInfo {
-                    image_view: self.images.as_ref().unwrap()[(i + 1) % 2].view(),
-                    image_layout: vk::ImageLayout::GENERAL,
-                    ..Default::default()
-                }];
-                let write_image_descriptor = [vk::DescriptorImageInfo {
-                    image_view: self.images.as_ref().unwrap()[i].view(),
-                    image_layout: vk::ImageLayout::GENERAL,
-                    ..Default::default()
-                }];
-
-                let descriptor_writes = [
-                    vk::WriteDescriptorSet {
-                        dst_set: descriptor_set,
-                        dst_binding: 1,
-                        descriptor_count: 1,
-                        descriptor_type: vk::DescriptorType::STORAGE_IMAGE,
-                        ..Default::default()
-                    }
-                    .image_info(&read_image_descriptor),
-                    vk::WriteDescriptorSet {
-                        dst_set: descriptor_set,
-                        dst_binding: 2,
-                        descriptor_count: 1,
-                        descriptor_type: vk::DescriptorType::STORAGE_IMAGE,
-                        ..Default::default()
-                    }
-                    .image_info(&write_image_descriptor),
-                ];
-                unsafe { self.device.update_descriptor_sets(&descriptor_writes, &[]) };
+            for (i, image) in self.images.as_ref().unwrap().iter().enumerate() {
+                self.output_image_descriptors.get_descriptor_image(
+                    &self.db_device,
+                    image.view(),
+                    i,
+                    self.descriptor_buffer_properties,
+                )?;
             }
         }
         let mut raw_images = [vk::Image::null(); 2];
@@ -638,7 +805,6 @@ impl<'a> Ray<'a> {
     }
 
     pub fn update(&mut self, world: &Arc<RwLock<World>>) -> Result<()> {
-        let mut need_new_references = false;
         let mut primitives_changed = false;
         let mut need_rebuild = false;
 
@@ -650,7 +816,7 @@ impl<'a> Ray<'a> {
                     continue;
                 }
                 // If the material is new, remake the buffer with all the materials
-                self.materials.push(*material);
+                self.materials.push(material.get_data());
                 self.material_location_map
                     .insert(entity, self.materials.len() - 1);
                 // Create a new buffer with the old data
@@ -666,7 +832,8 @@ impl<'a> Ray<'a> {
                     self.materials.len(),
                 )?;
                 // Update reference that shader sees
-                need_new_references = true;
+                self.push_constants.materials =
+                    self.materials_buffer.get_device_address(&self.device);
                 // TODO: Remove materials that no longer exist
             }
 
@@ -744,7 +911,7 @@ impl<'a> Ray<'a> {
                 need_rebuild = true;
             }
         }
-        log::trace!("Instances sorted");
+        log::trace!("Instances processed");
         if primitives_changed {
             if self
                 .buffer_references
@@ -777,7 +944,7 @@ impl<'a> Ray<'a> {
                     self.primitive_addresses.len(),
                     self.primitive_addresses.len() + RESERVED_SIZE,
                 )?;
-                need_new_references = true;
+                self.push_constants.scene = self.buffer_references.get_device_address(&self.device);
             }
         }
         self.create_top_level_acceleration_structure(if need_rebuild {
@@ -785,10 +952,6 @@ impl<'a> Ray<'a> {
         } else {
             TlasProcess::Update
         })?;
-
-        if need_rebuild || need_new_references {
-            self.rebuild_references()?;
-        }
 
         Ok(())
     }
@@ -813,6 +976,10 @@ impl<'a> Ray<'a> {
 
         let height = self.images.as_ref().unwrap()[current_frame_index].height;
         let width = self.images.as_ref().unwrap()[current_frame_index].width;
+
+        self.push_constants.frame_index = current_frame_index as u32;
+        self.push_constants.ubo = self.uniform_buffers[current_frame_index];
+
         self.build_command_buffers(width, height, current_frame_index)?;
 
         // log::trace!(
@@ -932,6 +1099,27 @@ impl<'a> Ray<'a> {
                     self.as_device
                         .destroy_acceleration_structure(old_tlas, None)
                 };
+
+                // Update the stored device address for the TLAS
+                let as_device_address_info =
+                    vk::AccelerationStructureDeviceAddressInfoKHR::default()
+                        .acceleration_structure(self.tlas.handle);
+                self.tlas.device_address = unsafe {
+                    self.as_device
+                        .get_acceleration_structure_device_address(&as_device_address_info)
+                };
+                log::warn!("TLAS device address is now {}", self.tlas.device_address);
+
+                self.push_constants.tlas = self
+                    .tlas
+                    .buffer
+                    .as_ref()
+                    .unwrap()
+                    .get_device_address(&self.device);
+
+                if self.tlas.device_address != self.push_constants.tlas {
+                    log::warn!("TLAS device address {} does not correspond to its *buffer* device address {}", self.tlas.device_address, self.push_constants.tlas);
+                }
             }
             TlasProcess::Update => {}
         }
@@ -973,6 +1161,7 @@ impl<'a> Ray<'a> {
 
         // Build the acceleration structure on the device via a one-time command buffer submission
         // Some implementations may support acceleration structure building on the host (VkPhysicalDeviceAccelerationStructureFeaturesKHR->accelerationStructureHostCommands), but we prefer device builds
+        // TODO: I wonder if we should double down on rebuilding the TLAS every time and incorporate this command into the main ray pipeline
         let command_buffer =
             core::begin_single_time_commands(&self.device, self.command_pool.get())?;
         log::trace!("Actually building TLAS");
@@ -1024,62 +1213,20 @@ impl<'a> Ray<'a> {
         Ok(())
     }
 
-    fn rebuild_references(&mut self) -> Result<()> {
-        // Update descriptor sets with new TLAS and potentially new buffers
-        let structures = [self.tlas.handle];
-        for descriptor_set in self.descriptor_sets.unwrap() {
-            let mut descriptor_acceleration_structure_info =
-                vk::WriteDescriptorSetAccelerationStructureKHR::default()
-                    .acceleration_structures(&structures);
-            let scene_descriptor = [self.buffer_references.create_descriptor()];
-            let material_descriptor = [self.materials_buffer.create_descriptor()];
-
-            let descriptor_writes = [
-                vk::WriteDescriptorSet {
-                    dst_set: descriptor_set,
-                    dst_binding: 0,
-                    descriptor_count: 1,
-                    descriptor_type: vk::DescriptorType::ACCELERATION_STRUCTURE_KHR,
-                    ..Default::default()
-                }
-                .push(&mut descriptor_acceleration_structure_info), // Chain the AS descriptor
-                vk::WriteDescriptorSet {
-                    dst_set: descriptor_set,
-                    dst_binding: 4,
-                    descriptor_count: 1,
-                    descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
-                    ..Default::default()
-                }
-                .buffer_info(&scene_descriptor),
-                vk::WriteDescriptorSet {
-                    dst_set: descriptor_set,
-                    dst_binding: 5,
-                    descriptor_count: 1,
-                    descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
-                    ..Default::default()
-                }
-                .buffer_info(&material_descriptor),
-            ];
-            unsafe { self.device.update_descriptor_sets(&descriptor_writes, &[]) };
-        }
-        Ok(())
-    }
-
     fn build_command_buffers(&self, width: u32, height: u32, frame_index: usize) -> Result<()> {
         let begin_info = vk::CommandBufferBeginInfo::default();
         let command_buffer = self.commands[frame_index];
-        let descriptor_sets_to_bind = [self.descriptor_sets.unwrap()[frame_index]];
         unsafe {
             self.device
                 .begin_command_buffer(command_buffer, &begin_info)?;
 
-            let single_handle_size_aligned = aligned_size(
+            let single_handle_size_aligned = core::aligned_size(
                 self.ray_tracing_pipeline_properties
                     .shader_group_handle_size,
                 self.ray_tracing_pipeline_properties
                     .shader_group_handle_alignment,
             ) as u64;
-            let base_handle_size_aligned = aligned_size(
+            let base_handle_size_aligned = core::aligned_size(
                 self.ray_tracing_pipeline_properties
                     .shader_group_handle_size,
                 self.ray_tracing_pipeline_properties
@@ -1110,20 +1257,98 @@ impl<'a> Ray<'a> {
 
             let callable_shader_sbt_entry = vk::StridedDeviceAddressRegionKHR::default();
 
-            // Dispatch the ray tracing commands
+            self.device.cmd_push_constants(
+                command_buffer,
+                self.pipeline_layout.get(),
+                vk::ShaderStageFlags::RAYGEN_KHR
+                    | vk::ShaderStageFlags::INTERSECTION_KHR
+                    | vk::ShaderStageFlags::CLOSEST_HIT_KHR,
+                0,
+                self.push_constants.as_slice(),
+            );
+
             self.device.cmd_bind_pipeline(
                 command_buffer,
                 vk::PipelineBindPoint::RAY_TRACING_KHR,
                 self.pipeline.get(),
             );
-            self.device.cmd_bind_descriptor_sets(
+
+            // How do we include the rest of the descriptors we need in the regime
+            // Where does the acceleration structure go?
+            // UBO, Scene buffer, and materials can probably go in via push constants
+            // https://github.com/KhronosGroup/Vulkan-Samples/tree/main/samples/extensions/descriptor_buffer_basic
+            let descriptor_buffer_binding_info = [
+                //  output images + Ocean map(s)
+                vk::DescriptorBufferBindingInfoEXT {
+                    address: self
+                        .output_image_descriptors
+                        .buffer
+                        .get_device_address(&self.device),
+                    usage: vk::BufferUsageFlags::RESOURCE_DESCRIPTOR_BUFFER_EXT,
+                    ..Default::default()
+                },
+                vk::DescriptorBufferBindingInfoEXT {
+                    address: self
+                        .ocean_descriptors
+                        .buffer
+                        .get_device_address(&self.device),
+                    usage: vk::BufferUsageFlags::RESOURCE_DESCRIPTOR_BUFFER_EXT,
+                    ..Default::default()
+                },
+                // Textures
+                // vk::DescriptorBufferBindingInfoEXT {
+                //     address: self
+                //         .texture_descriptors
+                //         .buffer
+                //         .get_device_address(&self.device),
+                //     usage: vk::BufferUsageFlags::SAMPLER_DESCRIPTOR_BUFFER_EXT
+                //         | vk::BufferUsageFlags::RESOURCE_DESCRIPTOR_BUFFER_EXT,
+                //     ..Default::default()
+                // },
+            ];
+            self.db_device
+                .cmd_bind_descriptor_buffers(command_buffer, &descriptor_buffer_binding_info);
+
+            // These are the indices of the respective fields in the descriptor_buffer_binding_info array
+            let buffer_index = [0];
+            let buffer_index_ocean = [1];
+            let buffer_offsets = [0];
+
+            // Output Images
+            self.db_device.cmd_set_descriptor_buffer_offsets(
                 command_buffer,
                 vk::PipelineBindPoint::RAY_TRACING_KHR,
                 self.pipeline_layout.get(),
-                0,
-                &descriptor_sets_to_bind,
-                &[],
+                0, // Output images go into set 0
+                &buffer_index,
+                &buffer_offsets,
             );
+
+            // Ocean image(s)
+            self.db_device.cmd_set_descriptor_buffer_offsets(
+                command_buffer,
+                vk::PipelineBindPoint::RAY_TRACING_KHR,
+                self.pipeline_layout.get(),
+                1, // Ocean map(s) go into set 1
+                &buffer_index_ocean,
+                &buffer_offsets,
+            );
+
+            // Textures
+            // buffer_offsets[0] = 0;
+            // for _ in textures.len() {
+            //     buffer_offsets[0] += self.texture_descriptors.size;
+            //     self.db_device.cmd_set_descriptor_buffer_offsets(
+            //         command_buffer,
+            //         vk::PipelineBindPoint::RAY_TRACING_KHR,
+            //         self.pipeline_layout.get(),
+            //         1, // Textures go into set 1
+            //         &buffer_index_textures,
+            //         &buffer_offsets,
+            //     );
+            // }
+
+            // Dispatch the ray tracing commands
             self.rt_device.cmd_trace_rays(
                 command_buffer,
                 &raygen_shader_sbt_entry,
@@ -1166,105 +1391,23 @@ impl ScratchBuffer {
         size: vk::DeviceSize,
     ) -> Result<Self> {
         log::trace!("Creating Scratch buffer");
-        let _buffer = vulkan::Buffer::new_aligned(
+        let buffer = vulkan::Buffer::new_aligned(
             allocator,
             size,
             vk_mem::MemoryUsage::Auto,
             vk_mem::AllocationCreateFlags::empty(),
             vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
             128, // TODO: Get programatically from VkPhysicalDeviceAccelerationStructurePropertiesKHR::minAccelerationStructureScratchOffsetAlignment
+            "Scratch",
         )?;
 
-        let device_address = get_buffer_device_address(device, _buffer.get());
+        let device_address = buffer.get_device_address(device);
 
         Ok(Self {
             device_address,
-            _buffer,
+            _buffer: buffer,
         })
     }
-}
-
-struct AccelerationStructure {
-    device: vk::Device,
-    destructor: vk::PFN_vkDestroyAccelerationStructureKHR,
-
-    pub handle: vk::AccelerationStructureKHR,
-    pub device_address: vk::DeviceAddress,
-    pub buffer: Option<vulkan::Buffer>,
-}
-
-impl AccelerationStructure {
-    pub fn new(device: &ash::khr::acceleration_structure::Device) -> Self {
-        Self {
-            device: device.device(),
-            destructor: device.fp().destroy_acceleration_structure_khr,
-
-            handle: vk::AccelerationStructureKHR::null(),
-            device_address: 0,
-            buffer: None,
-        }
-    }
-    pub fn create_buffer(
-        &mut self,
-        allocator: &vk_mem::Allocator,
-        build_size_info: vk::AccelerationStructureBuildSizesInfoKHR,
-    ) -> Result<()> {
-        log::trace!("Creating AS buffer");
-        self.buffer = Some(vulkan::Buffer::new_gpu(
-            allocator,
-            build_size_info.acceleration_structure_size * 2,
-            vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR
-                | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-        )?);
-        Ok(())
-    }
-    pub fn grow_buffer(
-        &mut self,
-        allocator: &vk_mem::Allocator,
-        build_size_info: vk::AccelerationStructureBuildSizesInfoKHR,
-    ) -> Result<bool> {
-        match self.buffer.as_mut() {
-            None => {
-                log::trace!("Growing AS buffer from 0");
-                self.create_buffer(allocator, build_size_info)?;
-                return Ok(true);
-            }
-            Some(b) => {
-                // If the current buffer doesn't have enough space for the new acceleration structure,
-                // create a new buffer to overwrite it
-                if !b.check_available_space::<u8>(
-                    build_size_info.acceleration_structure_size as usize,
-                ) {
-                    log::trace!("Growing AS buffer");
-                    self.create_buffer(allocator, build_size_info)?;
-                    return Ok(true);
-                }
-            }
-        }
-        // The current buffer is good enough
-        Ok(false)
-    }
-    pub fn get_buffer(&self) -> vk::Buffer {
-        match &self.buffer {
-            Some(v) => v.get(),
-            None => {
-                log::error!("Acceleration Structure Buffer was not initialised prior to calling");
-                vk::Buffer::null()
-            }
-        }
-    }
-}
-
-impl Drop for AccelerationStructure {
-    fn drop(&mut self) {
-        log::trace!("Dropping Acceleration Structure {:?}", self.handle);
-        unsafe { (self.destructor)(self.device, self.handle, None.as_raw_ptr()) };
-    }
-}
-
-fn get_buffer_device_address(device: &ash::Device, buffer: vk::Buffer) -> vk::DeviceAddress {
-    let buffer_device_ai = vk::BufferDeviceAddressInfo::default().buffer(buffer);
-    unsafe { device.get_buffer_device_address(&buffer_device_ai) }
 }
 
 ///  Create the bottom level acceleration structure that contains the scene's geometry (triangles)
@@ -1315,7 +1458,7 @@ fn create_bottom_level_acceleration_structure(
                 device_address: obj.primitive_data.as_ref().unwrap().indices,
             };
             let transform_buffer_device_address = vk::DeviceOrHostAddressConstKHR {
-                device_address: get_buffer_device_address(device, transform_buffer.get()),
+                device_address: transform_buffer.get_device_address(device),
             };
 
             as_geometries[0].geometry.triangles =
@@ -1405,7 +1548,6 @@ fn create_bottom_level_acceleration_structure(
         [vk::AccelerationStructureBuildRangeInfoKHR::default().primitive_count(num_prim[0])];
 
     // Build the acceleration structure on the device via a one-time command buffer submission
-    // Some implementations may support acceleration structure building on the host (VkPhysicalDeviceAccelerationStructureFeaturesKHR->accelerationStructureHostCommands), but we prefer device builds
     let command_buffer = core::begin_single_time_commands(device, command_pool)?;
     unsafe {
         as_device.cmd_build_acceleration_structures(
@@ -1462,10 +1604,6 @@ fn create_blas_instance(
             device_handle: blas.device_address,
         },
     })
-}
-
-fn aligned_size(value: u32, alignment: u32) -> u32 {
-    (value + alignment - 1) & !(alignment - 1)
 }
 
 fn create_shader_binding_tables(
@@ -1535,233 +1673,33 @@ fn create_shader_binding_tables(
     ))
 }
 
-fn create_descriptor_pool(device: &ash::Device) -> Result<Destructor<vk::DescriptorPool>> {
-    let pool_sizes = vec![
-        vk::DescriptorPoolSize {
-            ty: vk::DescriptorType::ACCELERATION_STRUCTURE_KHR,
-            descriptor_count: MAX_FRAMES_IN_FLIGHT as u32,
-        },
-        vk::DescriptorPoolSize {
-            ty: vk::DescriptorType::STORAGE_IMAGE,
-            descriptor_count: MAX_FRAMES_IN_FLIGHT as u32,
-        },
-        vk::DescriptorPoolSize {
-            ty: vk::DescriptorType::STORAGE_IMAGE,
-            descriptor_count: MAX_FRAMES_IN_FLIGHT as u32,
-        },
-        vk::DescriptorPoolSize {
-            ty: vk::DescriptorType::UNIFORM_BUFFER,
-            descriptor_count: MAX_FRAMES_IN_FLIGHT as u32,
-        },
-        vk::DescriptorPoolSize {
-            ty: vk::DescriptorType::STORAGE_BUFFER,
-            descriptor_count: MAX_FRAMES_IN_FLIGHT as u32,
-        },
-        vk::DescriptorPoolSize {
-            ty: vk::DescriptorType::STORAGE_BUFFER,
-            descriptor_count: MAX_FRAMES_IN_FLIGHT as u32,
-        },
-    ];
-    let descriptor_pool_create_info = vk::DescriptorPoolCreateInfo::default()
-        .pool_sizes(&pool_sizes)
-        .max_sets(MAX_FRAMES_IN_FLIGHT as u32);
-    Ok(Destructor::new(
-        device,
-        unsafe { device.create_descriptor_pool(&descriptor_pool_create_info, None)? },
-        device.fp_v1_0().destroy_descriptor_pool,
-    ))
-}
-
-fn create_descriptor_sets(
-    device: &ash::Device,
-    set_layout: vk::DescriptorSetLayout,
-    descriptor_pool: vk::DescriptorPool,
-    tlas: &AccelerationStructure,
-    storage_images: &[vulkan::Image; MAX_FRAMES_IN_FLIGHT],
-    ocean_images: &[vulkan::Image; MAX_FRAMES_IN_FLIGHT],
-    ubo: &[vk::Buffer; MAX_FRAMES_IN_FLIGHT],
-    scene: &vulkan::Buffer,
-    materials: &vulkan::Buffer,
-) -> Result<[vk::DescriptorSet; MAX_FRAMES_IN_FLIGHT]> {
-    let set_layouts = [set_layout, set_layout];
-    let allocate_info = vk::DescriptorSetAllocateInfo::default()
-        .descriptor_pool(descriptor_pool)
-        .set_layouts(&set_layouts);
-
-    let descriptor_sets = unsafe { device.allocate_descriptor_sets(&allocate_info)? };
-
-    let structures = [tlas.handle];
-    for (i, &descriptor_set) in descriptor_sets.iter().enumerate() {
-        let mut descriptor_acceleration_structure_info =
-            vk::WriteDescriptorSetAccelerationStructureKHR::default()
-                .acceleration_structures(&structures);
-
-        let read_image_descriptor = [vk::DescriptorImageInfo {
-            image_view: storage_images[(i + 1) % 2].view(),
-            image_layout: vk::ImageLayout::GENERAL,
-            ..Default::default()
-        }];
-        let write_image_descriptor = [vk::DescriptorImageInfo {
-            image_view: storage_images[i].view(),
-            image_layout: vk::ImageLayout::GENERAL,
-            ..Default::default()
-        }];
-        let ocean_image_descriptor = [vk::DescriptorImageInfo {
-            image_view: ocean_images[i].view(),
-            image_layout: vk::ImageLayout::GENERAL,
-            ..Default::default()
-        }];
-
-        let buffer_descriptor = [vk::DescriptorBufferInfo {
-            buffer: ubo[i],
-            offset: 0,
-            range: size_of::<UniformBufferObject>() as u64,
-        }];
-        let scene_descriptor = [scene.create_descriptor()];
-        let material_descriptor = [materials.create_descriptor()];
-
-        let descriptor_writes = [
-            vk::WriteDescriptorSet {
-                dst_set: descriptor_set,
-                dst_binding: 0,
-                descriptor_count: 1,
-                descriptor_type: vk::DescriptorType::ACCELERATION_STRUCTURE_KHR,
-                ..Default::default()
-            }
-            .push(&mut descriptor_acceleration_structure_info), // Chain the AS descriptor
-            vk::WriteDescriptorSet {
-                dst_set: descriptor_set,
-                dst_binding: 1,
-                descriptor_count: 1,
-                descriptor_type: vk::DescriptorType::STORAGE_IMAGE,
-                ..Default::default()
-            }
-            .image_info(&read_image_descriptor),
-            vk::WriteDescriptorSet {
-                dst_set: descriptor_set,
-                dst_binding: 2,
-                descriptor_count: 1,
-                descriptor_type: vk::DescriptorType::STORAGE_IMAGE,
-                ..Default::default()
-            }
-            .image_info(&write_image_descriptor),
-            vk::WriteDescriptorSet {
-                dst_set: descriptor_set,
-                dst_binding: 3,
-                descriptor_count: 1,
-                descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
-                ..Default::default()
-            }
-            .buffer_info(&buffer_descriptor),
-            vk::WriteDescriptorSet {
-                dst_set: descriptor_set,
-                dst_binding: 4,
-                descriptor_count: 1,
-                descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
-                ..Default::default()
-            }
-            .buffer_info(&scene_descriptor),
-            vk::WriteDescriptorSet {
-                dst_set: descriptor_set,
-                dst_binding: 5,
-                descriptor_count: 1,
-                descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
-                ..Default::default()
-            }
-            .buffer_info(&material_descriptor),
-            vk::WriteDescriptorSet {
-                dst_set: descriptor_set,
-                dst_binding: 6,
-                descriptor_count: 1,
-                descriptor_type: vk::DescriptorType::STORAGE_IMAGE,
-                ..Default::default()
-            }
-            .image_info(&ocean_image_descriptor),
-        ];
-        unsafe { device.update_descriptor_sets(&descriptor_writes, &[]) };
-    }
-    Ok([descriptor_sets[0], descriptor_sets[1]])
-}
-
 fn create_pipeline<'a>(
     device: &ash::Device,
     rt_device: &ash::khr::ray_tracing_pipeline::Device,
+    output_image_descriptor: &DescriptorData,
+    ocean_descriptor: &DescriptorData,
+    // textures: &mut DescriptorData,
 ) -> Result<(
-    Destructor<vk::DescriptorSetLayout>,
     Vec<vk::RayTracingShaderGroupCreateInfoKHR<'a>>,
     Destructor<vk::PipelineLayout>,
     Destructor<vk::Pipeline>,
 )> {
-    let bindings = [
-        vk::DescriptorSetLayoutBinding {
-            binding: 0,
-            descriptor_type: vk::DescriptorType::ACCELERATION_STRUCTURE_KHR,
-            descriptor_count: 1,
-            stage_flags: vk::ShaderStageFlags::RAYGEN_KHR | vk::ShaderStageFlags::CLOSEST_HIT_KHR,
-            ..Default::default()
-        },
-        vk::DescriptorSetLayoutBinding {
-            binding: 1,
-            descriptor_type: vk::DescriptorType::STORAGE_IMAGE,
-            descriptor_count: 1,
-            stage_flags: vk::ShaderStageFlags::RAYGEN_KHR,
-            ..Default::default()
-        },
-        vk::DescriptorSetLayoutBinding {
-            binding: 2,
-            descriptor_type: vk::DescriptorType::STORAGE_IMAGE,
-            descriptor_count: 1,
-            stage_flags: vk::ShaderStageFlags::RAYGEN_KHR,
-            ..Default::default()
-        },
-        vk::DescriptorSetLayoutBinding {
-            // UBO
-            binding: 3,
-            descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
-            descriptor_count: 1,
-            stage_flags: vk::ShaderStageFlags::RAYGEN_KHR
-                | vk::ShaderStageFlags::INTERSECTION_KHR
-                | vk::ShaderStageFlags::CLOSEST_HIT_KHR,
-            ..Default::default()
-        },
-        vk::DescriptorSetLayoutBinding {
-            // Scene
-            binding: 4,
-            descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
-            descriptor_count: 1,
-            stage_flags: vk::ShaderStageFlags::INTERSECTION_KHR
-                | vk::ShaderStageFlags::CLOSEST_HIT_KHR,
-            ..Default::default()
-        },
-        vk::DescriptorSetLayoutBinding {
-            // Materials
-            binding: 5,
-            descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
-            descriptor_count: 1,
-            stage_flags: vk::ShaderStageFlags::CLOSEST_HIT_KHR,
-            ..Default::default()
-        },
-        vk::DescriptorSetLayoutBinding {
-            // Ocean height map
-            binding: 6,
-            descriptor_type: vk::DescriptorType::STORAGE_IMAGE,
-            descriptor_count: 1,
-            stage_flags: vk::ShaderStageFlags::RAYGEN_KHR // TODO: Remove Raygen (it's just for debugging)
-                | vk::ShaderStageFlags::INTERSECTION_KHR
-                | vk::ShaderStageFlags::CLOSEST_HIT_KHR,
-            ..Default::default()
-        },
+    let push_constants = [vk::PushConstantRange {
+        stage_flags: vk::ShaderStageFlags::RAYGEN_KHR
+            | vk::ShaderStageFlags::INTERSECTION_KHR
+            | vk::ShaderStageFlags::CLOSEST_HIT_KHR,
+        size: size_of::<PushConstants>() as u32,
+        offset: 0,
+    }];
+
+    let set_layouts = [
+        output_image_descriptor.layout.get(),
+        ocean_descriptor.layout.get(),
+        // textures.layout.get(),
     ];
-
-    let layout_info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings);
-    let descriptor_set_layout = Destructor::new(
-        device,
-        unsafe { device.create_descriptor_set_layout(&layout_info, None) }?,
-        device.fp_v1_0().destroy_descriptor_set_layout,
-    );
-
-    let set_layouts = [descriptor_set_layout.get()];
-    let pipeline_layout_info = vk::PipelineLayoutCreateInfo::default().set_layouts(&set_layouts);
+    let pipeline_layout_info = vk::PipelineLayoutCreateInfo::default()
+        .set_layouts(&set_layouts)
+        .push_constant_ranges(&push_constants);
 
     let pipeline_layout = Destructor::new(
         device,
@@ -1872,6 +1810,7 @@ fn create_pipeline<'a>(
         .stages(shader_stages.as_slice())
         .groups(&shader_groups)
         .max_pipeline_ray_recursion_depth(1)
+        .flags(vk::PipelineCreateFlags::DESCRIPTOR_BUFFER_EXT)
         .layout(pipeline_layout.get())];
 
     log::trace!("Building pipeline {:#?}", rt_device.device());
@@ -1886,7 +1825,6 @@ fn create_pipeline<'a>(
     log::trace!("Pipeline created - checking");
     match pipeline {
         Ok(v) => Ok((
-            descriptor_set_layout,
             shader_groups,
             pipeline_layout,
             Destructor::new(device, v[0], device.fp_v1_0().destroy_pipeline),

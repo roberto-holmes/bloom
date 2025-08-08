@@ -29,6 +29,7 @@ pub fn create_instance(entry: &ash::Entry, window: &Window) -> Result<vulkan::In
 
     let mut extension_names =
         ash_window::enumerate_required_extensions(window.display_handle()?.as_raw())?.to_vec();
+    extension_names.push(ash::khr::get_physical_device_properties2::NAME.as_ptr());
 
     if VALIDATION.is_enable {
         extension_names.push(ash::ext::debug_utils::NAME.as_ptr());
@@ -38,8 +39,6 @@ pub fn create_instance(entry: &ash::Entry, window: &Window) -> Result<vulkan::In
     #[cfg(any(target_os = "macos", target_os = "ios"))]
     {
         extension_names.push(ash::khr::portability_enumeration::NAME.as_ptr());
-        // Enabling this extension is a requirement when using `VK_KHR_portability_subset`
-        extension_names.push(ash::khr::get_physical_device_properties2::NAME.as_ptr());
     }
     let create_flags = if cfg!(any(target_os = "macos", target_os = "ios")) {
         vk::InstanceCreateFlags::ENUMERATE_PORTABILITY_KHR
@@ -199,6 +198,7 @@ fn is_device_extension_supported(
         ash::khr::ray_tracing_pipeline::NAME,
         ash::khr::buffer_device_address::NAME,
         ash::khr::deferred_host_operations::NAME,
+        ash::ext::descriptor_buffer::NAME,
         ash::ext::descriptor_indexing::NAME,
         ash::khr::spirv_1_4::NAME,
         ash::khr::shader_float_controls::NAME,
@@ -302,13 +302,24 @@ fn is_physical_device_suitable(
     // Check features from different parts of the Vulkan spec
     let mut features_as = vk::PhysicalDeviceAccelerationStructureFeaturesKHR::default();
     let mut features_rt = vk::PhysicalDeviceRayTracingPipelineFeaturesKHR::default();
-    let mut features12 = vk::PhysicalDeviceVulkan12Features::default();
+    let mut features_bda =
+        vk::PhysicalDeviceBufferDeviceAddressFeatures::default().buffer_device_address(true);
+    let mut features_db =
+        vk::PhysicalDeviceDescriptorBufferFeaturesEXT::default().descriptor_buffer(true);
+    let mut features_di = vk::PhysicalDeviceDescriptorIndexingFeatures::default()
+        .descriptor_binding_variable_descriptor_count(true)
+        .descriptor_binding_update_unused_while_pending(true);
+    let mut features12 =
+        vk::PhysicalDeviceVulkan12Features::default().runtime_descriptor_array(true);
     let mut features13 = vk::PhysicalDeviceVulkan13Features::default();
     let mut features = vk::PhysicalDeviceFeatures2::default()
         .push(&mut features_as)
         .push(&mut features_rt)
         .push(&mut features13)
-        .push(&mut features12);
+        .push(&mut features12)
+        .push(&mut features_bda)
+        .push(&mut features_db)
+        .push(&mut features_di);
     unsafe { instance.get_physical_device_features2(physical_device, &mut features) };
 
     let indices = find_queue_families(instance, physical_device, surface_stuff);
@@ -337,7 +348,11 @@ fn is_physical_device_suitable(
         && features13.dynamic_rendering == vk::TRUE
         && features13.synchronization2 == vk::TRUE
         && features_rt.ray_tracing_pipeline == vk::TRUE
-        && features_as.acceleration_structure == vk::TRUE)
+        && features_as.acceleration_structure == vk::TRUE 
+        && features_bda.buffer_device_address == vk::TRUE
+        && features_db.descriptor_buffer == vk::TRUE
+        && features_di.descriptor_binding_variable_descriptor_count == vk::TRUE
+        && features_di.descriptor_binding_update_unused_while_pending == vk::TRUE)
 }
 
 pub fn get_max_image_size(instance: &ash::Instance, physical_device: vk::PhysicalDevice) -> u32 {
@@ -412,6 +427,7 @@ pub fn create_logical_device(
         ash::khr::ray_tracing_pipeline::NAME.as_ptr(),
         ash::khr::buffer_device_address::NAME.as_ptr(),
         ash::khr::deferred_host_operations::NAME.as_ptr(),
+        ash::ext::descriptor_buffer::NAME.as_ptr(),
         ash::ext::descriptor_indexing::NAME.as_ptr(),
         ash::khr::spirv_1_4::NAME.as_ptr(),
         ash::khr::shader_float_controls::NAME.as_ptr(),
@@ -420,6 +436,8 @@ pub fn create_logical_device(
         ash::khr::portability_subset::NAME.as_ptr(),
     ];
 
+    let mut features_db =
+        vk::PhysicalDeviceDescriptorBufferFeaturesEXT::default().descriptor_buffer(true);
     let mut as_features =
         vk::PhysicalDeviceAccelerationStructureFeaturesKHR::default().acceleration_structure(true);
     let mut rt_features =
@@ -430,7 +448,10 @@ pub fn create_logical_device(
     let mut features12 = vk::PhysicalDeviceVulkan12Features::default()
         .timeline_semaphore(true)
         .descriptor_indexing(true)
-        .buffer_device_address(true);
+        .buffer_device_address(true)
+        .runtime_descriptor_array(true)
+        .descriptor_binding_variable_descriptor_count(true)
+        .descriptor_binding_update_unused_while_pending(true);
     let mut features13 = vk::PhysicalDeviceVulkan13Features::default()
         .dynamic_rendering(true)
         .synchronization2(true);
@@ -441,6 +462,7 @@ pub fn create_logical_device(
             .extend(&mut features13)
             .extend(&mut rt_features)
             .extend(&mut as_features)
+            .extend(&mut features_db)
             .features(device_features)
     };
 
@@ -495,8 +517,16 @@ pub fn copy_buffer(
 pub fn create_uniform_buffer<T>(allocator: &vk_mem::Allocator) -> Result<[vulkan::Buffer; 2]> {
     let size = std::mem::size_of::<T>() as u64;
     Ok([
-        vulkan::Buffer::new_mapped(allocator, size, vk::BufferUsageFlags::UNIFORM_BUFFER)?,
-        vulkan::Buffer::new_mapped(allocator, size, vk::BufferUsageFlags::UNIFORM_BUFFER)?,
+        vulkan::Buffer::new_mapped(
+            allocator,
+            size,
+            vk::BufferUsageFlags::UNIFORM_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+        )?,
+        vulkan::Buffer::new_mapped(
+            allocator,
+            size,
+            vk::BufferUsageFlags::UNIFORM_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+        )?,
     ])
 }
 
@@ -823,4 +853,73 @@ pub fn create_commands_2_flight_frames(
     .unwrap();
 
     Ok((command_pool, commands_out))
+}
+
+pub fn create_descriptor_set_layout(
+    device: &ash::Device,
+    binding: vk::DescriptorSetLayoutBinding,
+) -> Result<Destructor<vk::DescriptorSetLayout>> {
+    let bindings = [binding];
+    let layout_info = vk::DescriptorSetLayoutCreateInfo::default()
+        .bindings(&bindings)
+        .flags(
+            vk::DescriptorSetLayoutCreateFlags::DESCRIPTOR_BUFFER_EXT, // TODO: Does the sample use this flag?
+        );
+    Ok(Destructor::new(
+        device,
+        unsafe { device.create_descriptor_set_layout(&layout_info, None) }?,
+        device.fp_v1_0().destroy_descriptor_set_layout,
+    ))
+}
+
+pub fn create_bindless_descriptor_set_layout(
+    device: &ash::Device,
+    binding: u32,
+    descriptor_type: vk::DescriptorType,
+    descriptor_count: u32,
+    stage_flags: vk::ShaderStageFlags,
+) -> Result<Destructor<vk::DescriptorSetLayout>> {
+    let layout_binding = vk::DescriptorSetLayoutBinding {
+        binding,
+        descriptor_type,
+        descriptor_count,
+        stage_flags,
+        ..Default::default()
+    };
+
+    // We are going to be creating a descriptor with a constant size known at compile time that will always be filled
+    let flags = [
+        // vk::DescriptorBindingFlagsEXT::VARIABLE_DESCRIPTOR_COUNT| // Use a variable amount of descriptors in an array. (runtime sized descriptor arrays where the descriptorCount in the descriptor set layout now just expresses an upper bound.)
+        // vk::DescriptorBindingFlagsEXT::PARTIALLY_BOUND // Partially bound means that we don't have to bind every descriptor. This is critical if we want to make use of descriptor "streaming". A descriptor only has to be bound if it is actually used by a shader.
+        // vk::DescriptorBindingFlagsEXT::UPDATE_AFTER_BIND // Allows us to update descriptors after a descriptor set has been bound to a command buffer
+        vk::DescriptorBindingFlagsEXT::UPDATE_UNUSED_WHILE_PENDING, //  Allows us to update a descriptor while a command buffer is executing as long as the GPU is not accessing the data
+    ];
+    let mut binding_flags =
+        vk::DescriptorSetLayoutBindingFlagsCreateInfo::default().binding_flags(&flags);
+
+    let bindings = [layout_binding];
+    let layout_info = vk::DescriptorSetLayoutCreateInfo::default()
+        .bindings(&bindings)
+        .flags(
+            vk::DescriptorSetLayoutCreateFlags::DESCRIPTOR_BUFFER_EXT, // | vk::DescriptorSetLayoutCreateFlags::UPDATE_AFTER_BIND_POOL,
+        )
+        .push(&mut binding_flags);
+
+    Ok(Destructor::new(
+        device,
+        unsafe { device.create_descriptor_set_layout(&layout_info, None) }?,
+        device.fp_v1_0().destroy_descriptor_set_layout,
+    ))
+}
+
+pub fn aligned_size<T>(value: T, alignment: T) -> T
+where
+    T: Copy
+        + num::One
+        + std::ops::Add<Output = T>
+        + std::ops::Sub<Output = T>
+        + std::ops::Not<Output = T>
+        + std::ops::BitAnd<Output = T>,
+{
+    (value + alignment - T::one()) & !(alignment - T::one())
 }

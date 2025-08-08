@@ -3,31 +3,47 @@ __import structs;
 __import quaternion;
 __import constants;
 
-[[vk::binding(0)]]
-RaytracingAccelerationStructure tlas;
-[[vk::binding(1)]]
-RWTexture2D<float4> read_image;
-[[vk::binding(2)]]
-RWTexture2D<float4> write_image;
-[[vk::binding(3)]]
-ConstantBuffer<UBO> ubo;
+// [[vk::binding(0)]]
+// RaytracingAccelerationStructure tlas;
+// [[vk::binding(1)]]
+// RWTexture2D<float4> read_image;
+// [[vk::binding(2)]]
+// RWTexture2D<float4> write_image;
+// [[vk::binding(3)]]
+// ConstantBuffer<UBO> ubo;
 
-[[vk::binding(6)]]
+[[vk::push_constant]]
+ConstantBuffer<RayPushConstants> pc;
+// (Binding, Set)
+[[vk::binding(0, 0)]]
+RWTexture2D<float4> images[];
+// RWTexture2D<float4> image;
+[[vk::binding(0, 1)]]
 RWTexture2D<float4> ocean;
+// [[vk::binding(2, 0)]]
+// RWTexture2D<float4> textures[];
 
 [shader("raygeneration")]
 void main() {
 	uint3 LaunchID = DispatchRaysIndex();
 	uint3 LaunchSize = DispatchRaysDimensions();
 
-	if (ubo.camera.enabled == false) {
-		write_image[int2(LaunchID.xy)] = float4(0.0);
+	UBO ubo = *pc.ubo;
+
+	if (pc.ubo.camera.enabled == false) {
+		images[pc.frame_index][int2(LaunchID.xy)] = float4(0.0);
 		return;
 	}
 
-	const float aspect_ratio = float(ubo.width) / float(ubo.height);
+	if (all(LaunchID.xy == uint2(10, 10)) && pc.ubo.ray_frame_num < 10) {
+	// if (all(LaunchID.xy == uint2(10, 10))) {
+		// printf("%u\n", LaunchID.x);
+		// printf("%u | TLAS: %lu | %lu\n", pc.ubo.ray_frame_num, (uint64_t)pc.tlas, (*(uint64_t*)pc.tlas));
+	}
 
-	init_rng(DispatchRaysIndex().xy, ubo.width, ubo.ray_frame_num + DispatchRaysIndex().x + DispatchRaysIndex().y + ubo.random_num);
+	const float aspect_ratio = float(pc.ubo.width) / float(pc.ubo.height);
+
+	init_rng(DispatchRaysIndex().xy, pc.ubo.width, pc.ubo.ray_frame_num + DispatchRaysIndex().x + DispatchRaysIndex().y + pc.ubo.random_num);
 
 	// Start the rays from the center of each pixel with a random offset to perform antialiasing
 	const float2 pixelCenter = float2(LaunchID.xy) + float2(0.5, 0.5) + random_vector_in_unit_disk().xy;
@@ -37,25 +53,26 @@ void main() {
 	float2 uv = (uv_in * 2.0 - float2(1.0)) * float2(aspect_ratio, -1.0);
 
 	// Fix the perspective to the field of view from the ubo
-	float viewport_scale_factor = 2. * ubo.camera.focal_distance * tan(ubo.camera.vfov / 2.);
+	float viewport_scale_factor = 2. * pc.ubo.camera.focal_distance * tan(pc.ubo.camera.vfov / 2.);
 	uv *= viewport_scale_factor;
 
-	// float3x3 camera_rotation = transpose(float3x3(ubo.camera.u, ubo.camera.v, ubo.camera.w));
-	let dof_offset = rotate_vector(random_vector_in_unit_disk(), ubo.camera.q) * ubo.camera.dof_scale;
-	let direction = rotate_vector(float3(uv, ubo.camera.focal_distance), ubo.camera.q) - dof_offset;
+	// float3x3 camera_rotation = transpose(float3x3(pc.ubo.camera.u, pc.ubo.camera.v, pc.ubo.camera.w));
+	let dof_offset = rotate_vector(random_vector_in_unit_disk(), pc.ubo.camera.q) * pc.ubo.camera.dof_scale;
+	let direction = rotate_vector(float3(uv, pc.ubo.camera.focal_distance), pc.ubo.camera.q) - dof_offset;
 
 	Payload payload;
-	payload.origin = ubo.camera.origin + dof_offset;
+	payload.origin = pc.ubo.camera.origin + dof_offset;
 	payload.direction = normalize(direction);
 
-	// if (LaunchID.x == 0 && LaunchID.y == 0 && ubo.ray_frame_num % 100 == 0) {
-	// 	printf("o: %v3f | ", ubo.camera.origin);
-	// 	printf("q: %v4f | ", ubo.camera.q);
+	// if (LaunchID.x == 0 && LaunchID.y == 0 && pc.ubo.ray_frame_num % 100 == 0) {
+	// 	printf("o: %v3f | ", pc.ubo.camera.origin);
+	// 	printf("q: %v4f | ", pc.ubo.camera.q);
 	// 	printf("ori: %v3f | ", payload.origin);
 	// 	printf("dir: %v3f\n", payload.direction);
 	// }
 
-	float3 sample = read_image[int2(LaunchID.xy)].rgb;
+	// Copy data from previous sample
+	float3 sample = images[(pc.frame_index + 1) % 2][int2(LaunchID.xy)].rgb;
 	float3 throughput = 1.0;
 
 	for (int depth = 0; depth < 16; depth++) {
@@ -65,7 +82,8 @@ void main() {
 		rayDesc.TMin = 0.001;
 		rayDesc.TMax = 10000.0;
 
-		TraceRay(tlas, RAY_FLAG_FORCE_OPAQUE, 0xff, 0, 0, 0, rayDesc, payload);
+		//! There is likely an issue with pc.tlas; this line causes the shader to crash
+		// TraceRay(*pc.tlas, RAY_FLAG_FORCE_OPAQUE, 0xff, 0, 0, 0, rayDesc, payload);
 		throughput *= payload.attenuation;
 
 		if (payload.is_light) {
@@ -98,13 +116,18 @@ void main() {
 	// 	write_image[int2(LaunchID.xy)] = float4(normal, 1.0);
 	// }
 
-	write_image[int2(LaunchID.xy)] = float4(sample, 0.0);
-	// write_image[int2(LaunchID.xy)] = float4(0.1, 0.4, 1.0, 1.0);
+
+	// sample += float3(0.1, 0.4, 1.0);
+
+	// images[pc.frame_index][int2(LaunchID.xy)] = float4(sample, 0.0);
+	images[pc.frame_index][int2(LaunchID.xy)] = float4(0.1, 0.4, 1.0, 1.0); // Light Blue
+	// images[pc.frame_index][int2(LaunchID.xy)] = float4(1.0, 0.1, 1.0, 1.0); // Almost Magenta
+	// images[pc.frame_index][int2(LaunchID.xy)] = float4(0.1, 0.4, 1.0, 1.0);
 	// write_image[int2(LaunchID.xy)] = ocean[int2(0, 0)];
-	// write_image[int2(LaunchID.xy)] = ocean[int2(LaunchID.xy)] * 1024;
+	// images[0][int2(LaunchID.xy)] = ocean[int2(LaunchID.xy)] * 1024;
 	// write_image[int2(LaunchID.xy)] = float4(ocean_sample, 0.0, ocean_sample, 1.0);
 
-	// write_image[int2(LaunchID.xy)] = float4(ocean[int2(LaunchID.xy)].b * 1024, 0.0, 0.0, 1.0);
+	// images[pc.frame_index][int2(LaunchID.xy)] = float4(ocean[int2(LaunchID.xy)].b * 1024, 0.0, 0.0, 1.0);
 
 	// float2 normal_map = ocean[int2(LaunchID.xy)].ba * 1024 * 1024;
 	// let normal = normalize(float3(-normal_map.x, 1, -normal_map.y));
