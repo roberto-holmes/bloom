@@ -1,4 +1,3 @@
-use anyhow::{anyhow, Result};
 use ash::vk;
 use bus::Bus;
 use std::{
@@ -11,7 +10,9 @@ use winit::dpi::PhysicalSize;
 
 use crate::{
     api::{self, Bloomable},
-    core, ray, structures, uniforms, viewport,
+    core,
+    error::{raise, Result},
+    ray, structures, uniforms, viewport,
     vulkan::Destructor,
     MAX_FRAMES_IN_FLIGHT,
 };
@@ -204,7 +205,7 @@ fn broadcast(
         match system_sync_receiver.recv() {
             Ok(true) => finished_threads += 1,
             Ok(false) => log::warn!("Invalid response from thread sync channel"),
-            Err(e) => return Err(anyhow!("Failed to receive sync from a system: {e}")),
+            Err(e) => raise("Failed to receive sync from a system", e)?,
         }
     }
     Ok(())
@@ -262,25 +263,28 @@ fn draw(
     }
     log::trace!("Drawing");
     // Notify ray to pause any further ray tracing until the image is free to use
-    transfer
+    if let Err(e) = transfer
         .ray
-        .send(ray::TransferCommand::Pause(timestamp + 1))?;
+        .send(ray::TransferCommand::Pause(timestamp + 1))
+    {
+        return raise("Failed to give ray the new timestamp", e);
+    }
 
     let (ray_frame, accumulated_frame_count) = match ray_frame_done.read() {
         Ok(v) => (v.current_frame_index, v.accumulated_frames),
         Err(e) => {
-            return Err(anyhow!(
-                "Transfer failed to receive lastest frame from ray: {e}"
-            ));
+            return raise("Transfer failed to receive lastest frame from ray", e);
         }
     };
 
     // Let the viewport know when the data will be ready and which frame to use
-    transfer.viewport.send(viewport::TransferCommand {
+    if let Err(e) = transfer.viewport.send(viewport::TransferCommand {
         timestamp: timestamp + 1,
         frame_index: output_frame_index,
         accumulated_frame_count,
-    })?;
+    }) {
+        return raise("Failed to give viewport the new frame", e);
+    };
 
     // Perform a copy
     transfer.perform_compute_copy(
@@ -330,7 +334,8 @@ impl Transfer {
         let (command_pool, commands) = core::create_commands_2_flight_frames(
             &device,
             queue_family_indices.transfer_family.unwrap().0,
-        )?;
+        )
+        .unwrap(); // TODO: Replace with new errors
         Ok(Self {
             last_timestamp: 0,
             device,
@@ -400,7 +405,7 @@ impl Transfer {
             self.device
                 .queue_submit(self.queue, &submit_info, vk::Fence::null())
         } {
-            Err(e) => return Err(anyhow!("Failed to submit compute commands: {}", e)),
+            Err(e) => return raise("Failed to submit compute commands", e),
             _ => {}
         }
         self.last_timestamp = timestamp_to_signal;
@@ -505,8 +510,12 @@ impl Transfer {
         let begin_info = vk::CommandBufferBeginInfo::default();
         let dependency = vk::DependencyInfo::default().image_memory_barriers(&pre_barriers);
         unsafe {
-            self.device
-                .begin_command_buffer(command_buffer, &begin_info)?;
+            if let Err(e) = self
+                .device
+                .begin_command_buffer(command_buffer, &begin_info)
+            {
+                return raise("Failed to start command buffer", e);
+            };
             self.device
                 .cmd_pipeline_barrier2(command_buffer, &dependency);
             self.device.cmd_copy_image(
@@ -569,7 +578,9 @@ impl Transfer {
             self.device
                 .cmd_pipeline_barrier2(command_buffer, &dependency);
 
-            self.device.end_command_buffer(command_buffer)?;
+            if let Err(e) = self.device.end_command_buffer(command_buffer) {
+                return raise("Failed to end command buffer", e);
+            };
         }
 
         Ok(())
@@ -590,9 +601,15 @@ impl Transfer {
             }
         }
 
-        self.ray_resize.update(new_size)?;
-        self.viewport_resize.update(new_size)?;
-        self.ubo.send(uniforms::Event::Resize(new_size))?;
+        if let Err(e) = self.ray_resize.update(new_size) {
+            raise("Failed to update ray", e)?;
+        };
+        if let Err(e) = self.viewport_resize.update(new_size) {
+            raise("Failed to update ray", e)?;
+        };
+        if let Err(e) = self.ubo.send(uniforms::Event::Resize(new_size)) {
+            raise("Failed to update ray", e)?;
+        };
         log::info!("Sent size {}x{}", new_size.width, new_size.height);
 
         if !need_response {
@@ -641,21 +658,24 @@ impl Transfer {
                     )
                 }
                 Err(e) => {
-                    return Err(anyhow!(
-                        "Resize to {}x{} (ray - {}, viewport - {}): {e}",
-                        new_size.width,
-                        new_size.height,
-                        if ray_resized {
-                            "completed"
-                        } else {
-                            "timed out"
-                        },
-                        if viewport_resized {
-                            "completed"
-                        } else {
-                            "timed out"
-                        }
-                    ));
+                    raise(
+                        format!(
+                            "Resize to {}x{} (ray - {}, viewport - {})",
+                            new_size.width,
+                            new_size.height,
+                            if ray_resized {
+                                "completed"
+                            } else {
+                                "timed out"
+                            },
+                            if viewport_resized {
+                                "completed"
+                            } else {
+                                "timed out"
+                            }
+                        ),
+                        e,
+                    )?;
                 }
             }
         }

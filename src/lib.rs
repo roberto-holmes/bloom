@@ -2,6 +2,7 @@ pub mod api;
 // pub mod camera;
 mod core;
 mod debug;
+mod error;
 pub mod material;
 mod oceans;
 mod physics;
