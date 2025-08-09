@@ -363,9 +363,10 @@ fn create_images<'a>(
     submit_queue: vk::Queue,
 ) -> Result<[Image<'a>; FFT_IMAGES * MAX_FRAMES_IN_FLIGHT]> {
     let command_buffer = begin_single_time_commands(device, command_pool)?;
-    let images: [Image<'a>; FFT_IMAGES * MAX_FRAMES_IN_FLIGHT] = std::array::from_fn(|_| {
+    let images: [Image<'a>; FFT_IMAGES * MAX_FRAMES_IN_FLIGHT] = std::array::from_fn(|i| {
         // Create the image in memory
-        let i = Image::new(
+        let image = Image::new(
+            format!("Ocean {i}"),
             device,
             allocator,
             vk_mem::MemoryUsage::AutoPreferDevice,
@@ -385,7 +386,7 @@ fn create_images<'a>(
             .new_layout(vk::ImageLayout::GENERAL)
             .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
             .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-            .image(i.get())
+            .image(image.get())
             .subresource_range(vk::ImageSubresourceRange {
                 aspect_mask: vk::ImageAspectFlags::COLOR,
                 base_mip_level: 0,
@@ -407,7 +408,7 @@ fn create_images<'a>(
                 &barrier,
             );
         }
-        i
+        image
     });
     end_single_time_command(device, command_pool, submit_queue, command_buffer)?;
     Ok(images)

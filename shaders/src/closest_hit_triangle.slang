@@ -5,7 +5,7 @@ __import structs;
 [[vk::push_constant]]
 ConstantBuffer<RayPushConstants> pc;
 // (Binding, Set)
-[[vk::binding(0, 1)]]
+[[vk::binding(0, 2)]]
 RWTexture2D<float4> ocean_map[];
 
 [shader("closesthit")]

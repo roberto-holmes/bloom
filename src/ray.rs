@@ -49,7 +49,6 @@ enum TlasProcess {
 #[derive(Debug, Default)]
 #[repr(C)]
 struct PushConstants {
-    pub tlas: vk::DeviceAddress,
     pub ubo: vk::DeviceAddress,
     pub scene: vk::DeviceAddress,
     pub materials: vk::DeviceAddress,
@@ -65,7 +64,6 @@ impl PushConstants {
 struct DescriptorData {
     layout: Destructor<vk::DescriptorSetLayout>,
     buffer: vulkan::Buffer,
-    size: vk::DeviceSize,
     offset: vk::DeviceSize,
 }
 
@@ -111,7 +109,6 @@ impl DescriptorData {
         Ok(Self {
             layout,
             buffer,
-            size,
             offset,
         })
     }
@@ -148,6 +145,35 @@ impl DescriptorData {
                 descriptor_buffer_properties.storage_image_descriptor_size as vk::DeviceSize,
                 self.offset
                     + (descriptor_buffer_properties.storage_image_descriptor_size * offset)
+                        as vk::DeviceSize,
+            )?;
+
+            db_device.get_descriptor(&image_descriptor_info, mapped_data);
+        };
+        Ok(())
+    }
+
+    fn get_descriptor_tlas(
+        &mut self,
+        db_device: &ash::ext::descriptor_buffer::Device,
+        tlas_handle: vk::DeviceAddress,
+        offset: usize,
+        descriptor_buffer_properties: vk::PhysicalDeviceDescriptorBufferPropertiesEXT,
+    ) -> Result<()> {
+        let image_descriptor_info = vk::DescriptorGetInfoEXT {
+            ty: vk::DescriptorType::ACCELERATION_STRUCTURE_KHR,
+            data: vk::DescriptorDataEXT {
+                acceleration_structure: tlas_handle,
+            },
+            ..Default::default()
+        };
+        // Copy the desciptor into the descriptor buffer
+        unsafe {
+            let mapped_data = self.buffer.get_mapped_data(
+                descriptor_buffer_properties.acceleration_structure_descriptor_size
+                    as vk::DeviceSize,
+                self.offset
+                    + (descriptor_buffer_properties.acceleration_structure_descriptor_size * offset)
                         as vk::DeviceSize,
             )?;
 
@@ -196,9 +222,12 @@ pub fn thread(
 
     let mut descriptor_buffer_properties =
         vk::PhysicalDeviceDescriptorBufferPropertiesEXT::default();
+    let mut acceleration_structure_properties =
+        vk::PhysicalDeviceAccelerationStructurePropertiesKHR::default();
     let mut ray_tracing_pipeline_properties =
         vk::PhysicalDeviceRayTracingPipelinePropertiesKHR::default();
     let mut device_properties = vk::PhysicalDeviceProperties2::default()
+        .push(&mut acceleration_structure_properties)
         .push(&mut ray_tracing_pipeline_properties)
         .push(&mut descriptor_buffer_properties);
 
@@ -213,6 +242,7 @@ pub fn thread(
         db_device,
         descriptor_buffer_properties,
         ray_tracing_pipeline_properties,
+        acceleration_structure_properties,
         allocator,
         queue_family_indices,
         uniform_buffers,
@@ -408,6 +438,8 @@ pub fn thread(
 struct Ray<'a> {
     descriptor_buffer_properties: vk::PhysicalDeviceDescriptorBufferPropertiesEXT<'a>,
     ray_tracing_pipeline_properties: vk::PhysicalDeviceRayTracingPipelinePropertiesKHR<'a>,
+    acceleration_structure_properties: vk::PhysicalDeviceAccelerationStructurePropertiesKHR<'a>,
+
     raygen_shader_binding_table: vulkan::Buffer,
     miss_shader_binding_table: vulkan::Buffer,
     hit_shader_binding_table: vulkan::Buffer,
@@ -435,6 +467,7 @@ struct Ray<'a> {
 
     output_image_descriptors: DescriptorData,
     ocean_descriptors: DescriptorData,
+    tlas_descriptor: DescriptorData,
     // texture_descriptors: DescriptorData,
     push_constants: PushConstants,
     // textures: TextureBuffer,
@@ -465,6 +498,7 @@ impl<'a> Ray<'a> {
         db_device: ash::ext::descriptor_buffer::Device,
         descriptor_buffer_properties: vk::PhysicalDeviceDescriptorBufferPropertiesEXT<'a>,
         ray_tracing_pipeline_properties: vk::PhysicalDeviceRayTracingPipelinePropertiesKHR<'a>,
+        acceleration_structure_properties: vk::PhysicalDeviceAccelerationStructurePropertiesKHR<'a>,
         allocator: Arc<vk_mem::Allocator>,
         queue_family_indices: structures::QueueFamilyIndices,
         uniform_buffers: [vk::DeviceAddress; 2],
@@ -485,6 +519,7 @@ impl<'a> Ray<'a> {
             vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
                 | vk::BufferUsageFlags::STORAGE_BUFFER
                 | vk::BufferUsageFlags::TRANSFER_DST,
+            "materials",
         )?;
 
         // Get a reference to where all the parts of each model are on the GPU
@@ -494,11 +529,22 @@ impl<'a> Ray<'a> {
             vk::BufferUsageFlags::STORAGE_BUFFER
                 | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
                 | vk::BufferUsageFlags::TRANSFER_DST,
+            "primitive addresses",
         )?;
         let instances_buffer = Arc::new(RwLock::new(InstanceBuffer::new(&allocator)?));
 
-        let tlas = AccelerationStructure::new(&as_device);
+        let tlas = AccelerationStructure::new(&as_device, "tlas");
 
+        let tlas_descriptor = DescriptorData::new(
+            0,
+            &allocator,
+            &device,
+            &db_device,
+            vk::DescriptorType::ACCELERATION_STRUCTURE_KHR,
+            1,
+            vk::ShaderStageFlags::RAYGEN_KHR,
+            descriptor_buffer_properties,
+        )?;
         let output_image_descriptors = DescriptorData::new(
             0,
             &allocator,
@@ -537,6 +583,7 @@ impl<'a> Ray<'a> {
         let (shader_groups, pipeline_layout, pipeline) = create_pipeline(
             &device,
             &rt_device,
+            &tlas_descriptor,
             &output_image_descriptors,
             &ocean_descriptors,
         )?;
@@ -589,7 +636,6 @@ impl<'a> Ray<'a> {
         )?;
 
         let push_constants = PushConstants {
-            tlas: tlas.device_address,
             frame_index: 0,
             ubo: uniform_buffers[0],
             scene: buffer_references.get_device_address(&device),
@@ -612,6 +658,7 @@ impl<'a> Ray<'a> {
             as_device,
             db_device,
             ray_tracing_pipeline_properties,
+            acceleration_structure_properties,
             raygen_shader_binding_table,
             miss_shader_binding_table,
             hit_shader_binding_table,
@@ -631,6 +678,7 @@ impl<'a> Ray<'a> {
             ocean,
             physics,
             descriptor_buffer_properties,
+            tlas_descriptor,
             output_image_descriptors,
             ocean_descriptors,
             push_constants,
@@ -660,6 +708,7 @@ impl<'a> Ray<'a> {
                 | vk::ImageUsageFlags::TRANSFER_DST,
             size,
             vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
+            "Ray Output",
         )?);
 
         for (i, image) in self.images.as_ref().unwrap().iter().enumerate() {
@@ -738,6 +787,7 @@ impl<'a> Ray<'a> {
                     &self.device,
                     &self.allocator,
                     &self.as_device,
+                    self.acceleration_structure_properties,
                     self.command_pool.get(),
                     self.queue,
                     vk::GeometryTypeKHR::TRIANGLES,
@@ -830,6 +880,7 @@ impl<'a> Ray<'a> {
                     self.materials.as_ptr(),
                     self.materials.len(),
                     self.materials.len(),
+                    "materials",
                 )?;
                 // Update reference that shader sees
                 self.push_constants.materials =
@@ -943,6 +994,7 @@ impl<'a> Ray<'a> {
                     self.primitive_addresses.as_ptr(),
                     self.primitive_addresses.len(),
                     self.primitive_addresses.len() + RESERVED_SIZE,
+                    "primitive addresses",
                 )?;
                 self.push_constants.scene = self.buffer_references.get_device_address(&self.device);
             }
@@ -1108,18 +1160,14 @@ impl<'a> Ray<'a> {
                     self.as_device
                         .get_acceleration_structure_device_address(&as_device_address_info)
                 };
-                log::warn!("TLAS device address is now {}", self.tlas.device_address);
 
-                self.push_constants.tlas = self
-                    .tlas
-                    .buffer
-                    .as_ref()
-                    .unwrap()
-                    .get_device_address(&self.device);
-
-                if self.tlas.device_address != self.push_constants.tlas {
-                    log::warn!("TLAS device address {} does not correspond to its *buffer* device address {}", self.tlas.device_address, self.push_constants.tlas);
-                }
+                // Update TLAS descriptor
+                self.tlas_descriptor.get_descriptor_tlas(
+                    &self.db_device,
+                    self.tlas.device_address,
+                    0,
+                    self.descriptor_buffer_properties,
+                )?;
             }
             TlasProcess::Update => {}
         }
@@ -1134,6 +1182,7 @@ impl<'a> Ray<'a> {
             &self.device,
             &self.allocator,
             as_build_sizes_info.build_scratch_size,
+            self.acceleration_structure_properties,
         )?;
 
         let as_build_geometry_infos = [vk::AccelerationStructureBuildGeometryInfoKHR {
@@ -1198,11 +1247,13 @@ impl<'a> Ray<'a> {
                 self.aabbs.last().unwrap(),
                 1,
                 1,
+                "aabbs",
             )?);
         self.blass.push(create_bottom_level_acceleration_structure(
             &self.device,
             &self.allocator,
             &self.as_device,
+            self.acceleration_structure_properties,
             self.command_pool.get(),
             self.queue,
             vk::GeometryTypeKHR::AABBS,
@@ -1280,6 +1331,11 @@ impl<'a> Ray<'a> {
             let descriptor_buffer_binding_info = [
                 //  output images + Ocean map(s)
                 vk::DescriptorBufferBindingInfoEXT {
+                    address: self.tlas_descriptor.buffer.get_device_address(&self.device),
+                    usage: vk::BufferUsageFlags::RESOURCE_DESCRIPTOR_BUFFER_EXT,
+                    ..Default::default()
+                },
+                vk::DescriptorBufferBindingInfoEXT {
                     address: self
                         .output_image_descriptors
                         .buffer
@@ -1310,17 +1366,28 @@ impl<'a> Ray<'a> {
                 .cmd_bind_descriptor_buffers(command_buffer, &descriptor_buffer_binding_info);
 
             // These are the indices of the respective fields in the descriptor_buffer_binding_info array
-            let buffer_index = [0];
-            let buffer_index_ocean = [1];
+            let buffer_index_tlas = [0];
+            let buffer_index_images = [1];
+            let buffer_index_ocean = [2];
             let buffer_offsets = [0];
+
+            // Top Level Acceleration Structure
+            self.db_device.cmd_set_descriptor_buffer_offsets(
+                command_buffer,
+                vk::PipelineBindPoint::RAY_TRACING_KHR,
+                self.pipeline_layout.get(),
+                0, // TLAS goes into set 0
+                &buffer_index_tlas,
+                &buffer_offsets,
+            );
 
             // Output Images
             self.db_device.cmd_set_descriptor_buffer_offsets(
                 command_buffer,
                 vk::PipelineBindPoint::RAY_TRACING_KHR,
                 self.pipeline_layout.get(),
-                0, // Output images go into set 0
-                &buffer_index,
+                1, // Output images go into set 1
+                &buffer_index_images,
                 &buffer_offsets,
             );
 
@@ -1329,7 +1396,7 @@ impl<'a> Ray<'a> {
                 command_buffer,
                 vk::PipelineBindPoint::RAY_TRACING_KHR,
                 self.pipeline_layout.get(),
-                1, // Ocean map(s) go into set 1
+                2, // Ocean map(s) go into set 2
                 &buffer_index_ocean,
                 &buffer_offsets,
             );
@@ -1360,7 +1427,6 @@ impl<'a> Ray<'a> {
                 1,
             );
 
-            // self.fft.finish(&self.device, command_buffer, frame_index);
             self.device.end_command_buffer(command_buffer)?;
         }
         // log::info!("Recorded commands {:?}", self.commands);
@@ -1389,6 +1455,7 @@ impl ScratchBuffer {
         device: &ash::Device,
         allocator: &vk_mem::Allocator,
         size: vk::DeviceSize,
+        properties: vk::PhysicalDeviceAccelerationStructurePropertiesKHR,
     ) -> Result<Self> {
         log::trace!("Creating Scratch buffer");
         let buffer = vulkan::Buffer::new_aligned(
@@ -1397,7 +1464,7 @@ impl ScratchBuffer {
             vk_mem::MemoryUsage::Auto,
             vk_mem::AllocationCreateFlags::empty(),
             vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-            128, // TODO: Get programatically from VkPhysicalDeviceAccelerationStructurePropertiesKHR::minAccelerationStructureScratchOffsetAlignment
+            properties.min_acceleration_structure_scratch_offset_alignment as u64,
             "Scratch",
         )?;
 
@@ -1415,6 +1482,7 @@ fn create_bottom_level_acceleration_structure(
     device: &ash::Device,
     allocator: &vk_mem::Allocator,
     as_device: &ash::khr::acceleration_structure::Device,
+    acceleration_structure_properties: vk::PhysicalDeviceAccelerationStructurePropertiesKHR,
     command_pool: vk::CommandPool,
     queue: vk::Queue,
     geometry_type: vk::GeometryTypeKHR,
@@ -1439,6 +1507,7 @@ fn create_bottom_level_acceleration_structure(
             | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR,
         &transform_matrix,
         1,
+        "blas transform staging",
     )?;
 
     // Build
@@ -1516,7 +1585,7 @@ fn create_bottom_level_acceleration_structure(
     }
 
     // Create a buffer to hold the acceleration structure
-    let mut bottom_level_as = AccelerationStructure::new(as_device);
+    let mut bottom_level_as = AccelerationStructure::new(as_device, "blas");
     bottom_level_as.create_buffer(allocator, as_build_sizes_info)?;
 
     // Create the Acceleration Structure
@@ -1531,8 +1600,12 @@ fn create_bottom_level_acceleration_structure(
 
     // Create a scratch buffer as a temporary storage for the acceleration structure build
     // TODO: Share the scratch buffer between all BLAS constructions
-    let scratch_buffer =
-        ScratchBuffer::new(device, allocator, as_build_sizes_info.build_scratch_size)?;
+    let scratch_buffer = ScratchBuffer::new(
+        device,
+        allocator,
+        as_build_sizes_info.build_scratch_size,
+        acceleration_structure_properties,
+    )?;
 
     // TODO: Compaction (https://nvpro-samples.github.io/vk_raytracing_tutorial_KHR/#accelerationstructure/bottom-levelaccelerationstructure/helperdetails:raytracingbuilder::buildblas())
     // TODO: Set flags to vk::BuildAccelerationStructureFlagsKHR::ALLOW_UPDATE | PREFER_FAST_BUILD if this object will be modified
@@ -1630,6 +1703,7 @@ fn create_shader_binding_tables(
         vk_mem::MemoryUsage::Auto,
         vk_mem::AllocationCreateFlags::HOST_ACCESS_SEQUENTIAL_WRITE,
         sbt_buffer_usage_flags,
+        "raygen sbt",
     )?;
     let mut miss_shader_binding_table = vulkan::Buffer::new_generic(
         allocator,
@@ -1637,6 +1711,7 @@ fn create_shader_binding_tables(
         vk_mem::MemoryUsage::Auto,
         vk_mem::AllocationCreateFlags::HOST_ACCESS_SEQUENTIAL_WRITE,
         sbt_buffer_usage_flags,
+        "miss sbt",
     )?;
     let mut hit_shader_binding_table = vulkan::Buffer::new_generic(
         allocator,
@@ -1644,6 +1719,7 @@ fn create_shader_binding_tables(
         vk_mem::MemoryUsage::Auto,
         vk_mem::AllocationCreateFlags::HOST_ACCESS_SEQUENTIAL_WRITE,
         sbt_buffer_usage_flags,
+        "hit sbt",
     )?;
 
     // Copy the pipeline's shader handles into a host buffer
@@ -1676,6 +1752,7 @@ fn create_shader_binding_tables(
 fn create_pipeline<'a>(
     device: &ash::Device,
     rt_device: &ash::khr::ray_tracing_pipeline::Device,
+    tlas_descriptor: &DescriptorData,
     output_image_descriptor: &DescriptorData,
     ocean_descriptor: &DescriptorData,
     // textures: &mut DescriptorData,
@@ -1693,6 +1770,7 @@ fn create_pipeline<'a>(
     }];
 
     let set_layouts = [
+        tlas_descriptor.layout.get(),
         output_image_descriptor.layout.get(),
         ocean_descriptor.layout.get(),
         // textures.layout.get(),

@@ -7,16 +7,20 @@ pub struct AccelerationStructure {
     device: vk::Device,
     destructor: vk::PFN_vkDestroyAccelerationStructureKHR,
 
+    name: &'static str,
+
     pub handle: vk::AccelerationStructureKHR,
     pub device_address: vk::DeviceAddress,
     pub buffer: Option<vulkan::Buffer>,
 }
 
 impl AccelerationStructure {
-    pub fn new(device: &ash::khr::acceleration_structure::Device) -> Self {
+    pub fn new(device: &ash::khr::acceleration_structure::Device, name: &'static str) -> Self {
         Self {
             device: device.device(),
             destructor: device.fp().destroy_acceleration_structure_khr,
+
+            name,
 
             handle: vk::AccelerationStructureKHR::null(),
             device_address: 0,
@@ -34,6 +38,7 @@ impl AccelerationStructure {
             build_size_info.acceleration_structure_size * 2,
             vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR
                 | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+            self.name,
         )?);
         Ok(())
     }

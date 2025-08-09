@@ -49,6 +49,7 @@ impl InstanceBuffer {
                     | vk::BufferUsageFlags::TRANSFER_SRC
                     | vk::BufferUsageFlags::TRANSFER_DST
                     | vk::BufferUsageFlags::UNIFORM_BUFFER,
+                "instance",
             )?,
             address_buffer: vulkan::Buffer::new_gpu(
                 &allocator,
@@ -58,6 +59,7 @@ impl InstanceBuffer {
                     | vk::BufferUsageFlags::TRANSFER_SRC
                     | vk::BufferUsageFlags::TRANSFER_DST
                     | vk::BufferUsageFlags::UNIFORM_BUFFER,
+                "instance address",
             )?,
             empty_indices: Vec::with_capacity(RESERVED_SIZE),
             entity_location: HashMap::with_capacity(RESERVED_SIZE),
@@ -115,6 +117,7 @@ impl InstanceBuffer {
                 v.as_ptr(),
                 v.len(),
                 v.len() + RESERVED_SIZE,
+                "instance_address",
             )?;
         } else {
             self.address_buffer.populate_staged(
@@ -255,6 +258,7 @@ impl InstanceBuffer {
                     | vk::BufferUsageFlags::TRANSFER_SRC
                     | vk::BufferUsageFlags::TRANSFER_DST
                     | vk::BufferUsageFlags::UNIFORM_BUFFER,
+                "instance",
             )?;
 
             new_buffer.copy_from::<Instance>(

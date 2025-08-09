@@ -109,6 +109,7 @@ impl Objectionable for Ocean {
             vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
             &self.hit_data,
             1,
+            "ocean",
         )?);
         Ok(())
     }

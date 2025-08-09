@@ -16,6 +16,7 @@ use winit::{raw_window_handle::HasDisplayHandle, window::Window};
 pub fn create_instance(entry: &ash::Entry, window: &Window) -> Result<vulkan::Instance> {
     match check_validation_layer_support(entry) {
         Err(_) if VALIDATION.is_enable => {
+            log::error!("Validation layers requested, but not available");
             return Err(anyhow!("Validation layers requested, but not available"));
         }
         _ => {}
@@ -521,11 +522,13 @@ pub fn create_uniform_buffer<T>(allocator: &vk_mem::Allocator) -> Result<[vulkan
             allocator,
             size,
             vk::BufferUsageFlags::UNIFORM_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+            "uniform 0"
         )?,
         vulkan::Buffer::new_mapped(
             allocator,
             size,
             vk::BufferUsageFlags::UNIFORM_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+            "uniform 1"
         )?,
     ])
 }
@@ -567,6 +570,7 @@ pub fn create_storage_image_pair<'a>(
     usage: vk::ImageUsageFlags,
     size: PhysicalSize<u32>,
     destination_stage: vk::PipelineStageFlags,
+    name: &'static str,
 ) -> Result<[vulkan::Image<'a>; 2]> {
     let width = std::cmp::min(size.width, get_max_image_size(instance, physical_device));
     let height = std::cmp::min(size.height, get_max_image_size(instance, physical_device));
@@ -575,6 +579,7 @@ pub fn create_storage_image_pair<'a>(
 
     for i in 0..2 {
         images.push(vulkan::Image::new(
+            format!("{name} {i}"),
             device,
             allocator,
             vk_mem::MemoryUsage::AutoPreferDevice,

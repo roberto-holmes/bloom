@@ -3,24 +3,17 @@ __import structs;
 __import quaternion;
 __import constants;
 
-// [[vk::binding(0)]]
-// RaytracingAccelerationStructure tlas;
-// [[vk::binding(1)]]
-// RWTexture2D<float4> read_image;
-// [[vk::binding(2)]]
-// RWTexture2D<float4> write_image;
-// [[vk::binding(3)]]
-// ConstantBuffer<UBO> ubo;
-
 [[vk::push_constant]]
 ConstantBuffer<RayPushConstants> pc;
+
 // (Binding, Set)
 [[vk::binding(0, 0)]]
-RWTexture2D<float4> images[];
-// RWTexture2D<float4> image;
+RaytracingAccelerationStructure tlas;
 [[vk::binding(0, 1)]]
+RWTexture2D<float4> images[];
+[[vk::binding(0, 2)]]
 RWTexture2D<float4> ocean;
-// [[vk::binding(2, 0)]]
+// [[vk::binding(0, 3)]]
 // RWTexture2D<float4> textures[];
 
 [shader("raygeneration")]
@@ -35,11 +28,11 @@ void main() {
 		return;
 	}
 
-	if (all(LaunchID.xy == uint2(10, 10)) && pc.ubo.ray_frame_num < 10) {
+	// if (all(LaunchID.xy == uint2(10, 10)) && pc.ubo.ray_frame_num < 10) {
 	// if (all(LaunchID.xy == uint2(10, 10))) {
-		// printf("%u\n", LaunchID.x);
-		// printf("%u | TLAS: %lu | %lu\n", pc.ubo.ray_frame_num, (uint64_t)pc.tlas, (*(uint64_t*)pc.tlas));
-	}
+	// printf("%u\n", LaunchID.x);
+	// printf("%u | TLAS: %lu | %lu\n", pc.ubo.ray_frame_num, (uint64_t)pc.tlas, (*(uint64_t*)pc.tlas));
+	// }
 
 	const float aspect_ratio = float(pc.ubo.width) / float(pc.ubo.height);
 
@@ -83,7 +76,7 @@ void main() {
 		rayDesc.TMax = 10000.0;
 
 		//! There is likely an issue with pc.tlas; this line causes the shader to crash
-		// TraceRay(*pc.tlas, RAY_FLAG_FORCE_OPAQUE, 0xff, 0, 0, 0, rayDesc, payload);
+		TraceRay(tlas, RAY_FLAG_FORCE_OPAQUE, 0xff, 0, 0, 0, rayDesc, payload);
 		throughput *= payload.attenuation;
 
 		if (payload.is_light) {
@@ -116,11 +109,10 @@ void main() {
 	// 	write_image[int2(LaunchID.xy)] = float4(normal, 1.0);
 	// }
 
-
 	// sample += float3(0.1, 0.4, 1.0);
 
-	// images[pc.frame_index][int2(LaunchID.xy)] = float4(sample, 0.0);
-	images[pc.frame_index][int2(LaunchID.xy)] = float4(0.1, 0.4, 1.0, 1.0); // Light Blue
+	images[pc.frame_index][int2(LaunchID.xy)] = float4(sample, 0.0);
+	// images[pc.frame_index][int2(LaunchID.xy)] = float4(0.1, 0.4, 1.0, 1.0); // Light Blue
 	// images[pc.frame_index][int2(LaunchID.xy)] = float4(1.0, 0.1, 1.0, 1.0); // Almost Magenta
 	// images[pc.frame_index][int2(LaunchID.xy)] = float4(0.1, 0.4, 1.0, 1.0);
 	// write_image[int2(LaunchID.xy)] = ocean[int2(0, 0)];

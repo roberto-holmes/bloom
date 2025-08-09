@@ -317,6 +317,7 @@ impl Objectionable for Model {
             self.vertices.as_ptr(),
             self.vertices.len(),
             self.vertices.len(),
+            "model vertex",
         )?);
         self.index_buffer = Some(vulkan::Buffer::new_populated_staged(
             device,
@@ -329,6 +330,7 @@ impl Objectionable for Model {
             self.indices.as_ptr(),
             self.indices.len(),
             self.indices.len(),
+            "model index",
         )?);
         self.mat_index_buffer = Some(vulkan::Buffer::new_populated_staged(
             device,
@@ -339,6 +341,7 @@ impl Objectionable for Model {
             self.material_indices.as_ptr(),
             self.material_indices.len(),
             self.material_indices.len(),
+            "model material index",
         )?);
 
         self.primitive_data = Some(MeshData {
@@ -369,6 +372,7 @@ impl Objectionable for Model {
             self.primitive_data.as_ref().unwrap(),
             1,
             1,
+            "model",
         )?);
 
         Ok(())

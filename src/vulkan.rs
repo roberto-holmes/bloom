@@ -154,7 +154,7 @@ pub struct Buffer {
     populated_size: vk::DeviceSize,
     total_size: vk::DeviceSize,
     type_name: &'static str,
-    name: Option<&'static str>,
+    name: &'static str,
 }
 
 impl Buffer {
@@ -164,6 +164,7 @@ impl Buffer {
         allocator: &vk_mem::Allocator,
         size: vk::DeviceSize,
         usage: vk::BufferUsageFlags,
+        name: &'static str,
     ) -> Result<Self> {
         Self::new_generic(
             allocator,
@@ -171,6 +172,7 @@ impl Buffer {
             vk_mem::MemoryUsage::AutoPreferHost,
             vk_mem::AllocationCreateFlags::empty(),
             usage,
+            name,
         )
     }
     #[allow(unused)]
@@ -179,6 +181,7 @@ impl Buffer {
         allocator: &vk_mem::Allocator,
         size: vk::DeviceSize,
         usage: vk::BufferUsageFlags,
+        name: &'static str,
     ) -> Result<Self> {
         Self::new_generic(
             allocator,
@@ -186,6 +189,7 @@ impl Buffer {
             vk_mem::MemoryUsage::AutoPreferDevice,
             vk_mem::AllocationCreateFlags::empty(),
             usage,
+            name,
         )
     }
     #[allow(unused)]
@@ -194,6 +198,7 @@ impl Buffer {
         allocator: &vk_mem::Allocator,
         size: vk::DeviceSize,
         usage: vk::BufferUsageFlags,
+        name: &'static str,
     ) -> Result<Self> {
         Self::new_generic(
             allocator,
@@ -201,6 +206,7 @@ impl Buffer {
             vk_mem::MemoryUsage::Auto,
             vk_mem::AllocationCreateFlags::empty(),
             usage,
+            name,
         )
     }
     #[track_caller]
@@ -208,6 +214,7 @@ impl Buffer {
         allocator: &vk_mem::Allocator,
         size: vk::DeviceSize,
         usage: vk::BufferUsageFlags,
+        name: &'static str,
     ) -> Result<Self> {
         let new_buffer = Self::new_generic(
             allocator,
@@ -216,6 +223,7 @@ impl Buffer {
             vk_mem::AllocationCreateFlags::MAPPED
                 | vk_mem::AllocationCreateFlags::HOST_ACCESS_SEQUENTIAL_WRITE,
             usage,
+            name,
         )?;
         Ok(new_buffer)
     }
@@ -226,6 +234,7 @@ impl Buffer {
         location: vk_mem::MemoryUsage,
         flags: vk_mem::AllocationCreateFlags,
         usage: vk::BufferUsageFlags,
+        name: &'static str,
     ) -> Result<Self> {
         // log::trace!("Creating VMA allocated buffer");
         if size == 0 {
@@ -251,7 +260,7 @@ impl Buffer {
             total_size: size,
             allocation_info,
             type_name: "generic",
-            name: None,
+            name,
         })
     }
     #[track_caller]
@@ -289,7 +298,7 @@ impl Buffer {
             total_size: size,
             allocation_info,
             type_name: "aligned",
-            name: Some(name),
+            name: name,
         })
     }
     #[track_caller]
@@ -298,6 +307,7 @@ impl Buffer {
         usage: vk::BufferUsageFlags,
         data: *const T,
         data_len: usize,
+        name: &'static str,
     ) -> Result<Self> {
         let mut buffer = Self::new_generic(
             allocator,
@@ -305,6 +315,7 @@ impl Buffer {
             vk_mem::MemoryUsage::Auto,
             vk_mem::AllocationCreateFlags::HOST_ACCESS_SEQUENTIAL_WRITE,
             usage,
+            name,
         )?;
         buffer.type_name = std::any::type_name::<T>();
         buffer.populate(data, data_len)?;
@@ -321,6 +332,7 @@ impl Buffer {
         data: *const T,
         data_len: usize,
         reserved_len: usize,
+        name: &'static str,
     ) -> Result<Self> {
         let size = (size_of::<T>() * data_len) as u64;
         let mut reserved_size = (size_of::<T>() * reserved_len) as u64;
@@ -331,11 +343,13 @@ impl Buffer {
             vk::BufferUsageFlags::TRANSFER_SRC,
             data,
             data_len,
+            name,
         )?;
         let mut buffer = Self::new_gpu(
             allocator,
             reserved_size,
             usage | vk::BufferUsageFlags::TRANSFER_DST,
+            name,
         )?;
 
         core::copy_buffer(
@@ -409,6 +423,7 @@ impl Buffer {
             vk::BufferUsageFlags::TRANSFER_SRC,
             data,
             data_len,
+            "staging",
         )?;
 
         let command_buffer = core::begin_single_time_commands(device, command_pool)?;
@@ -480,6 +495,7 @@ impl Buffer {
             vk::BufferUsageFlags::TRANSFER_SRC,
             data,
             data_len,
+            "staging",
         )?;
 
         let command_buffer = core::begin_single_time_commands(device, command_pool)?;
@@ -518,6 +534,7 @@ impl Buffer {
             vk::BufferUsageFlags::TRANSFER_SRC,
             data,
             data_len,
+            "staging",
         )?;
 
         let command_buffer = core::begin_single_time_commands(device, command_pool)?;
@@ -592,14 +609,12 @@ impl Buffer {
 impl Drop for Buffer {
     #[track_caller]
     fn drop(&mut self) {
-        match self.name {
-            Some(n) => log::trace!(
-                "Destroying {} buffer [{}]",
-                n.cyan(),
-                self.type_name.green()
-            ),
-            None => log::trace!("Destroying {} buffer", self.type_name.green()),
-        }
+        log::trace!(
+            "Destroying {} buffer [{}]",
+            self.name.cyan(),
+            self.type_name.green()
+        );
+
         unsafe {
             vk_mem::ffi::vmaDestroyBuffer(self.allocator, self.buffer, self.allocation.0);
         }
@@ -625,10 +640,13 @@ pub struct Image<'a> {
     allocator_pool: vk_mem::AllocatorPool,
     create_view: vk::PFN_vkCreateImageView,
     destroy_view: vk::PFN_vkDestroyImageView,
+
+    name: String,
 }
 
 impl<'a> Image<'a> {
     pub fn new(
+        name: String,
         device: &ash::Device,
         allocator: &Arc<vk_mem::Allocator>,
         location: vk_mem::MemoryUsage,
@@ -698,6 +716,7 @@ impl<'a> Image<'a> {
                 allocator: Arc::clone(allocator),
                 pool: allocator.pool(),
             },
+            name,
         })
     }
     // pub fn new_populated<T>(
@@ -880,7 +899,7 @@ impl<'a> Image<'a> {
         width == self.width && height == self.height
     }
     unsafe fn clean(&mut self) {
-        log::trace!("Destroying VMA allocated buffer");
+        log::trace!("Destroying {} image", self.name.cyan());
         self.view = None;
         if self.image.is_some() {
             vk_mem::ffi::vmaDestroyImage(

@@ -101,6 +101,7 @@ impl Objectionable for Lentil {
             vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
             &self.data,
             1,
+            "lentil",
         )?);
         Ok(())
     }

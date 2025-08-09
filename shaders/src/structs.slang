@@ -129,9 +129,8 @@ public struct UBO {
 }
 
 public struct RayPushConstants {
-	public RaytracingAccelerationStructure* tlas;  // Pointer to RaytracingAccelerationStructure
-	public UBO* ubo;							   // Pointer to UBO (should switch every time)
-	public uint64_t scene;						   // Pointer to array of Buffers
-	public uint64_t materials;					   // Pointer to array of Material
+	public UBO* ubo;			// Pointer to UBO (should switch every time)
+	public uint64_t scene;		// Pointer to array of Buffers
+	public uint64_t materials;	// Pointer to array of Material
 	public uint32_t frame_index;
 }

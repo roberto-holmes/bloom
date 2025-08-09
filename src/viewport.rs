@@ -285,6 +285,7 @@ impl<'a> Viewport<'a> {
             VERTICES.as_ptr(),
             VERTICES.len(),
             VERTICES.len(),
+            "Vertex",
         )?;
 
         let index_buffer = vulkan::Buffer::new_populated_staged(
@@ -296,6 +297,7 @@ impl<'a> Viewport<'a> {
             INDICES.as_ptr(),
             INDICES.len(),
             INDICES.len(),
+            "Index",
         )?;
 
         let commands =
@@ -347,6 +349,7 @@ impl<'a> Viewport<'a> {
             vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::TRANSFER_DST,
             size,
             vk::PipelineStageFlags::FRAGMENT_SHADER,
+            "Viewport Input",
         )?);
         // Record new commands
         self.descriptor_sets = Some(create_descriptor_sets(
@@ -1031,7 +1034,6 @@ pub fn create_descriptor_sets(
 
     // TODO: Target 4 descriptors (apparently this is the guaranteed supported amount and more can be slow)
     for (i, &descriptor_set) in descriptor_sets.iter().enumerate() {
-        // TODO: Consider removing viewport's access to the UBO
         let buffer_info = [vk::DescriptorBufferInfo::default()
             .buffer(uniforms_buffers[i])
             .offset(0)

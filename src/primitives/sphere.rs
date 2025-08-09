@@ -72,6 +72,7 @@ impl Objectionable for Sphere {
             vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
             &self.data,
             1,
+            "sphere",
         )?);
         Ok(())
     }
