@@ -49,11 +49,7 @@ impl Bloomable for Demo {
         let _ = w.spawn((Instance {
             primitive: cube,
             base_transform: Matrix4::<f32>::identity(),
-            initial_transform: Matrix4::<f32>::from_translation(cgmath::Vector3 {
-                x: 0.0,
-                y: 0.0,
-                z: 0.0,
-            }),
+            initial_transform: Matrix4::<f32>::identity(),
         },));
 
         let camera = w.spawn((

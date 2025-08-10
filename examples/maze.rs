@@ -155,15 +155,12 @@ impl Bloomable for Demo {
                 )) * Matrix4::from_angle_y(cgmath::Rad(
                     -0.23 - std::f32::consts::FRAC_PI_2,
                 )) * Matrix4::from_scale(1.0 / 100.0),
+                initial_transform: Matrix4::<f32>::from_translation(cgmath::Vector3 {
+                    x: -(MAZE_WIDTH as f32 / 2.0 - 0.5) * MAZE_SCALE,
+                    y: 0.0,
+                    z: -(MAZE_HEIGHT as f32 / 2.0 - 0.5) * MAZE_SCALE,
+                }),
             },
-            Orientation::new(
-                Vec3::new(
-                    -(MAZE_WIDTH as f32 / 2.0 - 0.5) * MAZE_SCALE,
-                    0.0,
-                    -(MAZE_HEIGHT as f32 / 2.0 - 0.5) * MAZE_SCALE,
-                ),
-                Quaternion::identity(),
-            ),
             duck_collider,
             true,
         ));
@@ -174,20 +171,15 @@ impl Bloomable for Demo {
             &buffers,
             goal_colour,
         )),));
-        self.goal = Arc::new(RwLock::new(Some(w.spawn((
-            Instance {
-                primitive: g,
-                base_transform: Matrix4::<f32>::from_scale(1.0 / 100.0),
-            },
-            Orientation::new(
-                Vec3::new(
-                    (MAZE_WIDTH as f32 / 2.0 - 0.5) * MAZE_SCALE,
-                    0.0,
-                    (MAZE_HEIGHT as f32 / 2.0 - 0.5) * MAZE_SCALE,
-                ),
-                Quaternion::identity(),
-            ),
-        )))));
+        self.goal = Arc::new(RwLock::new(Some(w.spawn((Instance {
+            primitive: g,
+            base_transform: Matrix4::<f32>::from_scale(1.0 / 100.0),
+            initial_transform: Matrix4::<f32>::from_translation(cgmath::Vector3 {
+                x: (MAZE_WIDTH as f32 / 2.0 - 0.5) * MAZE_SCALE,
+                y: 0.0,
+                z: (MAZE_HEIGHT as f32 / 2.0 - 0.5) * MAZE_SCALE,
+            }),
+        },)))));
 
         // Create a camera
         let camera = w.spawn((
@@ -223,17 +215,19 @@ impl Bloomable for Demo {
         let west = maze_generator::prelude::Direction::West;
 
         // Create the floor
-        let _ = w.spawn((
-            Instance {
-                primitive: plane,
-                base_transform: Matrix4::from_nonuniform_scale(
-                    MAZE_WIDTH as f32 * MAZE_SCALE / 2.0,
-                    1.0,
-                    MAZE_HEIGHT as f32 * MAZE_SCALE / 2.0,
-                ),
-            },
-            Orientation::new(Vec3::new(0.0, -1.0, 0.0), Quaternion::identity()),
-        ));
+        let _ = w.spawn((Instance {
+            primitive: plane,
+            base_transform: Matrix4::from_nonuniform_scale(
+                MAZE_WIDTH as f32 * MAZE_SCALE / 2.0,
+                1.0,
+                MAZE_HEIGHT as f32 * MAZE_SCALE / 2.0,
+            ),
+            initial_transform: Matrix4::<f32>::from_translation(cgmath::Vector3 {
+                x: 0.0,
+                y: -1.0,
+                z: 0.0,
+            }),
+        },));
 
         log::debug!("Creating maze:\n{:?}", maze);
 
@@ -260,11 +254,12 @@ impl Bloomable for Demo {
                             base_transform: Matrix4::from_nonuniform_scale(
                                 MAZE_SCALE, MAZE_SCALE, 0.1,
                             ),
+                            initial_transform: Matrix4::<f32>::from_translation(cgmath::Vector3 {
+                                x,
+                                y: 0.0,
+                                z: z - MAZE_SCALE / 2.0,
+                            }),
                         },
-                        Orientation::new(
-                            Vec3::new(x, 0.0, z - MAZE_SCALE / 2.0),
-                            Quaternion::identity(),
-                        ),
                         mirror_collider,
                     ));
                 }
@@ -275,11 +270,12 @@ impl Bloomable for Demo {
                             base_transform: Matrix4::from_nonuniform_scale(
                                 MAZE_SCALE, MAZE_SCALE, 0.1,
                             ),
+                            initial_transform: Matrix4::<f32>::from_translation(cgmath::Vector3 {
+                                x,
+                                y: 0.0,
+                                z: z + MAZE_SCALE / 2.0,
+                            }),
                         },
-                        Orientation::new(
-                            Vec3::new(x, 0.0, z + MAZE_SCALE / 2.0),
-                            Quaternion::identity(),
-                        ),
                         mirror_collider,
                     ));
                 }
@@ -290,6 +286,11 @@ impl Bloomable for Demo {
                             base_transform: Matrix4::from_nonuniform_scale(
                                 0.1, MAZE_SCALE, MAZE_SCALE,
                             ),
+                            initial_transform: Matrix4::<f32>::from_translation(cgmath::Vector3 {
+                                x: x + MAZE_SCALE / 2.0,
+                                y: 0.0,
+                                z,
+                            }),
                         },
                         Orientation::new(
                             Vec3::new(x + MAZE_SCALE / 2.0, 0.0, z),
@@ -305,11 +306,12 @@ impl Bloomable for Demo {
                             base_transform: Matrix4::from_nonuniform_scale(
                                 0.1, MAZE_SCALE, MAZE_SCALE,
                             ),
+                            initial_transform: Matrix4::<f32>::from_translation(cgmath::Vector3 {
+                                x: x - MAZE_SCALE / 2.0,
+                                y: 0.0,
+                                z,
+                            }),
                         },
-                        Orientation::new(
-                            Vec3::new(x - MAZE_SCALE / 2.0, 0.0, z),
-                            Quaternion::identity(),
-                        ),
                         mirror_collider,
                     ));
                 }
