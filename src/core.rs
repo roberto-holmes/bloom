@@ -336,6 +336,16 @@ fn is_physical_device_suitable(
 
     let supported_features = unsafe { instance.get_physical_device_features(physical_device) };
 
+    let mut format_properties = vk::FormatProperties2::default();
+    unsafe {
+        instance.get_physical_device_format_properties2(
+            physical_device,
+            vk::Format::R8G8B8A8_SRGB,
+            &mut format_properties,
+        )
+    };
+
+    // TODO: This probably needs reworking to be more transparent about what has failed when the target doesn't support something
     Ok(indices.is_complete()
         && extensions_supported
         && is_swap_chain_adequate
@@ -349,11 +359,15 @@ fn is_physical_device_suitable(
         && features13.dynamic_rendering == vk::TRUE
         && features13.synchronization2 == vk::TRUE
         && features_rt.ray_tracing_pipeline == vk::TRUE
-        && features_as.acceleration_structure == vk::TRUE 
+        && features_as.acceleration_structure == vk::TRUE
         && features_bda.buffer_device_address == vk::TRUE
         && features_db.descriptor_buffer == vk::TRUE
         && features_di.descriptor_binding_variable_descriptor_count == vk::TRUE
-        && features_di.descriptor_binding_update_unused_while_pending == vk::TRUE)
+        && features_di.descriptor_binding_update_unused_while_pending == vk::TRUE
+        && format_properties
+            .format_properties
+            .optimal_tiling_features
+            .contains(vk::FormatFeatureFlags::SAMPLED_IMAGE_FILTER_LINEAR))
 }
 
 pub fn get_max_image_size(instance: &ash::Instance, physical_device: vk::PhysicalDevice) -> u32 {
@@ -522,13 +536,13 @@ pub fn create_uniform_buffer<T>(allocator: &vk_mem::Allocator) -> Result<[vulkan
             allocator,
             size,
             vk::BufferUsageFlags::UNIFORM_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-            "uniform 0"
+            "uniform 0",
         )?,
         vulkan::Buffer::new_mapped(
             allocator,
             size,
             vk::BufferUsageFlags::UNIFORM_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-            "uniform 1"
+            "uniform 1",
         )?,
     ])
 }
@@ -562,6 +576,7 @@ pub fn create_command_buffers(
 
 pub fn create_storage_image_pair<'a>(
     device: &ash::Device,
+    device_properties: vk::PhysicalDeviceProperties2<'a>,
     instance: &ash::Instance,
     allocator: &Arc<vk_mem::Allocator>,
     physical_device: vk::PhysicalDevice,
@@ -581,6 +596,7 @@ pub fn create_storage_image_pair<'a>(
         images.push(vulkan::Image::new(
             format!("{name} {i}"),
             device,
+            device_properties,
             allocator,
             vk_mem::MemoryUsage::AutoPreferDevice,
             vk_mem::AllocationCreateFlags::empty(),
@@ -588,6 +604,7 @@ pub fn create_storage_image_pair<'a>(
             height,
             vk::Format::R32G32B32A32_SFLOAT,
             vk::ImageTiling::OPTIMAL,
+            1,
             usage,
             vk::ImageAspectFlags::COLOR,
         )?);
@@ -894,7 +911,7 @@ pub fn create_bindless_descriptor_set_layout(
 
     // We are going to be creating a descriptor with a constant size known at compile time that will always be filled
     let flags = [
-        // vk::DescriptorBindingFlagsEXT::VARIABLE_DESCRIPTOR_COUNT| // Use a variable amount of descriptors in an array. (runtime sized descriptor arrays where the descriptorCount in the descriptor set layout now just expresses an upper bound.)
+        vk::DescriptorBindingFlagsEXT::VARIABLE_DESCRIPTOR_COUNT| // Use a variable amount of descriptors in an array. (runtime sized descriptor arrays where the descriptorCount in the descriptor set layout now just expresses an upper bound.)
         // vk::DescriptorBindingFlagsEXT::PARTIALLY_BOUND // Partially bound means that we don't have to bind every descriptor. This is critical if we want to make use of descriptor "streaming". A descriptor only has to be bound if it is actually used by a shader.
         // vk::DescriptorBindingFlagsEXT::UPDATE_AFTER_BIND // Allows us to update descriptors after a descriptor set has been bound to a command buffer
         vk::DescriptorBindingFlagsEXT::UPDATE_UNUSED_WHILE_PENDING, //  Allows us to update a descriptor while a command buffer is executing as long as the GPU is not accessing the data

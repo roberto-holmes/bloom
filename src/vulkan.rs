@@ -626,10 +626,13 @@ unsafe impl Sync for Buffer {}
 
 pub struct Image<'a> {
     device: vk::Device,
+    device_properties: vk::PhysicalDeviceProperties2<'a>,
+    allocation: vk_mem::Allocation,
+
     image: Option<vk::Image>,
     view: Option<Destructor<vk::ImageView>>,
-    allocation: vk_mem::Allocation,
-    // allocation: vk_mem::ffi::VmaAllocationWrapper,
+    sampler: Option<vk::Sampler>,
+
     alloc_create_info: vk_mem::AllocationCreateInfo,
     image_create_info: vk::ImageCreateInfo<'a>,
     view_create_info: vk::ImageViewCreateInfo<'a>,
@@ -638,6 +641,8 @@ pub struct Image<'a> {
     pub height: u32,
 
     allocator_pool: vk_mem::AllocatorPool,
+    create_sampler: vk::PFN_vkCreateSampler,
+    destroy_sampler: vk::PFN_vkDestroySampler,
     create_view: vk::PFN_vkCreateImageView,
     destroy_view: vk::PFN_vkDestroyImageView,
 
@@ -648,6 +653,7 @@ impl<'a> Image<'a> {
     pub fn new(
         name: String,
         device: &ash::Device,
+        device_properties: vk::PhysicalDeviceProperties2<'a>,
         allocator: &Arc<vk_mem::Allocator>,
         location: vk_mem::MemoryUsage,
         flags: vk_mem::AllocationCreateFlags,
@@ -655,6 +661,7 @@ impl<'a> Image<'a> {
         height: u32,
         format: vk::Format,
         tiling: vk::ImageTiling,
+        mip_levels: u32,
         usage: vk::ImageUsageFlags,
         aspect_flags: vk::ImageAspectFlags,
     ) -> Result<Self> {
@@ -670,7 +677,7 @@ impl<'a> Image<'a> {
                 height,
                 depth: 1,
             },
-            mip_levels: 1,
+            mip_levels,
             array_layers: 1,
             format,
             tiling,
@@ -696,19 +703,24 @@ impl<'a> Image<'a> {
 
         Ok(Self {
             device: device.handle(),
-            // allocator: vk_mem::ffi::VmaAllocatorWrapper(allocator.internal),
+            device_properties,
+
             image: Some(image),
             view: Some(Destructor::new(
                 device,
                 unsafe { device.create_image_view(&view_create_info, None)? },
                 device.fp_v1_0().destroy_image_view,
             )),
+            sampler: None,
+
             allocation: allocation,
             alloc_create_info,
             image_create_info,
             view_create_info,
             create_view: device.fp_v1_0().create_image_view,
             destroy_view: device.fp_v1_0().destroy_image_view,
+            create_sampler: device.fp_v1_0().create_sampler,
+            destroy_sampler: device.fp_v1_0().destroy_sampler,
 
             width,
             height,
@@ -719,115 +731,121 @@ impl<'a> Image<'a> {
             name,
         })
     }
-    // pub fn new_populated<T>(
-    //     device: &ash::Device,
-    //     allocator: &Arc<vk_mem::Allocator>,
-    //     command_pool: vk::CommandPool,
-    //     queue: vk::Queue,
-    //     location: vk_mem::MemoryUsage,
-    //     flags: vk_mem::AllocationCreateFlags,
-    //     data: *const T,
-    //     width: u32,
-    //     height: u32,
-    //     format: vk::Format,
-    // ) -> Result<Self> {
-    //     let image = Self::new(
-    //         device,
-    //         allocator,
-    //         location,
-    //         flags,
-    //         width,
-    //         height,
-    //         format,
-    //         vk::ImageTiling::OPTIMAL,
-    //         vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_DST,
-    //         vk::ImageAspectFlags::COLOR,
-    //     )?;
+    pub fn new_populated<T>(
+        name: String,
+        device: &ash::Device,
+        allocator: &Arc<vk_mem::Allocator>,
+        device_properties: vk::PhysicalDeviceProperties2<'a>,
+        command_pool: vk::CommandPool,
+        queue: vk::Queue,
+        data: *const T,
+        size: u64,
+        width: u32,
+        height: u32,
+        mip_levels: u32,
+        format: vk::Format,
+    ) -> Result<Self> {
+        let image = Self::new(
+            name,
+            device,
+            device_properties,
+            allocator,
+            vk_mem::MemoryUsage::AutoPreferDevice,
+            vk_mem::AllocationCreateFlags::empty(),
+            width,
+            height,
+            format,
+            vk::ImageTiling::OPTIMAL,
+            mip_levels,
+            vk::ImageUsageFlags::SAMPLED
+                | vk::ImageUsageFlags::TRANSFER_DST
+                | vk::ImageUsageFlags::TRANSFER_SRC,
+            vk::ImageAspectFlags::COLOR,
+        )?;
 
-    //     let size = (width * height) as u64;
+        // Use a staging buffer so that we don't need the image to be able to map to CPU memory
+        let mut staging_buffer = Buffer::new_mapped(
+            allocator,
+            size * size_of::<T>() as u64,
+            vk::BufferUsageFlags::TRANSFER_SRC,
+            "image staging",
+        )?;
+        staging_buffer.populate_mapped(data, size as usize)?;
 
-    //     // Use a staging buffer so that we don't need the image to be able to map to CPU memory
-    //     let mut staging_buffer = Buffer::new_mapped(
-    //         allocator,
-    //         size * size_of::<T>() as u64,
-    //         vk::BufferUsageFlags::TRANSFER_SRC,
-    //     )?;
-    //     staging_buffer.populate_mapped(data, size as usize)?;
+        // Copy image data into the image proper
+        let command_buffer = core::begin_single_time_commands(device, command_pool)?;
 
-    //     // Copy image data into the image proper
-    //     let command_buffer = core::begin_single_time_commands(device, command_pool)?;
+        // Convert image layout to be able to copy into it
+        let barriers = [vk::ImageMemoryBarrier2::default()
+            .old_layout(vk::ImageLayout::UNDEFINED)
+            .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .image(image.get())
+            .subresource_range(vk::ImageSubresourceRange {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                base_mip_level: 0,
+                level_count: mip_levels,
+                base_array_layer: 0,
+                layer_count: 1,
+            })
+            .src_stage_mask(vk::PipelineStageFlags2::NONE)
+            .dst_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+            .src_access_mask(vk::AccessFlags2::NONE)
+            .dst_access_mask(vk::AccessFlags2::TRANSFER_WRITE)];
 
-    //     // Convert image layout to be able to copy into it
-    //     let barriers = [vk::ImageMemoryBarrier2::default()
-    //         .old_layout(vk::ImageLayout::UNDEFINED)
-    //         .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-    //         .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-    //         .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-    //         .image(image.get())
-    //         .subresource_range(vk::ImageSubresourceRange {
-    //             aspect_mask: vk::ImageAspectFlags::COLOR,
-    //             base_mip_level: 0,
-    //             level_count: 1,
-    //             base_array_layer: 0,
-    //             layer_count: 1,
-    //         })
-    //         .src_stage_mask(vk::PipelineStageFlags2::NONE)
-    //         .dst_stage_mask(vk::PipelineStageFlags2::TRANSFER)
-    //         .src_access_mask(vk::AccessFlags2::NONE)
-    //         .dst_access_mask(vk::AccessFlags2::TRANSFER_WRITE)];
+        let dependency = vk::DependencyInfo::default().image_memory_barriers(&barriers);
+        unsafe { device.cmd_pipeline_barrier2(command_buffer, &dependency) };
 
-    //     let dependency = vk::DependencyInfo::default().image_memory_barriers(&barriers);
-    //     unsafe { device.cmd_pipeline_barrier2(command_buffer, &dependency) };
+        unsafe {
+            let copy_region = [vk::BufferImageCopy {
+                image_extent: vk::Extent3D {
+                    width,
+                    height,
+                    depth: 1,
+                },
+                image_subresource: vk::ImageSubresourceLayers {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    layer_count: 1,
+                    ..Default::default()
+                },
+                ..Default::default()
+            }];
+            device.cmd_copy_buffer_to_image(
+                command_buffer,
+                staging_buffer.get(),
+                image.image.unwrap(),
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                &copy_region,
+            );
+        }
 
-    //     unsafe {
-    //         let copy_region = [vk::BufferImageCopy {
-    //             image_extent: vk::Extent3D {
-    //                 width,
-    //                 height,
-    //                 depth: 1,
-    //             },
-    //             image_subresource: vk::ImageSubresourceLayers {
-    //                 aspect_mask: vk::ImageAspectFlags::COLOR,
-    //                 layer_count: 1,
-    //                 ..Default::default()
-    //             },
-    //             ..Default::default()
-    //         }];
-    //         device.cmd_copy_buffer_to_image(
-    //             command_buffer,
-    //             staging_buffer.get(),
-    //             image.image.unwrap(),
-    //             vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-    //             &copy_region,
-    //         );
-    //     }
+        // Convert image layout to be readable by the shaders
+        // let barriers = [vk::ImageMemoryBarrier2::default()
+        //     .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+        //     .new_layout(vk::ImageLayout::READ_ONLY_OPTIMAL)
+        //     .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        //     .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        //     .image(image.get())
+        //     .subresource_range(vk::ImageSubresourceRange {
+        //         aspect_mask: vk::ImageAspectFlags::COLOR,
+        //         base_mip_level: 0,
+        //         level_count: 1,
+        //         base_array_layer: 0,
+        //         layer_count: 1,
+        //     })
+        //     .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+        //     .dst_stage_mask(vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR)
+        //     .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
+        //     .dst_access_mask(vk::AccessFlags2::SHADER_READ)];
 
-    //     // Convert image layout to be readable by the shaders
-    //     let barriers = [vk::ImageMemoryBarrier2::default()
-    //         .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-    //         .new_layout(vk::ImageLayout::READ_ONLY_OPTIMAL)
-    //         .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-    //         .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-    //         .image(image.get())
-    //         .subresource_range(vk::ImageSubresourceRange {
-    //             aspect_mask: vk::ImageAspectFlags::COLOR,
-    //             base_mip_level: 0,
-    //             level_count: 1,
-    //             base_array_layer: 0,
-    //             layer_count: 1,
-    //         })
-    //         .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
-    //         .dst_stage_mask(vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR)
-    //         .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
-    //         .dst_access_mask(vk::AccessFlags2::SHADER_READ)];
+        // let dependency = vk::DependencyInfo::default().image_memory_barriers(&barriers);
+        // unsafe { device.cmd_pipeline_barrier2(command_buffer, &dependency) };
 
-    //     let dependency = vk::DependencyInfo::default().image_memory_barriers(&barriers);
-    //     unsafe { device.cmd_pipeline_barrier2(command_buffer, &dependency) };
+        core::end_single_time_command(device, command_pool, queue, command_buffer)?;
 
-    //     core::end_single_time_command(device, command_pool, queue, command_buffer)?;
-
-    //     Ok(image)
-    // }
+        Ok(image)
+    }
     fn create_image(&mut self) -> Result<()> {
         unsafe {
             let mut create_info: vk_mem::ffi::VmaAllocationCreateInfo =
@@ -873,6 +891,42 @@ impl<'a> Image<'a> {
         ));
         Ok(())
     }
+    pub fn create_sampler(&mut self, mip_levels: u32) -> Result<()> {
+        let create_info = vk::SamplerCreateInfo {
+            mag_filter: vk::Filter::LINEAR, // Linear interpolation if we need to oversample the image (magnifying)
+            min_filter: vk::Filter::LINEAR, // Linear interpolation if we are undersampling (minifying)
+            address_mode_u: vk::SamplerAddressMode::REPEAT, // Repeat the image if we sample past the edge
+            address_mode_v: vk::SamplerAddressMode::REPEAT,
+            address_mode_w: vk::SamplerAddressMode::REPEAT,
+            anisotropy_enable: vk::TRUE,
+            max_anisotropy: self
+                .device_properties
+                .properties
+                .limits
+                .max_sampler_anisotropy,
+            border_color: vk::BorderColor::INT_OPAQUE_BLACK, // Colour to use if we are clamping to border colour
+            unnormalized_coordinates: vk::FALSE, // false means use [0,1) coordinates instead of [0, width) and [0, height)
+            compare_enable: vk::FALSE,
+            compare_op: vk::CompareOp::ALWAYS,
+            mipmap_mode: vk::SamplerMipmapMode::LINEAR,
+            mip_lod_bias: 0.0,
+            min_lod: 0.0,
+            max_lod: mip_levels as f32,
+            ..Default::default()
+        };
+        // Copying the creation code used by ash under the hood when you call ash::device.create_sampler()
+        let mut sampler = std::mem::MaybeUninit::uninit();
+        self.sampler = Some(unsafe {
+            (self.create_sampler)(
+                self.device,
+                &create_info,
+                None.as_raw_ptr(),
+                sampler.as_mut_ptr(),
+            )
+            .assume_init_on_success(sampler)?
+        });
+        Ok(())
+    }
     pub fn resize(&mut self, width: u32, height: u32) -> Result<bool> {
         if self.is_correct_size(width, height) {
             return Ok(false);
@@ -889,6 +943,138 @@ impl<'a> Image<'a> {
         self.height = height;
         Ok(true)
     }
+
+    pub fn generate_mipmaps(
+        &self,
+        device: &ash::Device,
+        command_pool: vk::CommandPool,
+        queue: vk::Queue,
+        mip_levels: u32,
+    ) -> Result<()> {
+        let command_buffer = core::begin_single_time_commands(device, command_pool).unwrap();
+        let mut barrier = vk::ImageMemoryBarrier::default()
+            .image(self.image.unwrap())
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .subresource_range(
+                vk::ImageSubresourceRange::default()
+                    .aspect_mask(vk::ImageAspectFlags::COLOR)
+                    .base_array_layer(0)
+                    .layer_count(1)
+                    .level_count(1),
+            );
+
+        let mut mip_width = self.width as i32;
+        let mut mip_height = self.height as i32;
+        for i in 1..mip_levels {
+            barrier = barrier
+                .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+                .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                .dst_access_mask(vk::AccessFlags::TRANSFER_READ);
+            barrier.subresource_range.base_mip_level = i - 1;
+
+            unsafe {
+                device.cmd_pipeline_barrier(
+                    command_buffer,
+                    vk::PipelineStageFlags::TRANSFER,
+                    vk::PipelineStageFlags::TRANSFER,
+                    vk::DependencyFlags::empty(),
+                    &[],
+                    &[],
+                    &[barrier.clone()],
+                )
+            };
+
+            let blit = [vk::ImageBlit::default()
+                .src_offsets([
+                    vk::Offset3D { x: 0, y: 0, z: 0 },
+                    vk::Offset3D {
+                        x: mip_width,
+                        y: mip_height,
+                        z: 1,
+                    },
+                ])
+                .src_subresource(vk::ImageSubresourceLayers {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    mip_level: i - 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                })
+                .dst_offsets([
+                    vk::Offset3D { x: 0, y: 0, z: 0 },
+                    vk::Offset3D {
+                        x: std::cmp::max(mip_width / 2, 1),
+                        y: std::cmp::max(mip_height / 2, 1),
+                        z: 1,
+                    },
+                ])
+                .dst_subresource(vk::ImageSubresourceLayers {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    mip_level: i,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                })];
+
+            unsafe {
+                device.cmd_blit_image(
+                    command_buffer,
+                    self.image.unwrap(),
+                    vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                    self.image.unwrap(),
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    &blit,
+                    vk::Filter::LINEAR,
+                )
+            };
+
+            barrier = barrier
+                .old_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+                .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .src_access_mask(vk::AccessFlags::TRANSFER_READ)
+                .dst_access_mask(vk::AccessFlags::SHADER_READ);
+
+            unsafe {
+                device.cmd_pipeline_barrier(
+                    command_buffer,
+                    vk::PipelineStageFlags::TRANSFER,
+                    vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
+                    vk::DependencyFlags::empty(),
+                    &[],
+                    &[],
+                    &[barrier.clone()],
+                )
+            };
+            mip_width = std::cmp::max(1, mip_width / 2);
+            mip_height = std::cmp::max(1, mip_height / 2);
+        }
+        // Transform the last mip level
+        barrier = barrier
+            .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+            .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+            .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+            .dst_access_mask(vk::AccessFlags::SHADER_READ);
+        barrier.subresource_range.base_mip_level = mip_levels - 1;
+
+        unsafe {
+            device.cmd_pipeline_barrier(
+                command_buffer,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[barrier],
+            )
+        };
+
+        core::end_single_time_command(device, command_pool, queue, command_buffer).unwrap(); // TODO: New errors
+        Ok(())
+    }
+
+    pub fn sampler(&self) -> Option<vk::Sampler> {
+        self.sampler
+    }
     pub fn view(&self) -> vk::ImageView {
         self.view.as_ref().unwrap().get()
     }
@@ -900,6 +1086,10 @@ impl<'a> Image<'a> {
     }
     unsafe fn clean(&mut self) {
         log::trace!("Destroying {} image", self.name.cyan());
+        if let Some(sampler) = self.sampler {
+            (self.destroy_sampler)(self.device, sampler, None.as_raw_ptr());
+            self.sampler = None;
+        }
         self.view = None;
         if self.image.is_some() {
             vk_mem::ffi::vmaDestroyImage(

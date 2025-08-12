@@ -80,6 +80,7 @@ pub struct Ocean<'a> {
 impl<'a> Ocean<'a> {
     pub fn new(
         device: &ash::Device,
+        device_properties: vk::PhysicalDeviceProperties2<'a>,
         allocator: &Arc<vk_mem::Allocator>,
         queue_family_indices: structures::QueueFamilyIndices,
     ) -> Result<Self> {
@@ -99,6 +100,7 @@ impl<'a> Ocean<'a> {
 
         let images = create_images(
             device,
+            device_properties,
             allocator,
             OCEAN_RESOLUTION,
             spectra_command_pool.get(),
@@ -357,6 +359,7 @@ impl<'a> Ocean<'a> {
 
 fn create_images<'a>(
     device: &ash::Device,
+    device_properties: vk::PhysicalDeviceProperties2<'a>,
     allocator: &Arc<vk_mem::Allocator>,
     size: u32,
     command_pool: vk::CommandPool,
@@ -364,10 +367,12 @@ fn create_images<'a>(
 ) -> Result<[Image<'a>; FFT_IMAGES * MAX_FRAMES_IN_FLIGHT]> {
     let command_buffer = begin_single_time_commands(device, command_pool)?;
     let images: [Image<'a>; FFT_IMAGES * MAX_FRAMES_IN_FLIGHT] = std::array::from_fn(|i| {
+        // TODO: Consider using a sampler to interpolate between pixels
         // Create the image in memory
         let image = Image::new(
             format!("Ocean {i}"),
             device,
+            device_properties,
             allocator,
             vk_mem::MemoryUsage::AutoPreferDevice,
             vk_mem::AllocationCreateFlags::empty(),
@@ -375,6 +380,7 @@ fn create_images<'a>(
             size,
             vk::Format::R32G32B32A32_SFLOAT,
             vk::ImageTiling::OPTIMAL,
+            1,
             vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::TRANSFER_SRC,
             vk::ImageAspectFlags::COLOR,
         )

@@ -17,7 +17,7 @@ pub(crate) struct MaterialData {
 
 pub struct Material {
     data: MaterialData,
-    texture_path: Option<PathBuf>,
+    pub(crate) texture_path: Option<PathBuf>,
 }
 
 impl Material {
@@ -64,6 +64,12 @@ impl Material {
         material.data.emissivity = 1.;
         material.data.emission_strength = emission_strength;
         material.data.emitted_colour = emitted_colour;
+        material
+    }
+    #[allow(unused)]
+    pub fn new_textured(path: PathBuf) -> Self {
+        let mut material = Material::default();
+        material.texture_path = Some(path);
         material
     }
     pub(crate) fn get_data(&self) -> MaterialData {

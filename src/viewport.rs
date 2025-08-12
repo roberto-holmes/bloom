@@ -225,6 +225,7 @@ struct Viewport<'a> {
     index_buffer: vulkan::Buffer,
     push_constants: PushConstants,
 
+    device_properties: vk::PhysicalDeviceProperties2<'a>,
     queue_family_indices: structures::QueueFamilyIndices,
     queue: vk::Queue,
     descriptor_set_layout: Destructor<vk::DescriptorSetLayout>,
@@ -259,6 +260,14 @@ impl<'a> Viewport<'a> {
         surface_stuff: structures::SurfaceStuff,
         uniform_buffers: [vk::Buffer; 2],
     ) -> Result<Self> {
+        let mut device_properties = vk::PhysicalDeviceProperties2::default();
+
+        {
+            unsafe {
+                instance.get_physical_device_properties2(physical_device, &mut device_properties)
+            };
+        }
+
         let queue = core::create_queue(&device, queue_family_indices.graphics_family.unwrap());
         let swapchain_stuff = SwapChainStuff::new(
             &instance,
@@ -310,6 +319,7 @@ impl<'a> Viewport<'a> {
             instance,
             allocator,
             physical_device,
+            device_properties,
             images: None,
             uniform_buffers,
             vertex_buffer,
@@ -341,6 +351,7 @@ impl<'a> Viewport<'a> {
         // Recreate output images
         self.images = Some(core::create_storage_image_pair(
             &self.device,
+            self.device_properties,
             &self.instance,
             &self.allocator,
             self.physical_device,

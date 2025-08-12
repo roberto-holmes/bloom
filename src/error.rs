@@ -6,7 +6,7 @@ pub type Result<T, E = Error> = core::result::Result<T, E>;
 
 #[derive(Debug)]
 pub enum Error {
-    // Recoverable,
+    Recoverable,
     Unrecoverable,
 }
 
@@ -17,6 +17,7 @@ impl Display for Error {
 }
 
 /// Guaranteed to return an Err
+#[track_caller]
 pub fn raise<S, T>(note: S, e: T) -> Result<()>
 where
     S: Display,
@@ -24,5 +25,16 @@ where
 {
     let s = format!("{note}: {}", e.to_string().red());
     log::error!("{s}");
+    Err(Error::Unrecoverable)
+}
+
+/// Raise an error that isn't rethrowing a lower level error
+/// Guaranteed to return an Err
+#[track_caller]
+pub fn raise_root_error<S>(note: S) -> Result<()>
+where
+    S: Display,
+{
+    log::error!("{note}");
     Err(Error::Unrecoverable)
 }

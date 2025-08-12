@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -45,6 +46,7 @@ impl Bloomable for Demo {
     fn init(&mut self, world: &Arc<RwLock<hecs::World>>) -> Result<()> {
         let mut w = world.write().unwrap();
         let green = w.spawn((Material::new_basic(Vec3::new(0.0, 1.0, 0.5), 0.0),));
+        let tex = w.spawn((Material::new_textured(PathBuf::from("textures/statue.jpg")),));
         let cube = w.spawn((Primitive::Model(Model::new_cube(green)?),));
         let _ = w.spawn((Instance {
             primitive: cube,
