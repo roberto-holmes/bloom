@@ -17,9 +17,9 @@ Vulkan app to demonstrate path traced lenses
 - Rayon?
 - [Text](https://youtu.be/SO83KQuuZvg)
 - [Ocean](https://youtu.be/yPfagLeUa7k)
-	- Buoyancy
-	- Texturing
-	- Layer multiple scales
+  - Buoyancy
+  - Texturing
+  - Layer multiple scales
 - [Audio](https://youtu.be/u6EuAUjq92k)
 - [Proper PBR](https://pbr-book.org/4ed/)
 - Support for curved displays
@@ -38,3 +38,5 @@ Vulkan app to demonstrate path traced lenses
 Models:
 
 - The COLLADA duck. One texture.<br>Credit:<br>&copy; 2006, Sony. [SCEA Shared Source License, Version 1.0](https://spdx.org/licenses/SCEA.html)<br>
+
+Skybox from https://freestylized.com

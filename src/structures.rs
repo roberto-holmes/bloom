@@ -1,3 +1,5 @@
+use std::path::{Path, PathBuf};
+
 use anyhow::{Context, Result};
 use ash::vk;
 
@@ -5,6 +7,29 @@ use crate::{
     vulkan::{self, Destructor},
     WINDOW_HEIGHT, WINDOW_WIDTH,
 };
+
+#[derive(Debug, Clone)]
+pub struct Cubemap<P: AsRef<Path>> {
+    pub px: P,
+    pub nx: P,
+    pub py: P,
+    pub ny: P,
+    pub pz: P,
+    pub nz: P,
+}
+
+impl Cubemap<PathBuf> {
+    pub fn get_ref(&self) -> Cubemap<&Path> {
+        Cubemap {
+            px: &self.px,
+            nx: &self.nx,
+            py: &self.py,
+            ny: &self.ny,
+            pz: &self.pz,
+            nz: &self.nz,
+        }
+    }
+}
 
 pub struct SurfaceStuff {
     pub surface_loader: ash::khr::surface::Instance,

@@ -76,7 +76,7 @@ pub fn run<T: Bloomable + Clone + Sync + Send + 'static>(user_app: T) {
     env_logger::Builder::new()
         .format(|buf, record| {
             let level = match record.level() {
-                log::Level::Error => "Error".red(),
+                log::Level::Error => "Error".red(), // TODO: Can we print a call stack for errors?
                 log::Level::Warn => "Warn ".yellow(),
                 log::Level::Info => "Info ".green(),
                 log::Level::Debug => "Debug".black(),

@@ -135,4 +135,5 @@ public struct RayPushConstants {
 	public uint64_t scene;		// Pointer to array of Buffers
 	public uint64_t materials;	// Pointer to array of Material
 	public uint32_t frame_index;
+	public uint32_t skybox_index;
 }

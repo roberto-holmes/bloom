@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex, RwLock, RwLockWriteGuard};
 use std::time::Duration;
 
 use anyhow::Result;
-use bloom::api::{Instance, Orientation};
+use bloom::api::{Instance, Orientation, Skybox};
 use bloom::material::Material;
 use bloom::primitives::model::Model;
 use bloom::primitives::ocean::Ocean;
@@ -117,12 +117,21 @@ impl Bloomable for Demo {
     fn init(&mut self, world: &Arc<RwLock<hecs::World>>) -> Result<()> {
         let mut w = world.write().unwrap();
         let glass = w.spawn((Material::new_clear(Vec3::new(0.9, 1.0, 1.0)),));
-        let blu = w.spawn((Material::new_basic(Vec3::new(0.8, 0.9, 1.0), 0.0),));
+        let blu = w.spawn((Material::new_basic(Vec3::new(0.8, 0.9, 1.0), 0.999),));
         let green = w.spawn((Material::new_basic(Vec3::new(0.0, 1.0, 0.5), 0.0),));
         let mirror_mat = w.spawn((Material::new_basic(Vec3::new(1.0, 1.0, 1.0), 0.992),));
         let light = w.spawn((Material::new_emissive(Vec3::new(1.0, 1.0, 1.0), 1.0),));
 
         let tex = w.spawn((Material::new_textured(PathBuf::from("textures/statue.jpg")),));
+
+        let _ = w.spawn((Skybox::new(
+            PathBuf::from("textures/skybox/px.png"),
+            PathBuf::from("textures/skybox/nx.png"),
+            PathBuf::from("textures/skybox/py.png"),
+            PathBuf::from("textures/skybox/ny.png"),
+            PathBuf::from("textures/skybox/pz.png"),
+            PathBuf::from("textures/skybox/nz.png"),
+        ),));
 
         // spawn_duck(&mut w, mirror_mat);
 
@@ -140,12 +149,11 @@ impl Bloomable for Demo {
         let cube = w.spawn((Primitive::Model(Model::new_cube(light)?),));
         let _ = w.spawn((Instance {
             primitive: cube,
-            // base_transform: Matrix4::<f32>::from_nonuniform_scale(1.0, 10.0, 1.0),
-            base_transform: Matrix4::<f32>::identity(),
+            base_transform: Matrix4::<f32>::from_nonuniform_scale(1.0, 10.0, 1.0),
             initial_transform: Matrix4::<f32>::from_translation(cgmath::Vector3 {
                 x: 0.0,
                 y: 0.0,
-                z: -2.0,
+                z: 2.0,
             }),
         },));
 
@@ -153,15 +161,14 @@ impl Bloomable for Demo {
         let _ = w.spawn((Instance {
             primitive: cube2,
             base_transform: Matrix4::<f32>::identity(),
-            initial_transform: Matrix4::<f32>::identity(),
-            // initial_transform: Matrix4::<f32>::from_angle_x(cgmath::Rad(-f32::consts::FRAC_PI_2)),
+            initial_transform: Matrix4::<f32>::from_angle_x(cgmath::Rad(-f32::consts::FRAC_PI_4)),
         },));
 
         // Spawn in ocean
-        // let o = w.spawn((Primitive::Ocean(Ocean::new(
-        //     blu, 7.9, 1.29, 50000.0, 50.0, 0.2,
-        // )),));
-        // let _ = w.spawn((Instance::new(o),));
+        let o = w.spawn((Primitive::Ocean(Ocean::new(
+            blu, 7.9, 1.29, 50000.0, 50.0, 0.2,
+        )),));
+        let _ = w.spawn((Instance::new(o),));
 
         let camera = w.spawn((
             Camera::default(),

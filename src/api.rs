@@ -1,4 +1,4 @@
-use std::{sync::RwLock, time::Duration};
+use std::{path::PathBuf, sync::RwLock, time::Duration};
 
 use anyhow::Result;
 use cgmath::{Matrix4, Rad, SquareMatrix};
@@ -7,6 +7,7 @@ use hecs::Entity;
 use crate::{
     primitives::{Extrema, AABB},
     quaternion::Quaternion,
+    structures::Cubemap,
     vec::Vec3,
 };
 
@@ -27,6 +28,32 @@ pub enum Event {
     GraphicsUpdate,
 
     Input,
+}
+
+#[derive(Debug, Clone)]
+pub struct Skybox {
+    pub(crate) cubemap: Cubemap<PathBuf>,
+}
+impl Skybox {
+    pub fn new(
+        px: PathBuf,
+        nx: PathBuf,
+        py: PathBuf,
+        ny: PathBuf,
+        pz: PathBuf,
+        nz: PathBuf,
+    ) -> Self {
+        Skybox {
+            cubemap: Cubemap {
+                px,
+                nx,
+                py,
+                ny,
+                pz,
+                nz,
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]

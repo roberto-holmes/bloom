@@ -1,13 +1,24 @@
 use ash::vk;
 use hecs::Entity;
-use std::{cmp::max, collections::HashMap, path::Path, sync::Arc};
+use std::{
+    cmp::max,
+    collections::{HashMap, HashSet},
+    path::Path,
+    sync::Arc,
+};
 
 use crate::{
     core::{begin_single_time_commands, end_single_time_command},
     error::{raise, raise_root_error, Error, Result},
     ray::{descriptor::Descriptor, RESERVED_SIZE},
+    structures::Cubemap,
     vulkan::{self},
 };
+
+pub enum TextureType<'a> {
+    Cubemap(Cubemap<&'a Path>),
+    Simple(&'a Path),
+}
 
 /// Store the Bottom Level Acceleration Structures (BLAS)
 pub struct TextureContainer<'a> {
@@ -104,20 +115,30 @@ impl<'a> TextureContainer<'a> {
         queue: vk::Queue,
         allocator: &Arc<vk_mem::Allocator>,
         entity: Entity,
-        texture_path: &Path,
+        texture_path: TextureType,
     ) -> Result<u32> {
         if let Some(&k) = self.texture_location.get(&entity) {
             return Ok(k);
         }
         // Create new image with sampler
-        let texture = create_texture(
-            &device,
-            device_properties,
-            &allocator,
-            command_pool,
-            queue,
-            texture_path,
-        )?;
+        let texture = match texture_path {
+            TextureType::Simple(path) => create_texture(
+                &device,
+                device_properties,
+                &allocator,
+                command_pool,
+                queue,
+                path,
+            )?,
+            TextureType::Cubemap(cubemap) => create_cubemap(
+                device,
+                device_properties,
+                allocator,
+                command_pool,
+                queue,
+                cubemap,
+            )?,
+        };
 
         // Try to add the new texture into a gap in the vector, if possible
         let texture_index = match self.empty_indices.pop() {
@@ -150,7 +171,7 @@ impl<'a> TextureContainer<'a> {
         Ok(texture_index)
     }
 
-    /// Removes an entity from the instance buffer
+    /// Removes an entity from the texture vector
     pub fn remove(&mut self, e: &Entity) {
         // TODO: Consider blanking the memory
         match self.texture_location.remove_entry(e) {
@@ -203,8 +224,9 @@ pub fn create_placeholder_texture<'a>(
     command_pool: vk::CommandPool,
     queue: vk::Queue,
 ) -> Result<vulkan::Image<'a>> {
-    let command_buffer = begin_single_time_commands(device, command_pool).unwrap(); // TODO: Replace with new errors
-                                                                                    // Create the image in memory
+    let command_buffer = begin_single_time_commands(device, command_pool).unwrap(); // TODO: Replace with new errors3
+
+    // Create the image in memory
     let image = vulkan::Image::new(
         format!("Placeholder Texture"),
         device,
@@ -267,47 +289,21 @@ pub fn create_placeholder_texture<'a>(
     Ok(image)
 }
 
-pub fn create_texture<'a>(
-    device: &ash::Device,
-    device_properties: vk::PhysicalDeviceProperties2<'a>,
-    allocator: &Arc<vk_mem::Allocator>,
-    command_pool: vk::CommandPool,
-    queue: vk::Queue,
-    texture_path: &Path,
-) -> Result<vulkan::Image<'a>> {
-    let image_reader = image::ImageReader::open(texture_path);
+fn get_texture_data(path: &Path) -> Result<(Vec<u8>, u32, u32)> {
+    let image_reader = image::ImageReader::open(path);
     if let Err(e) = &image_reader {
-        raise(
-            format!("Failed to open image {}", texture_path.display()),
-            e,
-        )?;
+        raise(format!("Failed to open image {}", path.display()), e)?;
     }
     let image_decoder = image_reader.unwrap().decode(); // Apparently this function is slow in debug mode
     if let Err(e) = &image_decoder {
-        raise(
-            format!("Failed to decode image {}", texture_path.display()),
-            e,
-        )?
+        raise(format!("Failed to decode image {}", path.display()), e)?
     }
-    let mut image_object = image_decoder.unwrap();
-    image_object = image_object.flipv();
+    let image_object = image_decoder.unwrap();
     let (width, height) = (image_object.width(), image_object.height());
     let image_size = (std::mem::size_of::<u8>() as u32 * width * height * 4) as vk::DeviceSize;
     let image_data = image_object.to_rgba8().into_raw();
-
-    // TODO: Do we always want to create all the mip maps
-    let mip_levels = ((max(width, height) as f32).log2().floor() as u32) + 1;
-
-    log::debug!(
-        "Texture {} has {mip_levels} mip levels",
-        texture_path.display()
-    );
-
     if image_size <= 0 {
-        raise_root_error(format!(
-            "Failed to load texture image {}",
-            texture_path.display()
-        ))?;
+        raise_root_error(format!("Failed to load texture image {}", path.display()))?;
     }
 
     if image_data.len() as u64 != image_size {
@@ -317,6 +313,27 @@ pub fn create_texture<'a>(
         ))?;
     }
 
+    Ok((image_data, width, height))
+}
+
+pub fn create_texture<'a>(
+    device: &ash::Device,
+    device_properties: vk::PhysicalDeviceProperties2<'a>,
+    allocator: &Arc<vk_mem::Allocator>,
+    command_pool: vk::CommandPool,
+    queue: vk::Queue,
+    texture_path: &Path,
+) -> Result<vulkan::Image<'a>> {
+    let (image_data, width, height) = get_texture_data(texture_path)?;
+
+    // TODO: Do we always want to create all the mip maps
+    let mip_levels = ((max(width, height) as f32).log2().floor() as u32) + 1;
+
+    log::debug!(
+        "Texture {} has {mip_levels} mip levels",
+        texture_path.display()
+    );
+
     let mut image = vulkan::Image::new_populated(
         format!("{}", texture_path.display()),
         device,
@@ -325,7 +342,7 @@ pub fn create_texture<'a>(
         command_pool,
         queue,
         image_data.as_ptr(),
-        image_size,
+        image_data.len() as vk::DeviceSize,
         width,
         height,
         mip_levels,
@@ -338,6 +355,81 @@ pub fn create_texture<'a>(
         .unwrap(); // TODO: new error
 
     image.create_sampler(mip_levels).unwrap();
+
+    Ok(image)
+}
+
+pub fn create_cubemap<'a>(
+    device: &ash::Device,
+    device_properties: vk::PhysicalDeviceProperties2<'a>,
+    allocator: &Arc<vk_mem::Allocator>,
+    command_pool: vk::CommandPool,
+    queue: vk::Queue,
+    cubemap_path: Cubemap<&Path>,
+) -> Result<vulkan::Image<'a>> {
+    let (px, px_width, px_height) = get_texture_data(cubemap_path.px)?;
+    let (nx, nx_width, nx_height) = get_texture_data(cubemap_path.nx)?;
+    let (py, py_width, py_height) = get_texture_data(cubemap_path.py)?;
+    let (ny, ny_width, ny_height) = get_texture_data(cubemap_path.ny)?;
+    let (pz, pz_width, pz_height) = get_texture_data(cubemap_path.pz)?;
+    let (nz, nz_width, nz_height) = get_texture_data(cubemap_path.nz)?;
+
+    let mut widths = HashSet::with_capacity(6);
+    widths.insert(px_width);
+    widths.insert(nx_width);
+    widths.insert(py_width);
+    widths.insert(ny_width);
+    widths.insert(pz_width);
+    widths.insert(nz_width);
+    let mut heights = HashSet::with_capacity(6);
+    heights.insert(px_height);
+    heights.insert(nx_height);
+    heights.insert(py_height);
+    heights.insert(ny_height);
+    heights.insert(pz_height);
+    heights.insert(nz_height);
+
+    if widths.len() != 1 || heights.len() != 1 {
+        raise_root_error("Cubemap images do not have the same dimensions")?;
+    }
+
+    // TODO: Do cubemaps need mipmaps?
+    let mip_levels = 1;
+
+    let width = widths.drain().next().unwrap();
+    let height = heights.drain().next().unwrap();
+
+    const BYTES_PER_PIXEL: u32 = 4;
+    let size = width * height * BYTES_PER_PIXEL;
+
+    let data = [
+        px.as_ptr(),
+        nx.as_ptr(),
+        py.as_ptr(),
+        ny.as_ptr(),
+        pz.as_ptr(),
+        nz.as_ptr(),
+    ];
+
+    let mut image = vulkan::Image::new_populated_cubemap(
+        format!("Cubemap"),
+        device,
+        allocator,
+        device_properties,
+        command_pool,
+        queue,
+        data,
+        size as u64,
+        width,
+        height,
+        mip_levels,
+        vk::Format::R8G8B8A8_SRGB,
+    )
+    .unwrap(); // Todo: Replace with new errors
+
+    image.create_sampler(mip_levels).unwrap();
+
+    log::debug!("Cubemap created");
 
     Ok(image)
 }

@@ -9,6 +9,7 @@ use hecs::{Entity, World};
 use vk_mem;
 use winit::dpi::PhysicalSize;
 
+use crate::api::Skybox;
 use crate::core::create_commands_flight_frames;
 use crate::material::{Material, MaterialData};
 use crate::oceans::{Ocean, FFT_IMAGES};
@@ -55,6 +56,7 @@ struct PushConstants {
     pub scene: vk::DeviceAddress,
     pub materials: vk::DeviceAddress,
     pub frame_index: u32,
+    pub skybox_index: u32,
 }
 
 impl PushConstants {
@@ -529,6 +531,7 @@ impl<'a> Ray<'a> {
             ubo: uniform_buffers[0],
             scene: buffer_references.get_device_address(&device),
             materials: materials_buffer.get_device_address(&device),
+            skybox_index: 0,
         };
 
         Ok(Self {
@@ -758,6 +761,23 @@ impl<'a> Ray<'a> {
             let mut w = world.write().unwrap();
             // TODO: Use some sort of `new` component to only add primitives/materials that have changed
 
+            // Look for a Skybox
+            for (entity, skybox) in w.query_mut::<&Skybox>() {
+                // Update index for miss shader to be able to sample the texture
+                self.push_constants.skybox_index = self
+                    .textures
+                    .try_add(
+                        &self.device,
+                        self.device_properties,
+                        self.command_pool.get(),
+                        self.queue,
+                        &self.allocator,
+                        entity,
+                        texture_container::TextureType::Cubemap(skybox.cubemap.get_ref()),
+                    )
+                    .unwrap();
+            }
+
             // Look for materials
             for (entity, material) in w.query_mut::<&mut Material>() {
                 if self.material_location_map.contains_key(&entity) {
@@ -774,7 +794,7 @@ impl<'a> Ray<'a> {
                                 self.queue,
                                 &self.allocator,
                                 entity,
-                                texture_path.as_path(),
+                                texture_container::TextureType::Simple(texture_path.as_path()),
                             )
                             .unwrap(),
                     );
@@ -1236,7 +1256,8 @@ impl<'a> Ray<'a> {
                 self.pipeline_layout.get(),
                 vk::ShaderStageFlags::RAYGEN_KHR
                     | vk::ShaderStageFlags::INTERSECTION_KHR
-                    | vk::ShaderStageFlags::CLOSEST_HIT_KHR,
+                    | vk::ShaderStageFlags::CLOSEST_HIT_KHR
+                    | vk::ShaderStageFlags::MISS_KHR,
                 0,
                 self.push_constants.as_slice(),
             );
@@ -1687,7 +1708,8 @@ fn create_pipeline<'a>(
     let push_constants = [vk::PushConstantRange {
         stage_flags: vk::ShaderStageFlags::RAYGEN_KHR
             | vk::ShaderStageFlags::INTERSECTION_KHR
-            | vk::ShaderStageFlags::CLOSEST_HIT_KHR,
+            | vk::ShaderStageFlags::CLOSEST_HIT_KHR
+            | vk::ShaderStageFlags::MISS_KHR,
         size: size_of::<PushConstants>() as u32,
         offset: 0,
     }];

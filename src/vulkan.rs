@@ -402,6 +402,22 @@ impl Buffer {
         self.type_name = std::any::type_name::<T>();
         Ok(())
     }
+    // Offset is in units of size_of T
+    pub fn append_mapped<T>(&mut self, data: *const T, size: usize, offset: usize) -> Result<()> {
+        unsafe {
+            if self.allocation_info.mapped_data.is_null() {
+                return Err(anyhow::anyhow!(
+                    "Tried to copy data into an unmapped buffer"
+                ));
+            }
+            (self.allocation_info.mapped_data as *mut T)
+                .offset(offset as isize)
+                .copy_from_nonoverlapping(data, size);
+        }
+        self.populated_size = (size_of::<T>() * (offset + size)) as vk::DeviceSize;
+        self.type_name = std::any::type_name::<T>();
+        Ok(())
+    }
     #[track_caller]
     pub fn populate_staged<T>(
         &mut self,
@@ -731,6 +747,88 @@ impl<'a> Image<'a> {
             name,
         })
     }
+    pub fn new_cubemap(
+        name: String,
+        device: &ash::Device,
+        device_properties: vk::PhysicalDeviceProperties2<'a>,
+        allocator: &Arc<vk_mem::Allocator>,
+        location: vk_mem::MemoryUsage,
+        flags: vk_mem::AllocationCreateFlags,
+        width: u32,
+        height: u32,
+        format: vk::Format,
+        tiling: vk::ImageTiling,
+        mip_levels: u32,
+        usage: vk::ImageUsageFlags,
+        aspect_flags: vk::ImageAspectFlags,
+    ) -> Result<Self> {
+        let alloc_create_info = vk_mem::AllocationCreateInfo {
+            usage: location,
+            flags,
+            ..Default::default()
+        };
+        let image_create_info = ash::vk::ImageCreateInfo {
+            image_type: vk::ImageType::TYPE_2D,
+            extent: vk::Extent3D {
+                width,
+                height,
+                depth: 1,
+            },
+            mip_levels,
+            array_layers: 6,
+            format,
+            tiling,
+            initial_layout: vk::ImageLayout::UNDEFINED,
+            usage,
+            sharing_mode: vk::SharingMode::EXCLUSIVE,
+            samples: vk::SampleCountFlags::TYPE_1,
+            flags: vk::ImageCreateFlags::CUBE_COMPATIBLE,
+            ..Default::default()
+        };
+        let (image, allocation) =
+            unsafe { allocator.create_image(&image_create_info, &alloc_create_info)? };
+        let view_create_info = vk::ImageViewCreateInfo::default()
+            .view_type(vk::ImageViewType::CUBE)
+            .format(format)
+            .image(image)
+            .subresource_range(vk::ImageSubresourceRange {
+                aspect_mask: aspect_flags,
+                base_mip_level: 0,
+                level_count: 1,
+                base_array_layer: 0,
+                layer_count: 6,
+            });
+
+        Ok(Self {
+            device: device.handle(),
+            device_properties,
+
+            image: Some(image),
+            view: Some(Destructor::new(
+                device,
+                unsafe { device.create_image_view(&view_create_info, None)? },
+                device.fp_v1_0().destroy_image_view,
+            )),
+            sampler: None,
+
+            allocation: allocation,
+            alloc_create_info,
+            image_create_info,
+            view_create_info,
+            create_view: device.fp_v1_0().create_image_view,
+            destroy_view: device.fp_v1_0().destroy_image_view,
+            create_sampler: device.fp_v1_0().create_sampler,
+            destroy_sampler: device.fp_v1_0().destroy_sampler,
+
+            width,
+            height,
+            allocator_pool: vk_mem::AllocatorPool {
+                allocator: Arc::clone(allocator),
+                pool: allocator.pool(),
+            },
+            name,
+        })
+    }
     pub fn new_populated<T>(
         name: String,
         device: &ash::Device,
@@ -820,27 +918,125 @@ impl<'a> Image<'a> {
             );
         }
 
-        // Convert image layout to be readable by the shaders
-        // let barriers = [vk::ImageMemoryBarrier2::default()
-        //     .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-        //     .new_layout(vk::ImageLayout::READ_ONLY_OPTIMAL)
-        //     .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-        //     .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-        //     .image(image.get())
-        //     .subresource_range(vk::ImageSubresourceRange {
-        //         aspect_mask: vk::ImageAspectFlags::COLOR,
-        //         base_mip_level: 0,
-        //         level_count: 1,
-        //         base_array_layer: 0,
-        //         layer_count: 1,
-        //     })
-        //     .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
-        //     .dst_stage_mask(vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR)
-        //     .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
-        //     .dst_access_mask(vk::AccessFlags2::SHADER_READ)];
+        core::end_single_time_command(device, command_pool, queue, command_buffer)?;
 
-        // let dependency = vk::DependencyInfo::default().image_memory_barriers(&barriers);
-        // unsafe { device.cmd_pipeline_barrier2(command_buffer, &dependency) };
+        Ok(image)
+    }
+    pub fn new_populated_cubemap<T>(
+        name: String,
+        device: &ash::Device,
+        allocator: &Arc<vk_mem::Allocator>,
+        device_properties: vk::PhysicalDeviceProperties2<'a>,
+        command_pool: vk::CommandPool,
+        queue: vk::Queue,
+        data: [*const T; 6],
+        size: u64, // The size of each image in the cubemap must be the same
+        width: u32,
+        height: u32,
+        mip_levels: u32,
+        format: vk::Format,
+    ) -> Result<Self> {
+        let image = Self::new_cubemap(
+            name,
+            device,
+            device_properties,
+            allocator,
+            vk_mem::MemoryUsage::AutoPreferDevice,
+            vk_mem::AllocationCreateFlags::empty(),
+            width,
+            height,
+            format,
+            vk::ImageTiling::OPTIMAL,
+            mip_levels,
+            vk::ImageUsageFlags::SAMPLED
+                | vk::ImageUsageFlags::TRANSFER_DST
+                | vk::ImageUsageFlags::TRANSFER_SRC,
+            vk::ImageAspectFlags::COLOR,
+        )?;
+
+        const CUBEMAP_IMAGE_COUNT: u64 = 6;
+
+        // Use a staging buffer so that we don't need the image to be able to map to CPU memory
+        let mut staging_buffer = Buffer::new_mapped(
+            allocator,
+            size * size_of::<T>() as u64 * CUBEMAP_IMAGE_COUNT,
+            vk::BufferUsageFlags::TRANSFER_SRC,
+            "image staging",
+        )?;
+        // Copy all images in the cubemap into the
+        for (i, &d) in data.iter().enumerate() {
+            staging_buffer.append_mapped(d, size as usize, size as usize * i)?;
+        }
+
+        // Copy image data into the image proper
+        let command_buffer = core::begin_single_time_commands(device, command_pool)?;
+
+        // Convert image layout to be able to copy into it
+        let barriers = [vk::ImageMemoryBarrier2::default()
+            .old_layout(vk::ImageLayout::UNDEFINED)
+            .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .image(image.get())
+            .subresource_range(vk::ImageSubresourceRange {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                base_mip_level: 0,
+                level_count: mip_levels,
+                base_array_layer: 0,
+                layer_count: CUBEMAP_IMAGE_COUNT as u32,
+            })
+            .src_stage_mask(vk::PipelineStageFlags2::NONE)
+            .dst_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+            .src_access_mask(vk::AccessFlags2::NONE)
+            .dst_access_mask(vk::AccessFlags2::TRANSFER_WRITE)];
+
+        let dependency = vk::DependencyInfo::default().image_memory_barriers(&barriers);
+        unsafe { device.cmd_pipeline_barrier2(command_buffer, &dependency) };
+
+        unsafe {
+            let copy_region = [vk::BufferImageCopy {
+                image_extent: vk::Extent3D {
+                    width,
+                    height,
+                    depth: 1,
+                },
+                image_subresource: vk::ImageSubresourceLayers {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    layer_count: CUBEMAP_IMAGE_COUNT as u32,
+                    ..Default::default()
+                },
+                ..Default::default()
+            }];
+            device.cmd_copy_buffer_to_image(
+                command_buffer,
+                staging_buffer.get(),
+                image.image.unwrap(),
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                &copy_region,
+            );
+        }
+
+        // Convert image layout to be readable by the shaders
+        let barriers = [vk::ImageMemoryBarrier2::default()
+            .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+            .new_layout(vk::ImageLayout::READ_ONLY_OPTIMAL)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .image(image.get())
+            .subresource_range(vk::ImageSubresourceRange {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                base_mip_level: 0,
+                level_count: 1,
+                base_array_layer: 0,
+                layer_count: CUBEMAP_IMAGE_COUNT as u32,
+            })
+            .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+            .dst_stage_mask(vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR)
+            .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
+            .dst_access_mask(vk::AccessFlags2::SHADER_READ)];
+
+        let dependency = vk::DependencyInfo::default().image_memory_barriers(&barriers);
+        unsafe { device.cmd_pipeline_barrier2(command_buffer, &dependency) };
 
         core::end_single_time_command(device, command_pool, queue, command_buffer)?;
 

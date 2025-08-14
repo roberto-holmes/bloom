@@ -3,7 +3,7 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use anyhow::Result;
-use bloom::api::{Camera, Instance, Orientation};
+use bloom::api::{Camera, Instance, Orientation, Skybox};
 use bloom::material::Material;
 use bloom::primitives::model::Model;
 use bloom::primitives::Primitive;
@@ -45,7 +45,7 @@ impl Bloomable for Demo {
     fn init_window(&mut self, _: Arc<RwLock<Window>>) {}
     fn init(&mut self, world: &Arc<RwLock<hecs::World>>) -> Result<()> {
         let mut w = world.write().unwrap();
-        let green = w.spawn((Material::new_basic(Vec3::new(0.0, 1.0, 0.5), 0.0),));
+        // let green = w.spawn((Material::new_basic(Vec3::new(0.0, 1.0, 0.5), 0.0),));
         let tex = w.spawn((Material::new_textured(PathBuf::from("textures/statue.jpg")),));
         let cube = w.spawn((Primitive::Model(Model::new_cube(tex)?),));
         let _ = w.spawn((Instance {
@@ -53,6 +53,15 @@ impl Bloomable for Demo {
             base_transform: Matrix4::<f32>::identity(),
             initial_transform: Matrix4::<f32>::identity(),
         },));
+
+        let _ = w.spawn((Skybox::new(
+            PathBuf::from("textures/skybox/px.png"),
+            PathBuf::from("textures/skybox/nx.png"),
+            PathBuf::from("textures/skybox/py.png"),
+            PathBuf::from("textures/skybox/ny.png"),
+            PathBuf::from("textures/skybox/pz.png"),
+            PathBuf::from("textures/skybox/nz.png"),
+        ),));
 
         let camera = w.spawn((
             Camera::default(),
