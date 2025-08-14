@@ -76,7 +76,9 @@ impl Material {
         // TODO: how textures?
         self.data
     }
-
+    pub(crate) fn update_texture_index(&mut self, texture_index: u32) {
+        self.data.texture_index = texture_index;
+    }
     // pub fn new_random() -> Self {
     //     Self::new(
     //         Vec3::new(

@@ -15,21 +15,26 @@ pub struct MeshData {
     pub material_indices: vk::DeviceAddress,
 }
 
+#[repr(C)]
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub struct Vertex {
     pos: Vec3,
-    _pad1: u32,
+    _pad0: u32,
     _normal: Vec3,
-    _pad2: u32,
+    _pad1: u32,
+    tex_coord: [f32; 2],
+    _pad2: [u32; 2],
 }
 
 impl Vertex {
-    fn new(pos: Vec3, normal: Vec3) -> Self {
+    fn new(pos: Vec3, normal: Vec3, tex_coord: [f32; 2]) -> Self {
         Self {
             pos,
-            _pad1: 0,
             _normal: normal,
-            _pad2: 0,
+            tex_coord,
+            _pad0: 0,
+            _pad1: 0,
+            _pad2: [0; 2],
         }
     }
 }
@@ -83,12 +88,12 @@ impl Model {
                 positions.push(v);
             }
         }
-        let mut textures = Vec::new();
+        let mut tex_coords = Vec::new();
         if let Some(gltf::mesh::util::ReadTexCoords::F32(gltf::accessor::Iter::Standard(iter))) =
             r.read_tex_coords(0)
         {
             for v in iter {
-                textures.push(v);
+                tex_coords.push(v);
             }
         }
         let mut normals = Vec::new();
@@ -113,6 +118,8 @@ impl Model {
                 weights.push(v);
             }
         }
+        // TODO: Get textures from gltf (maybe wait until we do PBR so we can do all sorts of texture maps?)
+
         let mut vertices = Vec::with_capacity(positions.len());
 
         // Ensure we have a normal for each vertex
@@ -120,7 +127,7 @@ impl Model {
 
         // Populate the vertices with positions and normals
         for (i, p) in positions.iter().enumerate() {
-            vertices.push(Vertex::new(Vec3(*p), Vec3(normals[i])));
+            vertices.push(Vertex::new(Vec3(*p), Vec3(normals[i]), tex_coords[i]));
         }
 
         let material_count = indices.len() / 3;
@@ -142,83 +149,35 @@ impl Model {
     pub fn new_cube(material: Entity) -> Result<Self> {
         #[rustfmt::skip]
         let vertices = vec![
-            Vertex::new(Vec3([ 0.5,  0.5,  0.5]), Vec3([ 0.0,  1.0,  0.0])),    // Top
-            Vertex::new(Vec3([-0.5,  0.5,  0.5]), Vec3([ 0.0,  1.0,  0.0])),
-            Vertex::new(Vec3([ 0.5,  0.5, -0.5]), Vec3([ 0.0,  1.0,  0.0])),
-            Vertex::new(Vec3([-0.5,  0.5, -0.5]), Vec3([ 0.0,  1.0,  0.0])),
-            Vertex::new(Vec3([ 0.5, -0.5,  0.5]), Vec3([ 0.0, -1.0,  0.0])),    // Bottom
-            Vertex::new(Vec3([-0.5, -0.5,  0.5]), Vec3([ 0.0, -1.0,  0.0])),
-            Vertex::new(Vec3([ 0.5, -0.5, -0.5]), Vec3([ 0.0, -1.0,  0.0])),
-            Vertex::new(Vec3([-0.5, -0.5, -0.5]), Vec3([ 0.0, -1.0,  0.0])),
-            Vertex::new(Vec3([ 0.5,  0.5,  0.5]), Vec3([ 1.0,  0.0,  0.0])),    // Right
-            Vertex::new(Vec3([ 0.5,  0.5, -0.5]), Vec3([ 1.0,  0.0,  0.0])),
-            Vertex::new(Vec3([ 0.5, -0.5, -0.5]), Vec3([ 1.0,  0.0,  0.0])),
-            Vertex::new(Vec3([ 0.5, -0.5,  0.5]), Vec3([ 1.0,  0.0,  0.0])),
-            Vertex::new(Vec3([-0.5,  0.5,  0.5]), Vec3([-1.0,  0.0,  0.0])),    // Left
-            Vertex::new(Vec3([-0.5,  0.5, -0.5]), Vec3([-1.0,  0.0,  0.0])),
-            Vertex::new(Vec3([-0.5, -0.5, -0.5]), Vec3([-1.0,  0.0,  0.0])),
-            Vertex::new(Vec3([-0.5, -0.5,  0.5]), Vec3([-1.0,  0.0,  0.0])),
-            Vertex::new(Vec3([-0.5,  0.5,  0.5]), Vec3([ 0.0,  0.0,  1.0])),   // Front
-            Vertex::new(Vec3([ 0.5,  0.5,  0.5]), Vec3([ 0.0,  0.0,  1.0])),
-            Vertex::new(Vec3([ 0.5, -0.5,  0.5]), Vec3([ 0.0,  0.0,  1.0])),
-            Vertex::new(Vec3([-0.5, -0.5,  0.5]), Vec3([ 0.0,  0.0,  1.0])),
-            Vertex::new(Vec3([-0.5,  0.5, -0.5]), Vec3([ 0.0,  0.0, -1.0])),   // Back
-            Vertex::new(Vec3([ 0.5,  0.5, -0.5]), Vec3([ 0.0,  0.0, -1.0])),
-            Vertex::new(Vec3([ 0.5, -0.5, -0.5]), Vec3([ 0.0,  0.0, -1.0])),
-            Vertex::new(Vec3([-0.5, -0.5, -0.5]), Vec3([ 0.0,  0.0, -1.0])),
-            ];
-        #[rustfmt::skip]
-        let indices= vec![
-            0,  1,  2,  1,  2,  3, // Top
-            4,  5,  6,  5,  6,  7, // Bottom
-            8,  9, 10,  8, 10, 11, // Right
-            12, 13, 14, 12, 14, 15, // Left
-            16, 17, 18, 16, 18, 19, // Front
-            20, 21, 22, 20, 22, 23, // Back
-            ];
-        let material_count = indices.len() / 3;
-        let material_entities = vec![material; material_count];
-        let material_indices = vec![0; material_count];
+            Vertex::new(Vec3([ 0.5,  0.5,  0.5]), Vec3([ 0.0,  1.0,  0.0]), [1.0, 1.0]),    // Top
+            Vertex::new(Vec3([-0.5,  0.5,  0.5]), Vec3([ 0.0,  1.0,  0.0]), [0.0, 1.0]),
+            Vertex::new(Vec3([ 0.5,  0.5, -0.5]), Vec3([ 0.0,  1.0,  0.0]), [1.0, 0.0]),
+            Vertex::new(Vec3([-0.5,  0.5, -0.5]), Vec3([ 0.0,  1.0,  0.0]), [0.0, 0.0]),
 
-        Ok(Self {
-            vertices,
-            indices,
-            material_entities,
-            material_indices,
-            primitive_data: None,
-            main_buffer: None,
-            vertex_buffer: None,
-            index_buffer: None,
-            mat_index_buffer: None,
-        })
-    }
-    pub fn new_mirror(material: Entity) -> Result<Self> {
-        #[rustfmt::skip]
-        let vertices = vec![
-            Vertex::new(Vec3([ 0.5,  0.5,  0.5]), Vec3([ 0.0,  1.0,  0.0])),    // Top
-            Vertex::new(Vec3([-0.5,  0.5,  0.5]), Vec3([ 0.0,  1.0,  0.0])),
-            Vertex::new(Vec3([ 0.5,  0.5, -0.5]), Vec3([ 0.0,  1.0,  0.0])),
-            Vertex::new(Vec3([-0.5,  0.5, -0.5]), Vec3([ 0.0,  1.0,  0.0])),
-            Vertex::new(Vec3([ 0.5, -0.5,  0.5]), Vec3([ 0.0, -1.0,  0.0])),    // Bottom
-            Vertex::new(Vec3([-0.5, -0.5,  0.5]), Vec3([ 0.0, -1.0,  0.0])),
-            Vertex::new(Vec3([ 0.5, -0.5, -0.5]), Vec3([ 0.0, -1.0,  0.0])),
-            Vertex::new(Vec3([-0.5, -0.5, -0.5]), Vec3([ 0.0, -1.0,  0.0])),
-            Vertex::new(Vec3([ 0.5,  0.5,  0.5]), Vec3([ 1.0,  0.0,  0.0])),    // Right
-            Vertex::new(Vec3([ 0.5,  0.5, -0.5]), Vec3([ 1.0,  0.0,  0.0])),
-            Vertex::new(Vec3([ 0.5, -0.5, -0.5]), Vec3([ 1.0,  0.0,  0.0])),
-            Vertex::new(Vec3([ 0.5, -0.5,  0.5]), Vec3([ 1.0,  0.0,  0.0])),
-            Vertex::new(Vec3([-0.5,  0.5,  0.5]), Vec3([-1.0,  0.0,  0.0])),    // Left
-            Vertex::new(Vec3([-0.5,  0.5, -0.5]), Vec3([-1.0,  0.0,  0.0])),
-            Vertex::new(Vec3([-0.5, -0.5, -0.5]), Vec3([-1.0,  0.0,  0.0])),
-            Vertex::new(Vec3([-0.5, -0.5,  0.5]), Vec3([-1.0,  0.0,  0.0])),
-            Vertex::new(Vec3([-0.5,  0.5,  0.5]), Vec3([ 0.0,  0.0,  1.0])),   // Front
-            Vertex::new(Vec3([ 0.5,  0.5,  0.5]), Vec3([ 0.0,  0.0,  1.0])),
-            Vertex::new(Vec3([ 0.5, -0.5,  0.5]), Vec3([ 0.0,  0.0,  1.0])),
-            Vertex::new(Vec3([-0.5, -0.5,  0.5]), Vec3([ 0.0,  0.0,  1.0])),
-            Vertex::new(Vec3([-0.5,  0.5, -0.5]), Vec3([ 0.0,  0.0, -1.0])),   // Back
-            Vertex::new(Vec3([ 0.5,  0.5, -0.5]), Vec3([ 0.0,  0.0, -1.0])),
-            Vertex::new(Vec3([ 0.5, -0.5, -0.5]), Vec3([ 0.0,  0.0, -1.0])),
-            Vertex::new(Vec3([-0.5, -0.5, -0.5]), Vec3([ 0.0,  0.0, -1.0])),
+            Vertex::new(Vec3([ 0.5, -0.5,  0.5]), Vec3([ 0.0, -1.0,  0.0]), [1.0, 1.0]),    // Bottom
+            Vertex::new(Vec3([-0.5, -0.5,  0.5]), Vec3([ 0.0, -1.0,  0.0]), [0.0, 1.0]),
+            Vertex::new(Vec3([ 0.5, -0.5, -0.5]), Vec3([ 0.0, -1.0,  0.0]), [1.0, 0.0]),
+            Vertex::new(Vec3([-0.5, -0.5, -0.5]), Vec3([ 0.0, -1.0,  0.0]), [0.0, 0.0]),
+
+            Vertex::new(Vec3([ 0.5,  0.5,  0.5]), Vec3([ 1.0,  0.0,  0.0]), [0.0, 1.0]),    // Right
+            Vertex::new(Vec3([ 0.5,  0.5, -0.5]), Vec3([ 1.0,  0.0,  0.0]), [1.0, 1.0]),
+            Vertex::new(Vec3([ 0.5, -0.5, -0.5]), Vec3([ 1.0,  0.0,  0.0]), [1.0, 0.0]),
+            Vertex::new(Vec3([ 0.5, -0.5,  0.5]), Vec3([ 1.0,  0.0,  0.0]), [0.0, 0.0]),
+
+            Vertex::new(Vec3([-0.5,  0.5,  0.5]), Vec3([-1.0,  0.0,  0.0]), [0.0, 1.0]),    // Left
+            Vertex::new(Vec3([-0.5,  0.5, -0.5]), Vec3([-1.0,  0.0,  0.0]), [1.0, 1.0]),
+            Vertex::new(Vec3([-0.5, -0.5, -0.5]), Vec3([-1.0,  0.0,  0.0]), [1.0, 0.0]),
+            Vertex::new(Vec3([-0.5, -0.5,  0.5]), Vec3([-1.0,  0.0,  0.0]), [0.0, 0.0]),
+
+            Vertex::new(Vec3([-0.5,  0.5,  0.5]), Vec3([ 0.0,  0.0,  1.0]), [0.0, 1.0]),   // Front
+            Vertex::new(Vec3([ 0.5,  0.5,  0.5]), Vec3([ 0.0,  0.0,  1.0]), [1.0, 1.0]),
+            Vertex::new(Vec3([ 0.5, -0.5,  0.5]), Vec3([ 0.0,  0.0,  1.0]), [1.0, 0.0]),
+            Vertex::new(Vec3([-0.5, -0.5,  0.5]), Vec3([ 0.0,  0.0,  1.0]), [0.0, 0.0]),
+
+            Vertex::new(Vec3([-0.5,  0.5, -0.5]), Vec3([ 0.0,  0.0, -1.0]), [0.0, 1.0]),   // Back
+            Vertex::new(Vec3([ 0.5,  0.5, -0.5]), Vec3([ 0.0,  0.0, -1.0]), [1.0, 1.0]),
+            Vertex::new(Vec3([ 0.5, -0.5, -0.5]), Vec3([ 0.0,  0.0, -1.0]), [1.0, 0.0]),
+            Vertex::new(Vec3([-0.5, -0.5, -0.5]), Vec3([ 0.0,  0.0, -1.0]), [0.0, 0.0]),
             ];
         #[rustfmt::skip]
         let indices= vec![
@@ -248,10 +207,10 @@ impl Model {
     pub fn new_plane(material: Entity) -> Result<Self> {
         #[rustfmt::skip]
        let vertices= vec![
-            Vertex::new(Vec3([ 1.0, 0.0,  1.0]), Vec3([0.0, 1.0, 0.0])),
-            Vertex::new(Vec3([-1.0, 0.0,  1.0]), Vec3([0.0, 1.0, 0.0])),
-            Vertex::new(Vec3([ 1.0, 0.0, -1.0]), Vec3([0.0, 1.0, 0.0])),
-            Vertex::new(Vec3([-1.0, 0.0, -1.0]), Vec3([0.0, 1.0, 0.0])),
+            Vertex::new(Vec3([ 1.0, 0.0,  1.0]), Vec3([0.0, 1.0, 0.0]), [1.0, 1.0]),
+            Vertex::new(Vec3([-1.0, 0.0,  1.0]), Vec3([0.0, 1.0, 0.0]), [0.0, 1.0]),
+            Vertex::new(Vec3([ 1.0, 0.0, -1.0]), Vec3([0.0, 1.0, 0.0]), [1.0, 0.0]),
+            Vertex::new(Vec3([-1.0, 0.0, -1.0]), Vec3([0.0, 1.0, 0.0]), [0.0, 0.0]),
             ];
         #[rustfmt::skip]
        let indices= vec![

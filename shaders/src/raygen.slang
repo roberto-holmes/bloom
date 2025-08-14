@@ -89,7 +89,7 @@ void main() {
 			break;
 		}
 	}
-	// sample += throughput * payload.radiance;
+	sample += throughput * payload.radiance;
 
 	// let ocean_sample = ocean[int2(LaunchID.xy)].r * 1024 * 1024;
 
@@ -111,7 +111,7 @@ void main() {
 
 	// sample += float3(0.1, 0.4, 1.0);
 	// TODO: Figure out how to access the mipmaps/lods (or if they are even correct in the first place)
-	sample += textures[1].SampleLevel(float2(LaunchID.xy)/1024.0, 1.0).rgb;
+	// sample += textures[1].SampleLevel(float2(LaunchID.xy)/1024.0, 1.0).rgb;
 
 	images[pc.frame_index][int2(LaunchID.xy)] = float4(sample, 0.0);
 	// images[pc.frame_index][int2(LaunchID.xy)] = float4(0.1, 0.4, 1.0, 1.0); // Light Blue

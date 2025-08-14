@@ -44,7 +44,7 @@ public struct Material {
 	public float emissivity;
 	public float emission_strength;
 	public float3 emission_colour;
-	public uint padding;
+	public uint texture_index;
 
 	public __init() {
 		albedo = float3(0.5, 0.5, 0.5);
@@ -54,15 +54,17 @@ public struct Material {
 		emissivity = 0.0;
 		emission_strength = 0.0;
 		emission_colour = float3(1.0, 1.0, 1.0);
-		padding = 0;
+		texture_index = 0;
 	}
 }
 
 public struct Vertex {
 	public float3 pos;
-	uint pad1;
+	uint pad0;
 	public float3 normal;
-	uint pad2;
+	uint pad1;
+	public float2 tex_coord;
+	uint2 pad2;
 }
 
 public struct AABB {

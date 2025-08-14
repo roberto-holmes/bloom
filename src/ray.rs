@@ -759,9 +759,25 @@ impl<'a> Ray<'a> {
             // TODO: Use some sort of `new` component to only add primitives/materials that have changed
 
             // Look for materials
-            for (entity, material) in w.query_mut::<&Material>() {
+            for (entity, material) in w.query_mut::<&mut Material>() {
                 if self.material_location_map.contains_key(&entity) {
                     continue;
+                }
+                // Check for textures and add them to the texture descriptor, while keeping track of the index in the texture array
+                if let Some(texture_path) = &material.texture_path {
+                    material.update_texture_index(
+                        self.textures
+                            .try_add(
+                                &self.device,
+                                self.device_properties,
+                                self.command_pool.get(),
+                                self.queue,
+                                &self.allocator,
+                                entity,
+                                texture_path.as_path(),
+                            )
+                            .unwrap(),
+                    );
                 }
                 // If the material is new, remake the buffer with all the materials
                 self.materials.push(material.get_data());
@@ -784,20 +800,6 @@ impl<'a> Ray<'a> {
                 self.push_constants.materials =
                     self.materials_buffer.get_device_address(&self.device);
 
-                // Check for textures
-                if let Some(texture_path) = &material.texture_path {
-                    self.textures
-                        .try_add(
-                            &self.device,
-                            self.device_properties,
-                            self.command_pool.get(),
-                            self.queue,
-                            &self.allocator,
-                            entity,
-                            texture_path.as_path(),
-                        )
-                        .unwrap();
-                }
                 // TODO: Remove materials that no longer exist
             }
 

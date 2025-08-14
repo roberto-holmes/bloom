@@ -1,5 +1,6 @@
 use std::collections::{HashSet, VecDeque};
 use std::f32;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock, RwLockWriteGuard};
 use std::time::Duration;
 
@@ -116,11 +117,14 @@ impl Bloomable for Demo {
     fn init(&mut self, world: &Arc<RwLock<hecs::World>>) -> Result<()> {
         let mut w = world.write().unwrap();
         let glass = w.spawn((Material::new_clear(Vec3::new(0.9, 1.0, 1.0)),));
-        let blu = w.spawn((Material::new_basic(Vec3::new(0.8, 0.9, 1.0), 0.999),));
+        let blu = w.spawn((Material::new_basic(Vec3::new(0.8, 0.9, 1.0), 0.0),));
         let green = w.spawn((Material::new_basic(Vec3::new(0.0, 1.0, 0.5), 0.0),));
         let mirror_mat = w.spawn((Material::new_basic(Vec3::new(1.0, 1.0, 1.0), 0.992),));
+        let light = w.spawn((Material::new_emissive(Vec3::new(1.0, 1.0, 1.0), 1.0),));
 
-        spawn_duck(&mut w, mirror_mat);
+        let tex = w.spawn((Material::new_textured(PathBuf::from("textures/statue.jpg")),));
+
+        // spawn_duck(&mut w, mirror_mat);
 
         let sphere = w.spawn((Primitive::Sphere(Sphere::new(1.0, glass)?),));
         let _ = w.spawn((Instance {
@@ -133,22 +137,31 @@ impl Bloomable for Demo {
             }),
         },));
 
-        let cube = w.spawn((Primitive::Model(Model::new_cube(green)?),));
+        let cube = w.spawn((Primitive::Model(Model::new_cube(light)?),));
         let _ = w.spawn((Instance {
             primitive: cube,
-            base_transform: Matrix4::<f32>::from_nonuniform_scale(1.0, 10.0, 1.0),
+            // base_transform: Matrix4::<f32>::from_nonuniform_scale(1.0, 10.0, 1.0),
+            base_transform: Matrix4::<f32>::identity(),
             initial_transform: Matrix4::<f32>::from_translation(cgmath::Vector3 {
                 x: 0.0,
                 y: 0.0,
-                z: 10.0,
+                z: -2.0,
             }),
         },));
 
+        let cube2 = w.spawn((Primitive::Model(Model::new_cube(tex)?),));
+        let _ = w.spawn((Instance {
+            primitive: cube2,
+            base_transform: Matrix4::<f32>::identity(),
+            initial_transform: Matrix4::<f32>::identity(),
+            // initial_transform: Matrix4::<f32>::from_angle_x(cgmath::Rad(-f32::consts::FRAC_PI_2)),
+        },));
+
         // Spawn in ocean
-        let o = w.spawn((Primitive::Ocean(Ocean::new(
-            blu, 7.9, 1.29, 50000.0, 50.0, 0.2,
-        )),));
-        let _ = w.spawn((Instance::new(o),));
+        // let o = w.spawn((Primitive::Ocean(Ocean::new(
+        //     blu, 7.9, 1.29, 50000.0, 50.0, 0.2,
+        // )),));
+        // let _ = w.spawn((Instance::new(o),));
 
         let camera = w.spawn((
             Camera::default(),

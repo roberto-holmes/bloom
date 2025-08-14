@@ -194,11 +194,11 @@ impl Bloomable for Demo {
 
         self.camera = Arc::new(RwLock::new(Some(camera)));
 
-        let mirror_model = Model::new_mirror(mirror_mat)?;
+        let mirror_model = Model::new_cube(mirror_mat)?;
         let mirror_collider = Collider::new(&mirror_model, true);
 
         let plane = w.spawn((Primitive::Model(Model::new_plane(grey)?),));
-        let blank_mirror = w.spawn((Primitive::Model(Model::new_mirror(grey)?),));
+        let blank_mirror = w.spawn((Primitive::Model(Model::new_cube(grey)?),));
 
         let mirror = w.spawn((Primitive::Model(mirror_model),));
 

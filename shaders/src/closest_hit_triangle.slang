@@ -38,5 +38,7 @@ void main(inout Payload p, in Attributes attribs) {
 	float3 pos = v0.pos.xyz * barycentrics.x + v1.pos.xyz * barycentrics.y + v2.pos.xyz * barycentrics.z;
 	pos = mul(float4(pos, 1.0), ObjectToWorld4x3()).xyz;  // Transforming the position to world space
 
-	scatter(p, pos, normal, mat);
+	float2 tex_coord = v0.tex_coord.xy * barycentrics.x + v1.tex_coord.xy * barycentrics.y + v2.tex_coord.xy * barycentrics.z;
+
+	scatter(p, pos, normal, tex_coord, mat);
 }

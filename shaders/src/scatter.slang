@@ -4,23 +4,31 @@ __import structs;
 __import helpers;
 __import constants;
 
+[[vk::binding(0, 3)]]
+Sampler2D<float4> textures[];
+
 bool is_reflective_schlick(float cosine, float refractive_index) {
 	float r0 = (1. - refractive_index) / (1. + refractive_index);
 	r0 = r0 * r0;
 	return (r0 + (1. - r0) * pow((1. - cosine), 5.)) > rand_f32();
 }
 
-void reflect_ray(inout Payload ray, float3 pos, float3 normal, Material material) {
+void reflect_ray(inout Payload ray, float3 pos, float3 normal, float2 tex_coord, Material material) {
 	let lambertian_reflection = normalize(normal + random_unit_vector3());
 	let metallic_reflection = reflect(WorldRayDirection(), normal);
 	ray.direction = lerp(lambertian_reflection, metallic_reflection, material.smoothness);
 	// Bump the start of the reflected ray a little bit off the surface to
 	// try to minimize self intersections due to floating point errors
 	ray.origin = pos + normal * EPSILON;
-	ray.attenuation = material.albedo;
+
+	if(material.texture_index != 0) {
+		ray.attenuation = textures[NonUniformResourceIndex(material.texture_index)].SampleLevel(tex_coord, 1.0).rgb;
+	} else {
+		ray.attenuation = material.albedo;
+	}
 }
 
-void dielectric_scatter(inout Payload ray, float3 pos, float3 normal, Material material) {
+void dielectric_scatter(inout Payload ray, float3 pos, float3 normal, float2 tex_coord, Material material) {
 	// Figure out which side of the surface we are hitting
 
 	float relative_refractive_index = dot(ray.direction, normal) > 0. ? material.refractive_index : 1.0 / material.refractive_index;
@@ -44,20 +52,30 @@ void dielectric_scatter(inout Payload ray, float3 pos, float3 normal, Material m
 		ray.direction = output_ray_direction;
 		ray.refractive_index *= relative_refractive_index;
 	}
-	ray.attenuation = material.albedo;
+
+	if (material.texture_index != 0) {
+		ray.attenuation = textures[NonUniformResourceIndex(material.texture_index)].SampleLevel(tex_coord, 1.0).rgb;
+	} else {
+		ray.attenuation = material.albedo;
+	}
 }
 
-public void scatter(inout Payload ray, float3 pos, float3 normal, Material material) {
+public void scatter(inout Payload ray, float3 pos, float3 normal, float2 tex_coord, Material material) {
 	if (material.alpha < rand_f32()) {
 		// Dielectric
-		dielectric_scatter(ray, pos, normal, material);
+		dielectric_scatter(ray, pos, normal, tex_coord, material);
 	} else {
 		// Reflect
-		reflect_ray(ray, pos, normal, material);
+		reflect_ray(ray, pos, normal, tex_coord, material);
 	}
 
 	if (material.emissivity > rand_f32()) {
 		ray.is_light = true;
-		ray.radiance = material.emission_colour * material.emission_strength;
+		if(material.texture_index != 0){
+		// TODO: Scatter off of texture
+			ray.radiance = textures[NonUniformResourceIndex(material.texture_index)].SampleLevel(tex_coord, 1.0).rgb * material.emission_strength;
+		} else{
+			ray.radiance = material.emission_colour * material.emission_strength;
+		}
 	}
 }

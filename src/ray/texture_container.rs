@@ -12,9 +12,9 @@ use crate::{
 /// Store the Bottom Level Acceleration Structures (BLAS)
 pub struct TextureContainer<'a> {
     /// Keep track of where each entity is in the big vector
-    texture_location: HashMap<Entity, u64>, // TODO: Figure out how to give this data to the GPU
+    texture_location: HashMap<Entity, u32>, // TODO: Figure out how to give this data to the GPU
     /// Note where the gaps are in the sparse vector so that they can be filled in
-    empty_indices: Vec<u64>,
+    empty_indices: Vec<u32>,
     // Store the total number of instances in the vector (ignoring gaps in the vector)
     pub texture_count: usize,
     /// Keep track of whether we have had any instances added or removed since the last time we generated the list of addresses
@@ -95,7 +95,7 @@ impl<'a> TextureContainer<'a> {
         })
     }
     /// Add instances to the buffer, taking care to fill in any spaces left by previously removed instances.
-    /// Will return false if the entity is already present
+    /// Will return the index of the texture in the descriptor
     pub fn try_add(
         &mut self,
         device: &ash::Device,
@@ -105,9 +105,9 @@ impl<'a> TextureContainer<'a> {
         allocator: &Arc<vk_mem::Allocator>,
         entity: Entity,
         texture_path: &Path,
-    ) -> Result<bool> {
-        if self.texture_location.contains_key(&entity) {
-            return Ok(false);
+    ) -> Result<u32> {
+        if let Some(&k) = self.texture_location.get(&entity) {
+            return Ok(k);
         }
         // Create new image with sampler
         let texture = create_texture(
@@ -120,11 +120,12 @@ impl<'a> TextureContainer<'a> {
         )?;
 
         // Try to add the new texture into a gap in the vector, if possible
-        match self.empty_indices.pop() {
+        let texture_index = match self.empty_indices.pop() {
             Some(i) => {
                 log::debug!("Inserting texture into index {i}");
                 self.textures[i as usize] = Some(texture);
                 self.texture_location.insert(entity, i);
+                i
             }
             None => {
                 log::debug!(
@@ -137,15 +138,16 @@ impl<'a> TextureContainer<'a> {
                     log::debug!("Reallocating texture vector");
                     self.textures.reserve(RESERVED_SIZE);
                 }
-                self.textures.push(Some(texture));
                 self.texture_location
-                    .insert(entity, self.texture_count as u64);
+                    .insert(entity, self.texture_count as u32);
+                self.textures.push(Some(texture));
+                self.texture_count as u32
             }
-        }
+        };
 
         self.texture_count += 1;
         self.has_changed = true;
-        Ok(true)
+        Ok(texture_index)
     }
 
     /// Removes an entity from the instance buffer
