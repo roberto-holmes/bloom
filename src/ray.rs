@@ -11,7 +11,7 @@ use winit::dpi::PhysicalSize;
 
 use crate::api::Skybox;
 use crate::core::create_commands_flight_frames;
-use crate::material::{Material, MaterialData};
+use crate::material::{self, Material, MaterialData};
 use crate::oceans::{Ocean, FFT_IMAGES};
 use crate::physics::Physics;
 use crate::primitives::{
@@ -784,20 +784,38 @@ impl<'a> Ray<'a> {
                     continue;
                 }
                 // Check for textures and add them to the texture descriptor, while keeping track of the index in the texture array
-                if let Some(texture_path) = &material.texture_path {
-                    material.update_texture_index(
-                        self.textures
-                            .try_add(
-                                &self.device,
-                                self.device_properties,
-                                self.command_pool.get(),
-                                self.queue,
-                                &self.allocator,
-                                entity,
-                                texture_container::TextureType::Simple(texture_path.as_path()),
-                            )
-                            .unwrap(),
-                    );
+                match &material.path {
+                    material::Path::None => {}
+                    material::Path::Texture(path) => {
+                        material.update_texture_index(
+                            self.textures
+                                .try_add(
+                                    &self.device,
+                                    self.device_properties,
+                                    self.command_pool.get(),
+                                    self.queue,
+                                    &self.allocator,
+                                    entity,
+                                    texture_container::TextureType::Simple(path.as_path()),
+                                )
+                                .unwrap(),
+                        );
+                    }
+                    material::Path::Model(path, index) => {
+                        material.update_texture_index(
+                            self.textures
+                                .try_add(
+                                    &self.device,
+                                    self.device_properties,
+                                    self.command_pool.get(),
+                                    self.queue,
+                                    &self.allocator,
+                                    entity,
+                                    texture_container::TextureType::Model(path.as_path(), *index),
+                                )
+                                .unwrap(),
+                        );
+                    }
                 }
                 // If the material is new, remake the buffer with all the materials
                 self.materials.push(material.get_data());

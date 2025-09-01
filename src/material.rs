@@ -2,6 +2,12 @@ use std::path::PathBuf;
 
 use crate::vec::Vec3;
 
+pub(crate) enum Path {
+    None,
+    Texture(PathBuf),
+    Model(PathBuf, usize),
+}
+
 #[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub(crate) struct MaterialData {
@@ -17,7 +23,7 @@ pub(crate) struct MaterialData {
 
 pub struct Material {
     data: MaterialData,
-    pub(crate) texture_path: Option<PathBuf>,
+    pub(crate) path: Path,
 }
 
 impl Material {
@@ -31,7 +37,7 @@ impl Material {
         emitted_colour: Vec3,
     ) -> Self {
         Self {
-            texture_path: None,
+            path: Path::None,
             data: MaterialData {
                 albedo,
                 smoothness,
@@ -67,9 +73,15 @@ impl Material {
         material
     }
     #[allow(unused)]
-    pub fn new_textured(path: PathBuf) -> Self {
+    pub fn from_texture(path: PathBuf) -> Self {
         let mut material = Material::default();
-        material.texture_path = Some(path);
+        material.path = Path::Texture(path);
+        material
+    }
+    #[allow(unused)]
+    pub(crate) fn from_model(path: PathBuf, index: usize) -> Self {
+        let mut material = Material::default();
+        material.path = Path::Model(path, index);
         material
     }
     pub(crate) fn get_data(&self) -> MaterialData {
@@ -104,7 +116,7 @@ impl Material {
 impl Default for Material {
     fn default() -> Self {
         Self {
-            texture_path: None,
+            path: Path::None,
             data: MaterialData {
                 albedo: Vec3::new(1.0, 1.0, 1.0),
                 smoothness: 0.0,

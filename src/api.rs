@@ -1,11 +1,19 @@
-use std::{path::PathBuf, sync::RwLock, time::Duration};
+use std::{
+    path::PathBuf,
+    sync::{RwLock, RwLockWriteGuard},
+    time::Duration,
+};
 
 use anyhow::Result;
 use cgmath::{Matrix4, Rad, SquareMatrix};
 use hecs::Entity;
 
 use crate::{
-    primitives::{Extrema, AABB},
+    material::Material,
+    primitives::{
+        model::{self, Model},
+        Extrema, Primitive, AABB,
+    },
     quaternion::Quaternion,
     structures::Cubemap,
     vec::Vec3,
@@ -174,4 +182,120 @@ pub trait Bloomable {
     fn resize(&mut self, width: u32, height: u32, world: &std::sync::Arc<RwLock<hecs::World>>);
     fn display_tick(&mut self, delta_time: Duration, world: &std::sync::Arc<RwLock<hecs::World>>);
     fn physics_tick(&mut self, delta_time: Duration, world: &std::sync::Arc<RwLock<hecs::World>>);
+}
+
+pub fn import_gltf(world: &mut RwLockWriteGuard<hecs::World>, path: &str) -> Vec<Entity> {
+    let mut imported_models = Vec::new();
+    let (document, buffers, images) = gltf::import(path).unwrap(); // TODO: Error handling
+
+    let mut textures = Vec::with_capacity(images.len());
+    // Add textures to world
+    for (i, _) in images.iter().enumerate() {
+        textures.push(world.spawn((Material::from_model(PathBuf::from(path), i),)));
+    }
+
+    for m in document.meshes() {
+        for p in m.primitives() {
+            if p.mode() != gltf::mesh::Mode::Triangles {
+                log::warn!(
+                    "Primitive is of type {:?} instead of triangles. Unsure what to do.",
+                    p.mode()
+                );
+            }
+            // TODO: PBR
+            let material_entity = if let Some(base_colour_texture) =
+                p.material().pbr_metallic_roughness().base_color_texture()
+            {
+                // TODO: Figure out base_colour_texture.tex_coord()
+                if base_colour_texture.texture().index() >= textures.len() {
+                    log::warn!(
+                        "Trying to index non-existant texture (index {} of {} textures)",
+                        base_colour_texture.texture().index(),
+                        textures.len()
+                    );
+                    continue;
+                } else {
+                    textures[base_colour_texture.texture().index()]
+                    // TODO: Consider using sampler from file
+                    // let sampler = base_colour_texture.texture().sampler();
+                }
+            } else {
+                let colour = p.material().pbr_metallic_roughness().base_color_factor();
+                world.spawn((Material::new_basic(
+                    Vec3(colour[..3].try_into().unwrap()),
+                    0.0,
+                ),))
+            };
+
+            let r = p.reader(|buffer| Some(&buffers[buffer.index()]));
+
+            let mut indices = Vec::new();
+            if let Some(gltf::mesh::util::ReadIndices::U16(gltf::accessor::Iter::Standard(iter))) =
+                r.read_indices()
+            {
+                for i in iter {
+                    indices.push(i as u32);
+                }
+            }
+
+            let mut positions = Vec::new();
+            if let Some(iter) = r.read_positions() {
+                for v in iter {
+                    positions.push(v);
+                }
+            }
+            let mut tex_coords = Vec::new();
+            if let Some(gltf::mesh::util::ReadTexCoords::F32(gltf::accessor::Iter::Standard(
+                iter,
+            ))) = r.read_tex_coords(0)
+            {
+                for t in iter {
+                    tex_coords.push(t);
+                }
+            }
+            let mut normals = Vec::new();
+            if let Some(iter) = r.read_normals() {
+                for v in iter {
+                    normals.push(v);
+                }
+            }
+
+            if positions.len() != tex_coords.len() {
+                log::error!(
+                    "Primitive vertices don't all have a texture coordinate ({} vs {})",
+                    positions.len(),
+                    tex_coords.len()
+                );
+                continue;
+            }
+            if positions.len() != normals.len() {
+                log::error!(
+                    "Primitive vertices don't all have a normal ({} vs {})",
+                    positions.len(),
+                    tex_coords.len()
+                );
+                continue;
+            }
+
+            let mut vertices = Vec::with_capacity(positions.len());
+
+            // Populate the vertices with positions and normals
+            for (i, p) in positions.iter().enumerate() {
+                vertices.push(model::Vertex::new(
+                    Vec3(*p),
+                    Vec3(normals[i]),
+                    tex_coords[i],
+                ));
+            }
+
+            let material_count = indices.len() / 3;
+            let material_entities = vec![material_entity; material_count];
+
+            let model = Model::new(vertices, indices, material_entities);
+
+            imported_models.push(world.spawn((Primitive::Model(model),)));
+        }
+    }
+
+    imported_models
 }

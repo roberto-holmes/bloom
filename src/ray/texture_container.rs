@@ -1,4 +1,5 @@
 use ash::vk;
+use gltf::Gltf;
 use hecs::Entity;
 use std::{
     cmp::max,
@@ -18,6 +19,15 @@ use crate::{
 pub enum TextureType<'a> {
     Cubemap(Cubemap<&'a Path>),
     Simple(&'a Path),
+    Model(&'a Path, usize),
+}
+
+struct ImageData {
+    pixels: Vec<u8>,
+    width: u32,
+    height: u32,
+    format: vk::Format,
+    name: String,
 }
 
 /// Store the Bottom Level Acceleration Structures (BLAS)
@@ -122,13 +132,22 @@ impl<'a> TextureContainer<'a> {
         }
         // Create new image with sampler
         let texture = match texture_path {
-            TextureType::Simple(path) => create_texture(
+            TextureType::Simple(path) => create_from_image(
                 &device,
                 device_properties,
                 &allocator,
                 command_pool,
                 queue,
                 path,
+            )?,
+            TextureType::Model(path, index) => create_from_model(
+                &device,
+                device_properties,
+                &allocator,
+                command_pool,
+                queue,
+                path,
+                index,
             )?,
             TextureType::Cubemap(cubemap) => create_cubemap(
                 device,
@@ -289,7 +308,7 @@ pub fn create_placeholder_texture<'a>(
     Ok(image)
 }
 
-fn get_texture_data(path: &Path) -> Result<(Vec<u8>, u32, u32)> {
+fn get_texture_data(path: &Path) -> Result<ImageData> {
     let image_reader = image::ImageReader::open(path);
     if let Err(e) = &image_reader {
         raise(format!("Failed to open image {}", path.display()), e)?;
@@ -301,52 +320,54 @@ fn get_texture_data(path: &Path) -> Result<(Vec<u8>, u32, u32)> {
     let image_object = image_decoder.unwrap();
     let (width, height) = (image_object.width(), image_object.height());
     let image_size = (std::mem::size_of::<u8>() as u32 * width * height * 4) as vk::DeviceSize;
-    let image_data = image_object.to_rgba8().into_raw();
+    let pixels = image_object.to_rgba8().into_raw();
     if image_size <= 0 {
         raise_root_error(format!("Failed to load texture image {}", path.display()))?;
     }
 
-    if image_data.len() as u64 != image_size {
+    if pixels.len() as u64 != image_size {
         raise_root_error(format!(
             "Image size != width x height x 4 Bytes ({} != {width}x{height})",
-            image_data.len()
+            pixels.len()
         ))?;
     }
 
-    Ok((image_data, width, height))
+    Ok(ImageData {
+        name: format!("{}", path.display()),
+        pixels,
+        width,
+        height,
+        format: vk::Format::R8G8B8A8_SRGB,
+    })
 }
 
-pub fn create_texture<'a>(
+fn create_texture<'a>(
     device: &ash::Device,
     device_properties: vk::PhysicalDeviceProperties2<'a>,
     allocator: &Arc<vk_mem::Allocator>,
     command_pool: vk::CommandPool,
     queue: vk::Queue,
-    texture_path: &Path,
+    image_data: ImageData,
 ) -> Result<vulkan::Image<'a>> {
-    let (image_data, width, height) = get_texture_data(texture_path)?;
-
     // TODO: Do we always want to create all the mip maps
-    let mip_levels = ((max(width, height) as f32).log2().floor() as u32) + 1;
-
-    log::debug!(
-        "Texture {} has {mip_levels} mip levels",
-        texture_path.display()
-    );
+    let mip_levels = ((max(image_data.width, image_data.height) as f32)
+        .log2()
+        .floor() as u32)
+        + 1;
 
     let mut image = vulkan::Image::new_populated(
-        format!("{}", texture_path.display()),
+        image_data.name,
         device,
         allocator,
         device_properties,
         command_pool,
         queue,
-        image_data.as_ptr(),
-        image_data.len() as vk::DeviceSize,
-        width,
-        height,
+        image_data.pixels.as_ptr(),
+        image_data.pixels.len() as vk::DeviceSize,
+        image_data.width,
+        image_data.height,
         mip_levels,
-        vk::Format::R8G8B8A8_SRGB,
+        image_data.format,
     )
     .unwrap(); // Todo: Replace with new errors
 
@@ -367,27 +388,27 @@ pub fn create_cubemap<'a>(
     queue: vk::Queue,
     cubemap_path: Cubemap<&Path>,
 ) -> Result<vulkan::Image<'a>> {
-    let (px, px_width, px_height) = get_texture_data(cubemap_path.px)?;
-    let (nx, nx_width, nx_height) = get_texture_data(cubemap_path.nx)?;
-    let (py, py_width, py_height) = get_texture_data(cubemap_path.py)?;
-    let (ny, ny_width, ny_height) = get_texture_data(cubemap_path.ny)?;
-    let (pz, pz_width, pz_height) = get_texture_data(cubemap_path.pz)?;
-    let (nz, nz_width, nz_height) = get_texture_data(cubemap_path.nz)?;
+    let px_data = get_texture_data(cubemap_path.px)?;
+    let nx_data = get_texture_data(cubemap_path.nx)?;
+    let py_data = get_texture_data(cubemap_path.py)?;
+    let ny_data = get_texture_data(cubemap_path.ny)?;
+    let pz_data = get_texture_data(cubemap_path.pz)?;
+    let nz_data = get_texture_data(cubemap_path.nz)?;
 
     let mut widths = HashSet::with_capacity(6);
-    widths.insert(px_width);
-    widths.insert(nx_width);
-    widths.insert(py_width);
-    widths.insert(ny_width);
-    widths.insert(pz_width);
-    widths.insert(nz_width);
+    widths.insert(px_data.width);
+    widths.insert(px_data.width);
+    widths.insert(px_data.width);
+    widths.insert(px_data.width);
+    widths.insert(px_data.width);
+    widths.insert(px_data.width);
     let mut heights = HashSet::with_capacity(6);
-    heights.insert(px_height);
-    heights.insert(nx_height);
-    heights.insert(py_height);
-    heights.insert(ny_height);
-    heights.insert(pz_height);
-    heights.insert(nz_height);
+    heights.insert(px_data.height);
+    heights.insert(nx_data.height);
+    heights.insert(py_data.height);
+    heights.insert(ny_data.height);
+    heights.insert(pz_data.height);
+    heights.insert(nz_data.height);
 
     if widths.len() != 1 || heights.len() != 1 {
         raise_root_error("Cubemap images do not have the same dimensions")?;
@@ -403,12 +424,12 @@ pub fn create_cubemap<'a>(
     let size = width * height * BYTES_PER_PIXEL;
 
     let data = [
-        px.as_ptr(),
-        nx.as_ptr(),
-        py.as_ptr(),
-        ny.as_ptr(),
-        pz.as_ptr(),
-        nz.as_ptr(),
+        px_data.pixels.as_ptr(),
+        nx_data.pixels.as_ptr(),
+        py_data.pixels.as_ptr(),
+        ny_data.pixels.as_ptr(),
+        pz_data.pixels.as_ptr(),
+        nz_data.pixels.as_ptr(),
     ];
 
     let mut image = vulkan::Image::new_populated_cubemap(
@@ -432,4 +453,91 @@ pub fn create_cubemap<'a>(
     log::debug!("Cubemap created");
 
     Ok(image)
+}
+
+pub fn create_from_image<'a>(
+    device: &ash::Device,
+    device_properties: vk::PhysicalDeviceProperties2<'a>,
+    allocator: &Arc<vk_mem::Allocator>,
+    command_pool: vk::CommandPool,
+    queue: vk::Queue,
+    texture_path: &Path,
+) -> Result<vulkan::Image<'a>> {
+    let image_data = get_texture_data(texture_path)?;
+
+    create_texture(
+        &device,
+        device_properties,
+        &allocator,
+        command_pool,
+        queue,
+        image_data,
+    )
+}
+
+fn create_from_model<'a>(
+    device: &ash::Device,
+    device_properties: vk::PhysicalDeviceProperties2<'a>,
+    allocator: &Arc<vk_mem::Allocator>,
+    command_pool: vk::CommandPool,
+    queue: vk::Queue,
+    path: &Path,
+    index: usize,
+) -> Result<vulkan::Image<'a>> {
+    // TODO: seek the file to the image in the buffer so we don't have to load the whole thing and can avoid the clone
+    let (_, _, images) = gltf::import(path).unwrap(); // TODO: error handling
+
+    let image = &images[index];
+
+    let format = images[index].format;
+
+    log::info!("Opening image of type {:?}", format);
+
+    let pixels = match format {
+        gltf::image::Format::R8G8B8 => {
+            // Add an alpha channel (GPUs don't tend to support images with only 3 channels)
+            let mut new_image = Vec::with_capacity((image.width * image.height * 4) as usize);
+            for i in 0..(image.width * image.height) as usize {
+                new_image.push(image.pixels[3 * i]); // R
+                new_image.push(image.pixels[3 * i + 1]); // G
+                new_image.push(image.pixels[3 * i + 2]); // B
+                new_image.push(0); // A
+            }
+            new_image
+        }
+        gltf::image::Format::R8G8B8A8 => image.pixels.clone(),
+        _ => {
+            log::error!(
+                "GLTF image format {:?} of image {index} of {} is unsupported. Assuming RGBA8",
+                format,
+                path.display()
+            );
+            image.pixels.clone()
+        }
+    };
+
+    assert!(pixels.len() as u32 == image.width * image.height * 4);
+
+    log::info!(
+        "Image had {} pixels, now has {}",
+        image.pixels.len(),
+        pixels.len()
+    );
+
+    let image_data = ImageData {
+        pixels,
+        width: image.width,
+        height: image.height,
+        name: format!("{}-{index}", path.display()),
+        format: vk::Format::R8G8B8A8_SRGB,
+    };
+
+    create_texture(
+        &device,
+        device_properties,
+        &allocator,
+        command_pool,
+        queue,
+        image_data,
+    )
 }

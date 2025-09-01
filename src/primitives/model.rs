@@ -27,7 +27,7 @@ pub struct Vertex {
 }
 
 impl Vertex {
-    fn new(pos: Vec3, normal: Vec3, tex_coord: [f32; 2]) -> Self {
+    pub(crate) fn new(pos: Vec3, normal: Vec3, tex_coord: [f32; 2]) -> Self {
         Self {
             pos,
             _normal: normal,
@@ -55,12 +55,12 @@ pub struct Model {
 
 impl Model {
     pub fn new(vertices: Vec<Vertex>, indices: Vec<u32>, material_entities: Vec<Entity>) -> Self {
-        let material_count = indices.len() / 3;
+        let triangle_count = indices.len() / 3;
         Self {
             vertices,
             indices,
             material_entities,
-            material_indices: Vec::with_capacity(material_count),
+            material_indices: vec![0; triangle_count],
             vertex_buffer: None,
             index_buffer: None,
             mat_index_buffer: None,
@@ -130,9 +130,9 @@ impl Model {
             vertices.push(Vertex::new(Vec3(*p), Vec3(normals[i]), tex_coords[i]));
         }
 
-        let material_count = indices.len() / 3;
-        let material_entities = vec![material_entity; material_count];
-        let material_indices = vec![0; material_count];
+        let triangle_count = indices.len() / 3;
+        let material_entities = vec![material_entity; triangle_count];
+        let material_indices = vec![0; triangle_count];
 
         Self {
             vertices,

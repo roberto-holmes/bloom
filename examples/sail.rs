@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex, RwLock, RwLockWriteGuard};
 use std::time::Duration;
 
 use anyhow::Result;
-use bloom::api::{Instance, Orientation, Skybox};
+use bloom::api::{self, Instance, Orientation, Skybox};
 use bloom::material::Material;
 use bloom::primitives::model::Model;
 use bloom::primitives::ocean::Ocean;
@@ -118,11 +118,11 @@ impl Bloomable for Demo {
         let mut w = world.write().unwrap();
         let glass = w.spawn((Material::new_clear(Vec3::new(0.9, 1.0, 1.0)),));
         let blu = w.spawn((Material::new_basic(Vec3::new(0.8, 0.9, 1.0), 0.999),));
-        let green = w.spawn((Material::new_basic(Vec3::new(0.0, 1.0, 0.5), 0.0),));
-        let mirror_mat = w.spawn((Material::new_basic(Vec3::new(1.0, 1.0, 1.0), 0.992),));
+        // let green = w.spawn((Material::new_basic(Vec3::new(0.0, 1.0, 0.5), 0.0),));
+        // let mirror_mat = w.spawn((Material::new_basic(Vec3::new(1.0, 1.0, 1.0), 0.992),));
         let light = w.spawn((Material::new_emissive(Vec3::new(1.0, 1.0, 1.0), 1.0),));
 
-        let tex = w.spawn((Material::new_textured(PathBuf::from("textures/statue.jpg")),));
+        let tex = w.spawn((Material::from_texture(PathBuf::from("textures/statue.jpg")),));
 
         let _ = w.spawn((Skybox::new(
             PathBuf::from("textures/skybox/px.png"),
@@ -133,7 +133,7 @@ impl Bloomable for Demo {
             PathBuf::from("textures/skybox/nz.png"),
         ),));
 
-        // spawn_duck(&mut w, mirror_mat);
+        spawn_duck(&mut w);
 
         let sphere = w.spawn((Primitive::Sphere(Sphere::new(1.0, glass)?),));
         let _ = w.spawn((Instance {
@@ -162,6 +162,16 @@ impl Bloomable for Demo {
             primitive: cube2,
             base_transform: Matrix4::<f32>::identity(),
             initial_transform: Matrix4::<f32>::from_angle_x(cgmath::Rad(-f32::consts::FRAC_PI_4)),
+        },));
+
+        let cube3 = api::import_gltf(&mut w, "models/cube.glb")[0];
+
+        let _ = w.spawn((Instance {
+            primitive: cube3,
+            base_transform: Matrix4::<f32>::identity(),
+            initial_transform: Matrix4::<f32>::from_translation(cgmath::Vector3::new(
+                4.0, 2.0, 0.0,
+            )),
         },));
 
         // Spawn in ocean
@@ -461,23 +471,14 @@ impl KeyboardState {
     }
 }
 
-fn spawn_duck(w: &mut RwLockWriteGuard<hecs::World>, mat: Entity) {
-    let (document, buffers, _) = gltf::import("models/Duck.glb").unwrap();
-    let p = document
-        .meshes()
-        .next()
-        .unwrap()
-        .primitives()
-        .next()
-        .unwrap();
-    let duck_model = Model::new_gltf_primitive(p.clone(), &buffers, mat);
-    let d = w.spawn((Primitive::Model(duck_model),));
+fn spawn_duck(w: &mut RwLockWriteGuard<hecs::World>) {
+    let duck = api::import_gltf(w, "models/Duck.glb");
 
     let _ = w.spawn((Instance {
-        primitive: d,
+        primitive: duck[0],
         base_transform: Matrix4::<f32>::from_translation(cgmath::Vector3::new(0.0, -0.5, 0.0))
             * Matrix4::from_angle_y(cgmath::Rad(-0.23 - std::f32::consts::FRAC_PI_2))
             * Matrix4::from_scale(1.0 / 100.0),
-        initial_transform: Matrix4::<f32>::from_translation(cgmath::Vector3::new(0.0, -1.0, 0.0)),
+        initial_transform: Matrix4::<f32>::from_translation(cgmath::Vector3::new(0.0, 1.0, 0.0)),
     },));
 }
