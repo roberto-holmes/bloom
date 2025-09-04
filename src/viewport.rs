@@ -1,23 +1,22 @@
 use std::{
     ffi::CString,
     path::Path,
-    sync::{mpsc, Arc, RwLock},
+    sync::{Arc, RwLock, mpsc},
     time::Duration,
 };
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use ash::vk;
 use memoffset::offset_of;
 use winit::{dpi::PhysicalSize, window::Window};
 
 use crate::{
-    core,
+    MAX_FRAMES_IN_FLIGHT, core,
     structures::{self, SwapChainStuff},
     sync,
     tools::read_shader_code,
     uniforms::UniformBufferObject,
     vulkan::{self, Destructor},
-    MAX_FRAMES_IN_FLIGHT,
 };
 
 pub struct TransferCommand {

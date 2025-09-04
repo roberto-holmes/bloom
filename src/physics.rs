@@ -6,16 +6,16 @@ use std::{
     time::Instant,
 };
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use ash::vk;
 
 use crate::{
+    MAX_FRAMES_IN_FLIGHT,
     core::{self, create_shader_module},
     ray::instance_buffer::InstanceBuffer,
     structures,
     tools::read_shader_code,
     vulkan::Destructor,
-    MAX_FRAMES_IN_FLIGHT,
 };
 
 #[derive(Debug, Default)]

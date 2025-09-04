@@ -1,9 +1,9 @@
 use std::collections::{HashMap, HashSet};
 use std::ffi::CString;
 use std::path::Path;
-use std::sync::{mpsc, Arc, RwLock};
+use std::sync::{Arc, RwLock, mpsc};
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use ash::vk;
 use hecs::{Entity, World};
 use vk_mem;
@@ -12,10 +12,10 @@ use winit::dpi::PhysicalSize;
 use crate::api::Skybox;
 use crate::core::create_commands_flight_frames;
 use crate::material::{self, Material, MaterialData};
-use crate::oceans::{Ocean, FFT_IMAGES};
+use crate::oceans::{FFT_IMAGES, Ocean};
 use crate::physics::Physics;
 use crate::primitives::{
-    Addressable, ObjectType, Objectionable, Primitive, PrimitiveAddresses, AABB,
+    AABB, Addressable, ObjectType, Objectionable, Primitive, PrimitiveAddresses,
 };
 use crate::ray::acceleration_structure::AccelerationStructure;
 use crate::ray::descriptor::Descriptor;
@@ -24,7 +24,7 @@ use crate::ray::texture_container::TextureContainer;
 use crate::uniforms;
 use crate::vec::Vec3;
 use crate::vulkan::Destructor;
-use crate::{api, core, primitives, structures, sync, tools, vulkan, MAX_FRAMES_IN_FLIGHT};
+use crate::{MAX_FRAMES_IN_FLIGHT, api, core, primitives, structures, sync, tools, vulkan};
 
 mod acceleration_structure;
 mod descriptor;
@@ -879,7 +879,7 @@ impl<'a> Ray<'a> {
                             return Err(anyhow!(
                                 "Failed to find primitive {:?} in the blas",
                                 instance.primitive
-                            ))
+                            ));
                         }
                     };
 
@@ -1517,7 +1517,7 @@ fn create_bottom_level_acceleration_structure(
             return Err(anyhow!(
                 "Trying to construct a BLAS from unsupported primitive {:?}",
                 geometry_type
-            ))
+            ));
         }
     }
     // TODO: Set flags to vk::BuildAccelerationStructureFlagsKHR::ALLOW_UPDATE | PREFER_FAST_BUILD if this object will be modified

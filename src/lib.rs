@@ -19,14 +19,14 @@ mod vulkan;
 
 use std::{
     io::Write,
-    sync::{mpsc, Arc, RwLock},
+    sync::{Arc, RwLock, mpsc},
     thread::{self, JoinHandle},
     time::{Duration, Instant, SystemTime},
 };
 
 use anyhow::Result;
 use api::Bloomable;
-use ash::{vk, Entry};
+use ash::{Entry, vk};
 use bus::Bus;
 use colored::Colorize;
 use core::*;
@@ -654,26 +654,28 @@ where
         let mut last_time = Instant::now();
         match std::thread::Builder::new()
             .name(thread_name.to_string())
-            .spawn(move || loop {
-                match should_die.read() {
-                    Ok(should_die) => {
-                        if *should_die == true {
-                            return;
+            .spawn(move || {
+                loop {
+                    match should_die.read() {
+                        Ok(should_die) => {
+                            if *should_die == true {
+                                return;
+                            }
                         }
+                        Err(_) => return,
                     }
-                    Err(_) => return,
-                }
-                match rx.recv_timeout(Duration::from_millis(10)) {
-                    Ok(v) => {
-                        if v == step {
-                            f(&mut user_app, last_time.elapsed(), &world);
-                            last_time = Instant::now();
+                    match rx.recv_timeout(Duration::from_millis(10)) {
+                        Ok(v) => {
+                            if v == step {
+                                f(&mut user_app, last_time.elapsed(), &world);
+                                last_time = Instant::now();
+                            }
                         }
+                        Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
                     }
-                    Err(mpsc::RecvTimeoutError::Timeout) => continue,
-                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    let _ = sync_tx.send(true);
                 }
-                let _ = sync_tx.send(true);
             }) {
             Ok(v) => Some(v),
             Err(_) => None,

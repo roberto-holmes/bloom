@@ -1,5 +1,5 @@
 use anyhow::Result;
-use ash::{vk, RawPtr};
+use ash::{RawPtr, vk};
 
 use crate::vulkan;
 

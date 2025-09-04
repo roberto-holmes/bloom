@@ -11,8 +11,8 @@ use hecs::Entity;
 use crate::{
     material::Material,
     primitives::{
+        AABB, Extrema, Primitive,
         model::{self, Model},
-        Extrema, Primitive, AABB,
     },
     quaternion::Quaternion,
     structures::Cubemap,

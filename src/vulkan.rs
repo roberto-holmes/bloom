@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use anyhow::{anyhow, Result};
-use ash::{vk, RawPtr};
+use anyhow::{Result, anyhow};
+use ash::{RawPtr, vk};
 use colored::Colorize;
 use vk_mem::{self, Alloc};
 
@@ -608,18 +608,20 @@ impl Buffer {
         &self,
         size: vk::DeviceSize,
         offset: vk::DeviceSize,
-    ) -> Result<&mut [u8]> { unsafe {
-        if self.allocation_info.mapped_data.is_null() {
-            log::error!("Tried to access an unmapped buffer");
-            return Err(anyhow::anyhow!("Invalid buffer configuration"));
+    ) -> Result<&mut [u8]> {
+        unsafe {
+            if self.allocation_info.mapped_data.is_null() {
+                log::error!("Tried to access an unmapped buffer");
+                return Err(anyhow::anyhow!("Invalid buffer configuration"));
+            }
+            Ok(std::slice::from_raw_parts_mut(
+                self.allocation_info
+                    .mapped_data
+                    .byte_offset(offset as isize) as *mut u8,
+                size as usize,
+            ))
         }
-        Ok(std::slice::from_raw_parts_mut(
-            self.allocation_info
-                .mapped_data
-                .byte_offset(offset as isize) as *mut u8,
-            size as usize,
-        ))
-    }}
+    }
 }
 
 impl Drop for Buffer {
@@ -1280,22 +1282,24 @@ impl<'a> Image<'a> {
     pub fn is_correct_size(&self, width: u32, height: u32) -> bool {
         width == self.width && height == self.height
     }
-    unsafe fn clean(&mut self) { unsafe {
-        log::trace!("Destroying {} image", self.name.cyan());
-        if let Some(sampler) = self.sampler {
-            (self.destroy_sampler)(self.device, sampler, None.as_raw_ptr());
-            self.sampler = None;
+    unsafe fn clean(&mut self) {
+        unsafe {
+            log::trace!("Destroying {} image", self.name.cyan());
+            if let Some(sampler) = self.sampler {
+                (self.destroy_sampler)(self.device, sampler, None.as_raw_ptr());
+                self.sampler = None;
+            }
+            self.view = None;
+            if self.image.is_some() {
+                vk_mem::ffi::vmaDestroyImage(
+                    self.allocator_pool.allocator.internal,
+                    self.image.unwrap(),
+                    self.allocation.0,
+                );
+            }
+            self.image = None;
         }
-        self.view = None;
-        if self.image.is_some() {
-            vk_mem::ffi::vmaDestroyImage(
-                self.allocator_pool.allocator.internal,
-                self.image.unwrap(),
-                self.allocation.0,
-            );
-        }
-        self.image = None;
-    }}
+    }
 }
 
 impl<'a> Drop for Image<'a> {

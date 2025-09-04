@@ -1,7 +1,7 @@
 use ash::vk;
 use bus::Bus;
 use std::{
-    sync::{mpsc, Arc, RwLock},
+    sync::{Arc, RwLock, mpsc},
     thread::JoinHandle,
     time::{Duration, Instant},
     u64,
@@ -9,12 +9,12 @@ use std::{
 use winit::dpi::PhysicalSize;
 
 use crate::{
+    MAX_FRAMES_IN_FLIGHT,
     api::{self, Bloomable},
     core,
-    error::{raise, Result},
+    error::{Result, raise},
     ray, structures, uniforms, viewport,
     vulkan::Destructor,
-    MAX_FRAMES_IN_FLIGHT,
 };
 
 pub enum ResizedSource {

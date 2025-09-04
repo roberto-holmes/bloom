@@ -10,8 +10,8 @@ use std::{
 
 use crate::{
     core::{begin_single_time_commands, end_single_time_command},
-    error::{raise, raise_root_error, Error, Result},
-    ray::{descriptor::Descriptor, RESERVED_SIZE},
+    error::{Error, Result, raise, raise_root_error},
+    ray::{RESERVED_SIZE, descriptor::Descriptor},
     structures::Cubemap,
     vulkan::{self},
 };

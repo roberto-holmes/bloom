@@ -1,11 +1,12 @@
 use crate::structures::{QueueFamilyIndices, SurfaceStuff, SwapChainSupportDetails};
 use crate::vulkan::Destructor;
+use crate::{MAX_FRAMES_IN_FLIGHT, vulkan};
 use crate::{
+    VALIDATION,
     debug::{check_validation_layer_support, populate_debug_messenger_create_info},
-    tools, VALIDATION,
+    tools,
 };
-use crate::{vulkan, MAX_FRAMES_IN_FLIGHT};
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use ash::vk;
 use std::collections::HashSet;
 use std::ffi::CString;

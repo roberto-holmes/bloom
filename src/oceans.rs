@@ -1,15 +1,15 @@
 use std::{array, ffi::CString, path::Path, sync::Arc, time::Instant};
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use ash::vk;
 
 use crate::{
+    MAX_FRAMES_IN_FLIGHT,
     core::{self, begin_single_time_commands, create_shader_module, end_single_time_command},
     primitives::{self},
     structures,
     tools::read_shader_code,
     vulkan::{Destructor, Image},
-    MAX_FRAMES_IN_FLIGHT,
 };
 
 pub const FFT_IMAGES: usize = 1; // How many images do we need?

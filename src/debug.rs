@@ -1,33 +1,38 @@
 use std::{ffi::CStr, os::raw::c_void};
 
-use anyhow::{anyhow, Context, Result};
-use ash::{ext::debug_utils, vk, Entry};
+use anyhow::{Context, Result, anyhow};
+use ash::{Entry, ext::debug_utils, vk};
 
-use crate::{tools, VALIDATION};
+use crate::{VALIDATION, tools};
 
 pub unsafe extern "system" fn vulkan_debug_callback(
     message_severity: vk::DebugUtilsMessageSeverityFlagsEXT,
     message_type: vk::DebugUtilsMessageTypeFlagsEXT,
     p_callback_data: *const vk::DebugUtilsMessengerCallbackDataEXT,
     _p_user_data: *mut c_void,
-) -> vk::Bool32 { unsafe {
-    let types = match message_type {
-        vk::DebugUtilsMessageTypeFlagsEXT::GENERAL => "[General]",
-        vk::DebugUtilsMessageTypeFlagsEXT::PERFORMANCE => "[Performance]",
-        vk::DebugUtilsMessageTypeFlagsEXT::VALIDATION => "[Validation]",
-        _ => "[Unknown]",
-    };
-    let message = String::from_utf8_lossy(CStr::from_ptr((*p_callback_data).p_message).to_bytes());
-    match message_severity {
-        vk::DebugUtilsMessageSeverityFlagsEXT::VERBOSE => log::debug!("{} - {}", types, message),
-        vk::DebugUtilsMessageSeverityFlagsEXT::INFO => log::info!("{} - {}", types, message),
-        vk::DebugUtilsMessageSeverityFlagsEXT::WARNING => log::warn!("{} - {}", types, message),
-        vk::DebugUtilsMessageSeverityFlagsEXT::ERROR => log::error!("{} - {}", types, message),
+) -> vk::Bool32 {
+    unsafe {
+        let types = match message_type {
+            vk::DebugUtilsMessageTypeFlagsEXT::GENERAL => "[General]",
+            vk::DebugUtilsMessageTypeFlagsEXT::PERFORMANCE => "[Performance]",
+            vk::DebugUtilsMessageTypeFlagsEXT::VALIDATION => "[Validation]",
+            _ => "[Unknown]",
+        };
+        let message =
+            String::from_utf8_lossy(CStr::from_ptr((*p_callback_data).p_message).to_bytes());
+        match message_severity {
+            vk::DebugUtilsMessageSeverityFlagsEXT::VERBOSE => {
+                log::debug!("{} - {}", types, message)
+            }
+            vk::DebugUtilsMessageSeverityFlagsEXT::INFO => log::info!("{} - {}", types, message),
+            vk::DebugUtilsMessageSeverityFlagsEXT::WARNING => log::warn!("{} - {}", types, message),
+            vk::DebugUtilsMessageSeverityFlagsEXT::ERROR => log::error!("{} - {}", types, message),
 
-        _ => log::warn!("[Unknown] {} - {:?}", types, message),
-    };
-    vk::FALSE
-}}
+            _ => log::warn!("[Unknown] {} - {:?}", types, message),
+        };
+        vk::FALSE
+    }
+}
 
 pub struct ValidationInfo {
     pub is_enable: bool,

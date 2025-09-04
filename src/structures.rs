@@ -4,8 +4,8 @@ use anyhow::{Context, Result};
 use ash::vk;
 
 use crate::{
-    vulkan::{self, Destructor},
     WINDOW_HEIGHT, WINDOW_WIDTH,
+    vulkan::{self, Destructor},
 };
 
 #[derive(Debug, Clone)]

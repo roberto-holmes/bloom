@@ -10,7 +10,7 @@ use bloom::quaternion::Quaternion;
 use bloom::{
     self,
     api::{Bloomable, Camera},
-    primitives::{model::Model, sphere::Sphere, Primitive},
+    primitives::{Primitive, model::Model, sphere::Sphere},
     vec::Vec3,
 };
 use cgmath::Matrix4;

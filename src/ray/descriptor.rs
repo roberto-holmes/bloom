@@ -2,7 +2,7 @@ use ash::vk;
 
 use crate::{
     core::{aligned_size, create_bindless_descriptor_set_layout},
-    error::{raise, Result},
+    error::{Result, raise},
     vulkan::{self, Destructor},
 };
 
@@ -31,7 +31,7 @@ impl Descriptor {
             stage_flags,
         )
         .unwrap(); // TODO: Errors
-                   // Compute and align the sizes of the sets so that we can compute the offsets
+        // Compute and align the sizes of the sets so that we can compute the offsets
         let size = aligned_size(
             unsafe { db_device.get_descriptor_set_layout_size(layout.get()) },
             descriptor_buffer_properties.descriptor_buffer_offset_alignment,
