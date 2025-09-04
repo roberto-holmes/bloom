@@ -608,7 +608,7 @@ impl Buffer {
         &self,
         size: vk::DeviceSize,
         offset: vk::DeviceSize,
-    ) -> Result<&mut [u8]> {
+    ) -> Result<&mut [u8]> { unsafe {
         if self.allocation_info.mapped_data.is_null() {
             log::error!("Tried to access an unmapped buffer");
             return Err(anyhow::anyhow!("Invalid buffer configuration"));
@@ -619,7 +619,7 @@ impl Buffer {
                 .byte_offset(offset as isize) as *mut u8,
             size as usize,
         ))
-    }
+    }}
 }
 
 impl Drop for Buffer {
@@ -1280,7 +1280,7 @@ impl<'a> Image<'a> {
     pub fn is_correct_size(&self, width: u32, height: u32) -> bool {
         width == self.width && height == self.height
     }
-    unsafe fn clean(&mut self) {
+    unsafe fn clean(&mut self) { unsafe {
         log::trace!("Destroying {} image", self.name.cyan());
         if let Some(sampler) = self.sampler {
             (self.destroy_sampler)(self.device, sampler, None.as_raw_ptr());
@@ -1295,7 +1295,7 @@ impl<'a> Image<'a> {
             );
         }
         self.image = None;
-    }
+    }}
 }
 
 impl<'a> Drop for Image<'a> {

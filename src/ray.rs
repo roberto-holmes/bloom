@@ -670,7 +670,7 @@ impl<'a> Ray<'a> {
     fn add_primitive(&mut self, entity: Entity, primitive: &mut Primitive) -> Result<bool> {
         let mut primitives_changed = false;
         match primitive {
-            Primitive::Model(ref mut o) if !self.primitive_location_map.contains_key(&entity) => {
+            Primitive::Model(o) if !self.primitive_location_map.contains_key(&entity) => {
                 log::info!("Adding model {:?}", entity);
                 // TODO: Find the index of each material in the material vector
                 o.set_materials(&self.material_location_map);
@@ -703,7 +703,7 @@ impl<'a> Ray<'a> {
                 }
                 primitives_changed = true;
             }
-            Primitive::Lentil(ref mut o) if !self.primitive_location_map.contains_key(&entity) => {
+            Primitive::Lentil(o) if !self.primitive_location_map.contains_key(&entity) => {
                 log::info!("Adding lentil {:?}: {:?}", entity, o);
                 o.set_materials(&self.material_location_map);
                 o.allocate(
@@ -717,7 +717,7 @@ impl<'a> Ray<'a> {
                 self.add_aabb(AABB::new(o), o.get_addresses(&self.device)?)?;
                 primitives_changed = true;
             }
-            Primitive::Sphere(ref mut o) if !self.primitive_location_map.contains_key(&entity) => {
+            Primitive::Sphere(o) if !self.primitive_location_map.contains_key(&entity) => {
                 log::info!("Adding sphere {:?}: {:?}", entity, o);
                 o.set_materials(&self.material_location_map);
                 o.allocate(
@@ -731,7 +731,7 @@ impl<'a> Ray<'a> {
                 self.add_aabb(AABB::new(o), o.get_addresses(&self.device)?)?;
                 primitives_changed = true;
             }
-            Primitive::Ocean(ref mut o) if !self.primitive_location_map.contains_key(&entity) => {
+            Primitive::Ocean(o) if !self.primitive_location_map.contains_key(&entity) => {
                 log::info!("Adding Ocean {:?}: {:?}", entity, o);
                 o.set_materials(&self.material_location_map);
                 o.allocate(

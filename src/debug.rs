@@ -10,7 +10,7 @@ pub unsafe extern "system" fn vulkan_debug_callback(
     message_type: vk::DebugUtilsMessageTypeFlagsEXT,
     p_callback_data: *const vk::DebugUtilsMessengerCallbackDataEXT,
     _p_user_data: *mut c_void,
-) -> vk::Bool32 {
+) -> vk::Bool32 { unsafe {
     let types = match message_type {
         vk::DebugUtilsMessageTypeFlagsEXT::GENERAL => "[General]",
         vk::DebugUtilsMessageTypeFlagsEXT::PERFORMANCE => "[Performance]",
@@ -27,7 +27,7 @@ pub unsafe extern "system" fn vulkan_debug_callback(
         _ => log::warn!("[Unknown] {} - {:?}", types, message),
     };
     vk::FALSE
-}
+}}
 
 pub struct ValidationInfo {
     pub is_enable: bool,
