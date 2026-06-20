@@ -19,7 +19,7 @@ use bloom::{
 };
 use cgmath::{Matrix4, SquareMatrix};
 use hecs::Entity;
-use rand::Rng;
+use rand::RngExt;
 use winit::event::DeviceEvent;
 use winit::{
     dpi::PhysicalPosition,
