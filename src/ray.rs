@@ -762,7 +762,7 @@ impl<'a> Ray<'a> {
             // TODO: Use some sort of `new` component to only add primitives/materials that have changed
 
             // Look for a Skybox
-            for (entity, skybox) in w.query_mut::<&Skybox>() {
+            for (entity, skybox) in w.query_mut::<(Entity, &Skybox)>() {
                 // Update index for miss shader to be able to sample the texture
                 self.push_constants.skybox_index = self
                     .textures
@@ -779,7 +779,7 @@ impl<'a> Ray<'a> {
             }
 
             // Look for materials
-            for (entity, material) in w.query_mut::<&mut Material>() {
+            for (entity, material) in w.query_mut::<(Entity, &mut Material)>() {
                 if self.material_location_map.contains_key(&entity) {
                     continue;
                 }
@@ -844,7 +844,7 @@ impl<'a> Ray<'a> {
             // TODO: Textures used for purposes other than materials
 
             let mut primitives = Vec::with_capacity(RESERVED_SIZE);
-            for (entity, primitive) in w.query::<&mut Primitive>().iter() {
+            for (entity, primitive) in w.query::<(Entity, &mut Primitive)>().iter() {
                 if let Primitive::Ocean(o) = primitive {
                     if !self.ocean.update(entity, o) {
                         // We don't want to include the ocean primitive if the ocean struct is ignoring it
@@ -870,7 +870,7 @@ impl<'a> Ray<'a> {
             // TODO: Do something with `orphaned_primitives` (Remove from primitive addresses and blass)
             // Look for Instances
             let mut instances = HashSet::with_capacity(RESERVED_SIZE);
-            for (entity, instance) in w.query_mut::<&api::Instance>() {
+            for (entity, instance) in w.query_mut::<(Entity, &api::Instance)>() {
                 // Get the primitive that this is an instance of
                 let (primitive_type, location_in_blas) =
                     match self.primitive_location_map.get(&instance.primitive) {
@@ -1457,8 +1457,8 @@ fn create_bottom_level_acceleration_structure(
     log::trace!("Creating a BLAS");
     #[rustfmt::skip]
     let transform_matrix = vk::TransformMatrixKHR { matrix: [
-		1.0, 0.0, 0.0, 0.0, 
-		0.0, 1.0, 0.0, 0.0, 
+		1.0, 0.0, 0.0, 0.0,
+		0.0, 1.0, 0.0, 0.0,
 		0.0, 0.0, 1.0, 0.0],
 	};
 
