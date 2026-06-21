@@ -214,8 +214,8 @@ pub fn thread(
 }
 
 struct Viewport<'a> {
-    image_available: [Destructor<vk::Semaphore>; 2],
-    render_finished: [Destructor<vk::Semaphore>; 2],
+    acquire_semaphores: [Destructor<vk::Semaphore>; 2],
+    submit_semaphores: [Destructor<vk::Semaphore>; 2],
     in_flight_fences: [Destructor<vk::Fence>; 2],
     images: Option<[vulkan::Image<'a>; 2]>,
     uniform_buffers: [vk::Buffer; 2],
@@ -311,7 +311,8 @@ impl<'a> Viewport<'a> {
         let commands =
             core::create_command_buffers(&device, command_pool.get(), MAX_FRAMES_IN_FLIGHT as u32)?;
 
-        let (image_available, render_finished, in_flight_fences) = create_sync_object(&device)?;
+        let (acquire_semaphores, submit_semaphores, in_flight_fences) =
+            create_sync_object(&device)?;
 
         Ok(Self {
             device,
@@ -336,8 +337,8 @@ impl<'a> Viewport<'a> {
             surface_stuff,
             query_pool_timestamps,
             timestamps,
-            image_available,
-            render_finished,
+            acquire_semaphores,
+            submit_semaphores,
             in_flight_fences,
             push_constants: PushConstants::default(),
             window,
@@ -479,11 +480,15 @@ impl<'a> Viewport<'a> {
             start.elapsed().as_micros(),
             1.0 / start.elapsed().as_secs_f32()
         );
+
+        // Signals when an image is acquired from the swapchain
+        let acquire_semaphore = self.acquire_semaphores[frame].get();
+
         let swapchain_index = match unsafe {
             self.swapchain_stuff.get_loader().acquire_next_image(
                 self.swapchain_stuff.get_swapchain(),
                 1_000_000_000, // 1 second in nanoseconds
-                self.image_available[frame].get(),
+                acquire_semaphore,
                 vk::Fence::null(),
             )
         } {
@@ -502,12 +507,15 @@ impl<'a> Viewport<'a> {
                 .reset_fences(&[self.in_flight_fences[frame].get()])?
         };
 
+        // Signals when a swapchain image has finished working through its command buffer and is ready for presentation
+        let submit_semaphore = self.submit_semaphores[swapchain_index as usize].get();
+
         self.push_constants.accumulated_frames = accumulated_frames;
         self.record_commands(swapchain_index as usize, frame)?;
 
         let wait_semaphore_info = [
             vk::SemaphoreSubmitInfo {
-                semaphore: self.image_available[frame].get(),
+                semaphore: acquire_semaphore,
                 value: 0,
                 stage_mask: vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
                 ..Default::default()
@@ -525,7 +533,7 @@ impl<'a> Viewport<'a> {
 
         let submit_semaphore_info = [
             vk::SemaphoreSubmitInfo {
-                semaphore: self.render_finished[frame].get(),
+                semaphore: submit_semaphore,
                 stage_mask: vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
                 ..Default::default()
             },
@@ -549,7 +557,7 @@ impl<'a> Viewport<'a> {
                 self.in_flight_fences[frame].get(),
             )?
         };
-        let present_wait_semaphores = [self.render_finished[frame].get()];
+        let present_wait_semaphores = [submit_semaphore];
 
         let swapchains = [self.swapchain_stuff.get_swapchain()];
         let image_indices = [swapchain_index];
