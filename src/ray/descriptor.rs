@@ -2,7 +2,7 @@ use ash::vk;
 
 use crate::{
     core::{aligned_size, create_bindless_descriptor_set_layout},
-    error::{Result, raise},
+    error::Result,
     vulkan::{self, Destructor},
 };
 

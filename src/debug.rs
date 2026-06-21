@@ -84,7 +84,7 @@ pub fn check_validation_layer_support(entry: &ash::Entry) -> Result<()> {
             }
 
             if is_layer_found == false {
-                return Err(anyhow!("Required validation layer as not found"));
+                return Err(anyhow!("Required validation layers not found"));
             }
         }
     }

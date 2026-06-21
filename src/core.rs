@@ -16,8 +16,8 @@ use winit::{raw_window_handle::HasDisplayHandle, window::Window};
 
 pub fn create_instance(entry: &ash::Entry, window: &Window) -> Result<vulkan::Instance> {
     match check_validation_layer_support(entry) {
-        Err(_) if VALIDATION.is_enable => {
-            log::error!("Validation layers requested, but not available");
+        Err(e) if VALIDATION.is_enable => {
+            log::error!("Validation layers requested, but not available: {e}");
             return Err(anyhow!("Validation layers requested, but not available"));
         }
         _ => {}

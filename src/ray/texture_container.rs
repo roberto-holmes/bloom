@@ -1,5 +1,4 @@
 use ash::vk;
-use gltf::Gltf;
 use hecs::Entity;
 use std::{
     cmp::max,
@@ -10,7 +9,7 @@ use std::{
 
 use crate::{
     core::{begin_single_time_commands, end_single_time_command},
-    error::{Error, Result, raise, raise_root_error},
+    error::{Result, raise, raise_root_error},
     ray::{RESERVED_SIZE, descriptor::Descriptor},
     structures::Cubemap,
     vulkan::{self},
