@@ -1,4 +1,4 @@
-use ash::vk;
+use ash::vk::{self, TaggedStructure};
 use bus::Bus;
 use std::{
     sync::{Arc, RwLock, mpsc},

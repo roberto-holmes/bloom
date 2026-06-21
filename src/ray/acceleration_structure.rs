@@ -82,6 +82,6 @@ impl AccelerationStructure {
 impl Drop for AccelerationStructure {
     fn drop(&mut self) {
         log::trace!("Dropping Acceleration Structure {:?}", self.handle);
-        unsafe { (self.destructor)(self.device, self.handle, None.as_raw_ptr()) };
+        unsafe { (self.destructor)(self.device, self.handle, None.to_raw_ptr()) };
     }
 }

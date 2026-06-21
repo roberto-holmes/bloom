@@ -4,7 +4,7 @@ use std::path::Path;
 use std::sync::{Arc, RwLock, mpsc};
 
 use anyhow::{Result, anyhow};
-use ash::vk;
+use ash::vk::{self, TaggedStructure};
 use hecs::{Entity, World};
 use vk_mem;
 use winit::dpi::PhysicalSize;
@@ -99,9 +99,9 @@ pub fn thread(
     };
 
     // Get all the device properties before we do anything as they will not change
-    let rt_device = ash::khr::ray_tracing_pipeline::Device::new(&instance, &device);
-    let as_device = ash::khr::acceleration_structure::Device::new(&instance, &device);
-    let db_device = ash::ext::descriptor_buffer::Device::new(&instance, &device);
+    let rt_device = ash::khr::ray_tracing_pipeline::Device::load(&instance, &device);
+    let as_device = ash::khr::acceleration_structure::Device::load(&instance, &device);
+    let db_device = ash::ext::descriptor_buffer::Device::load(&instance, &device);
 
     let mut descriptor_buffer_properties =
         vk::PhysicalDeviceDescriptorBufferPropertiesEXT::default();
@@ -1085,7 +1085,7 @@ impl<'a> Ray<'a> {
             self.as_device.get_acceleration_structure_build_sizes(
                 vk::AccelerationStructureBuildTypeKHR::DEVICE,
                 &as_build_geometry_info,
-                &primitive_count,
+                Some(&primitive_count),
                 &mut as_build_sizes_info,
             )
         };
@@ -1179,7 +1179,7 @@ impl<'a> Ray<'a> {
             self.as_device.cmd_build_acceleration_structures(
                 command_buffer,
                 &as_build_geometry_infos,
-                &[&as_build_range_infos],
+                &[Some(&as_build_range_infos)],
             );
         }
         core::end_single_time_command(
@@ -1541,7 +1541,7 @@ fn create_bottom_level_acceleration_structure(
         as_device.get_acceleration_structure_build_sizes(
             vk::AccelerationStructureBuildTypeKHR::DEVICE,
             &as_build_geometry_info,
-            &num_prim,
+            Some(&num_prim),
             &mut as_build_sizes_info,
         );
     }
@@ -1588,7 +1588,7 @@ fn create_bottom_level_acceleration_structure(
         as_device.cmd_build_acceleration_structures(
             command_buffer,
             &as_build_geometry_infos,
-            &[&as_build_range_infos],
+            &[Some(&as_build_range_infos)],
         );
     }
     core::end_single_time_command(device, command_pool, queue, command_buffer)?;

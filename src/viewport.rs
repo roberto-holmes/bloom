@@ -6,7 +6,7 @@ use std::{
 };
 
 use anyhow::{Result, anyhow};
-use ash::vk;
+use ash::vk::{self, TaggedStructure};
 use memoffset::offset_of;
 use winit::{dpi::PhysicalSize, window::Window};
 

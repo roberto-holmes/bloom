@@ -42,7 +42,7 @@ impl<T: Copy + Default> Destructor<T> {
     #[track_caller]
     fn clean(&mut self) {
         log::trace!("Dropping {}", std::any::type_name::<T>());
-        unsafe { (self.destructor)(self.device, self.member, None.as_raw_ptr()) };
+        unsafe { (self.destructor)(self.device, self.member, None.to_raw_ptr()) };
     }
     #[track_caller]
     pub fn empty(&mut self) {
@@ -1048,7 +1048,7 @@ impl<'a> Image<'a> {
         unsafe {
             let mut create_info: vk_mem::ffi::VmaAllocationCreateInfo =
                 (&self.alloc_create_info).into();
-            create_info.pool = self.allocator_pool.pool.0;
+            create_info.pool = self.allocator_pool.pool();
             // TODO: Enable `VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT` for large images/buffers
             // https://gpuopen-librariesandsdks.github.io/VulkanMemoryAllocator/html/usage_patterns.html
             // create_info.flags =
@@ -1057,7 +1057,7 @@ impl<'a> Image<'a> {
             let mut image = vk::Image::null();
             let mut allocation: vk_mem::ffi::VmaAllocation = std::mem::zeroed();
             vk_mem::ffi::vmaCreateImage(
-                self.allocator_pool.allocator.internal,
+                self.allocator_pool.allocator().internal,
                 &self.image_create_info,
                 &create_info,
                 &mut image,
@@ -1080,7 +1080,7 @@ impl<'a> Image<'a> {
                 (self.create_view)(
                     self.device,
                     &self.view_create_info,
-                    None.as_raw_ptr(),
+                    None.to_raw_ptr(),
                     image_view.as_mut_ptr(),
                 )
                 .assume_init_on_success(image_view)?
@@ -1118,7 +1118,7 @@ impl<'a> Image<'a> {
             (self.create_sampler)(
                 self.device,
                 &create_info,
-                None.as_raw_ptr(),
+                None.to_raw_ptr(),
                 sampler.as_mut_ptr(),
             )
             .assume_init_on_success(sampler)?
@@ -1286,13 +1286,13 @@ impl<'a> Image<'a> {
         unsafe {
             log::trace!("Destroying {} image", self.name.cyan());
             if let Some(sampler) = self.sampler {
-                (self.destroy_sampler)(self.device, sampler, None.as_raw_ptr());
+                (self.destroy_sampler)(self.device, sampler, None.to_raw_ptr());
                 self.sampler = None;
             }
             self.view = None;
             if self.image.is_some() {
                 vk_mem::ffi::vmaDestroyImage(
-                    self.allocator_pool.allocator.internal,
+                    self.allocator_pool.allocator().internal,
                     self.image.unwrap(),
                     self.allocation.0,
                 );

@@ -43,16 +43,11 @@ impl SurfaceStuff {
         window: &winit::window::Window,
     ) -> Result<Self> {
         use winit::raw_window_handle::{HasDisplayHandle, HasWindowHandle};
-        let surface = unsafe {
-            ash_window::create_surface(
-                entry,
-                instance,
-                window.display_handle()?.as_raw(),
-                window.window_handle()?.as_raw(),
-                None,
-            )?
-        };
-        let surface_loader = ash::khr::surface::Instance::new(&entry, &instance);
+        let surface_factory =
+            ash_window::SurfaceFactory::new(entry, instance, window.display_handle()?.as_raw())?;
+        let surface =
+            unsafe { surface_factory.create_surface(window.window_handle()?.as_raw(), None)? };
+        let surface_loader = ash::khr::surface::Instance::load(&entry, &instance);
         Ok(Self {
             surface_loader,
             surface,
@@ -124,7 +119,7 @@ impl SwapChainStuff {
                 .queue_family_indices(&queue_family_total[..]);
         }
 
-        let swapchain_loader = ash::khr::swapchain::Device::new(instance, device);
+        let swapchain_loader = ash::khr::swapchain::Device::load(instance, device);
         let swapchain = vulkan::Swapchain::new(swapchain_loader, swapchain_create_info)
             .context("Unable to create swapchain")?;
 

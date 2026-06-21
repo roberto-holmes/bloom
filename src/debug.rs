@@ -116,7 +116,7 @@ impl DebugUtils {
             return Ok(None);
         }
         let debug_info = populate_debug_messenger_create_info();
-        let loader = debug_utils::Instance::new(entry, instance);
+        let loader = debug_utils::Instance::load(entry, instance);
         let messenger = unsafe { loader.create_debug_utils_messenger(&debug_info, None)? };
 
         Ok(Some(Self { loader, messenger }))

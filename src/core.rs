@@ -7,7 +7,7 @@ use crate::{
     tools,
 };
 use anyhow::{Result, anyhow};
-use ash::vk;
+use ash::vk::{self, TaggedStructure};
 use std::collections::HashSet;
 use std::ffi::CString;
 use std::sync::Arc;
