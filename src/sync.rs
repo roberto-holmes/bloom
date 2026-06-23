@@ -1,5 +1,6 @@
 use ash::vk::{self, TaggedStructure};
 use bus::Bus;
+use colored::Colorize;
 use std::{
     sync::{Arc, RwLock, mpsc},
     thread::JoinHandle,
@@ -13,7 +14,9 @@ use crate::{
     api::{self, Bloomable},
     core,
     error::{Result, raise},
-    ray, structures, uniforms, viewport,
+    ray,
+    structures::queue_family::QueueIndex,
+    uniforms, viewport,
     vulkan::Destructor,
 };
 
@@ -27,7 +30,7 @@ pub fn thread<T: Bloomable>(
     device: ash::Device,
     instance: ash::Instance,
     physical_device: vk::PhysicalDevice,
-    queue_family_indices: structures::QueueFamilyIndices,
+    queue_index: QueueIndex,
     semaphore: vk::Semaphore,
     should_threads_die: Arc<RwLock<bool>>,
 
@@ -53,7 +56,7 @@ pub fn thread<T: Bloomable>(
         instance,
         physical_device,
         semaphore,
-        queue_family_indices,
+        queue_index,
         ubo,
         ray,
         viewport,
@@ -320,7 +323,7 @@ impl Transfer {
         instance: ash::Instance,
         physical_device: vk::PhysicalDevice,
         semaphore: vk::Semaphore,
-        queue_family_indices: structures::QueueFamilyIndices,
+        queue_index: QueueIndex,
 
         ubo: mpsc::Sender<uniforms::Event>,
         ray: mpsc::SyncSender<ray::TransferCommand>,
@@ -329,13 +332,9 @@ impl Transfer {
         viewport_resize: single_value_channel::Updater<PhysicalSize<u32>>,
         resized: mpsc::Receiver<ResizedSource>,
     ) -> Result<Self> {
-        log::trace!("Creating object");
-        let queue = core::create_queue(&device, queue_family_indices.transfer_family.unwrap());
-        let (command_pool, commands) = core::create_commands_2_flight_frames(
-            &device,
-            queue_family_indices.transfer_family.unwrap().0,
-        )
-        .unwrap(); // TODO: Replace with new errors
+        let queue = core::create_queue(&device, queue_index);
+        let (command_pool, commands) =
+            core::create_commands_2_flight_frames(&device, queue_index).unwrap(); // TODO: Replace with new errors
         Ok(Self {
             last_timestamp: 0,
             device,

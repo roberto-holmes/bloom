@@ -2,12 +2,13 @@ use std::{array, ffi::CString, path::Path, sync::Arc, time::Instant};
 
 use anyhow::{Result, anyhow};
 use ash::vk;
+use colored::Colorize;
 
 use crate::{
     MAX_FRAMES_IN_FLIGHT,
     core::{self, begin_single_time_commands, create_shader_module, end_single_time_command},
     primitives::{self},
-    structures,
+    structures::queue_family::QueueIndex,
     tools::read_shader_code,
     vulkan::{Destructor, Image},
 };
@@ -82,21 +83,15 @@ impl<'a> Ocean<'a> {
         device: &ash::Device,
         device_properties: vk::PhysicalDeviceProperties2<'a>,
         allocator: &Arc<vk_mem::Allocator>,
-        queue_family_indices: structures::QueueFamilyIndices,
+        queue_index: QueueIndex,
     ) -> Result<Self> {
-        let queue = core::create_queue(&device, queue_family_indices.compute_family.unwrap());
-        let (spectra_command_pool, spectra_commands) = core::create_commands_flight_frames(
-            &device,
-            queue_family_indices.compute_family.unwrap().0,
-        )?;
-        let (fftx_command_pool, fftx_commands) = core::create_commands_flight_frames(
-            &device,
-            queue_family_indices.compute_family.unwrap().0,
-        )?;
-        let (ffty_command_pool, ffty_commands) = core::create_commands_flight_frames(
-            &device,
-            queue_family_indices.compute_family.unwrap().0,
-        )?;
+        let queue = core::create_queue(&device, queue_index);
+        let (spectra_command_pool, spectra_commands) =
+            core::create_commands_flight_frames(&device, queue_index)?;
+        let (fftx_command_pool, fftx_commands) =
+            core::create_commands_flight_frames(&device, queue_index)?;
+        let (ffty_command_pool, ffty_commands) =
+            core::create_commands_flight_frames(&device, queue_index)?;
 
         let images = create_images(
             device,

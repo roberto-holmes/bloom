@@ -1,4 +1,5 @@
-use crate::structures::{QueueFamilyIndices, SurfaceStuff, SwapChainSupportDetails};
+use crate::structures::queue_family::{QueueIndex, QueueIndices};
+use crate::structures::{SurfaceStuff, SwapChainSupportDetails};
 use crate::vulkan::Destructor;
 use crate::{MAX_FRAMES_IN_FLIGHT, vulkan};
 use crate::{
@@ -85,92 +86,79 @@ fn find_queue_families(
     instance: &ash::Instance,
     device: vk::PhysicalDevice,
     surface_stuff: &SurfaceStuff,
-) -> QueueFamilyIndices {
-    let mut queue_family_indices = QueueFamilyIndices::new();
-    // Find graphics queue family
-    let queue_family_properties =
-        unsafe { instance.get_physical_device_queue_family_properties(device) };
+) -> QueueIndices {
+    let mut queues = QueueIndices::new();
 
-    let mut fallback_compute_queue_index = None;
-    let mut fallback_transfer_queue_index = None;
+    let family_count = unsafe { instance.get_physical_device_queue_family_properties2_len(device) };
+    // let queue_family_properties = Vec::reserve_exact(family_count);
+    let mut queue_family_properties = vec![vk::QueueFamilyProperties2::default(); family_count];
 
-    for (family_index, queue_family) in queue_family_properties.iter().enumerate() {
-        if queue_family_indices.graphics_family.is_none()
-            && queue_family.queue_count > 0
-            && queue_family.queue_flags.contains(vk::QueueFlags::GRAPHICS)
+    // Find all the queue families available on the GPU
+    unsafe {
+        instance.get_physical_device_queue_family_properties2(
+            device,
+            queue_family_properties.as_mut_slice(),
+        )
+    };
+
+    let mut fallback_queue = None;
+
+    let mut populated_queues = 0;
+
+    // Check each of the family of queues
+    'outer: for (family_index, queue_family) in queue_family_properties.iter().enumerate() {
+        let family_index = family_index as u32;
+        log::info!(
+            "Family {family_index} has {} queues available",
+            queue_family.queue_family_properties.queue_count
+        );
+
+        if fallback_queue.is_none()
+            && queue_family
+                .queue_family_properties
+                .queue_flags
+                .contains(vk::QueueFlags::GRAPHICS | vk::QueueFlags::COMPUTE)
         {
-            queue_family_indices.graphics_family = Some((family_index as u32, 0));
+            fallback_queue = Some((family_index, 0));
         }
 
-        // Check if the current queue supports presenting images
-        let is_present_supported = unsafe {
-            surface_stuff
-                .surface_loader
-                .get_physical_device_surface_support(
-                    device,
-                    family_index as u32,
-                    surface_stuff.surface,
-                )
-                .expect("Failed to check device for presentation support")
-        };
-        if queue_family_indices.present_family.is_none()
-            && queue_family.queue_count > 0
-            && is_present_supported
-        {
-            queue_family_indices.present_family = Some((family_index as u32, 0));
-        }
+        for queue_index in 0..queue_family.queue_family_properties.queue_count {
+            if populated_queues == queues.len() {
+                break 'outer;
+            }
 
-        if queue_family_indices.compute_family.is_none()
-            && queue_family.queue_flags.contains(vk::QueueFlags::COMPUTE)
-            && queue_family.queue_count > 0
-        {
-            for i in 0..queue_family.queue_count {
-                if !queue_family_indices.is_index_taken(family_index as u32, i)
-                    && queue_family.queue_count >= i
-                {
-                    queue_family_indices.compute_family = Some((family_index as u32, i));
-                    break;
-                } else if fallback_compute_queue_index.is_none() {
-                    // Queue family supports compute but has been used by another queue
-                    //(We don't want to share the queue so we will set this as as fallback value in case we don't find a better alternative)
-                    fallback_compute_queue_index = Some((family_index as u32, 0));
-                }
+            if queues[populated_queues].is_suitable(
+                device,
+                surface_stuff,
+                family_index,
+                queue_family,
+            ) {
+                queues[populated_queues].assign(family_index, queue_index);
+                populated_queues += 1;
             }
         }
+    }
 
-        if queue_family_indices.transfer_family.is_none()
-            && queue_family.queue_flags.contains(vk::QueueFlags::TRANSFER)
-            && queue_family.queue_count > 0
-        {
-            for i in 0..queue_family.queue_count {
-                if !queue_family_indices.is_index_taken(family_index as u32, i)
-                    && queue_family.queue_count >= i
-                {
-                    queue_family_indices.transfer_family = Some((family_index as u32, i));
-                    break;
-                } else if fallback_transfer_queue_index.is_none() {
-                    // Queue family supports trasnfer but has been used by another queue
-                    //(We don't want to share the queue so we will set this as as fallback value in case we don't find a better alternative)
-                    fallback_transfer_queue_index = Some((family_index as u32, 0));
-                }
+    if populated_queues != queues.len() {
+        if let Some(fallback) = fallback_queue {
+            log::warn!(
+                "Not enough suitable queues were found. Falling back to reusing queues. This will likely cause issues due to me not properly syncronising queue access between threads."
+            );
+            for i in populated_queues..queues.len() {
+                log::debug!(
+                    "Assigning queue {} of family {} to {}",
+                    fallback.0,
+                    fallback.1,
+                    stringify!(queues[i])
+                );
+                queues[i].assign(fallback.0, fallback.1);
             }
-        }
-
-        // We only need to find one queue family that meets our requirements
-        if queue_family_indices.is_complete() {
-            break;
+        } else {
+            log::error!("Not enough suitable queues were found.")
         }
     }
-
-    if queue_family_indices.compute_family.is_none() {
-        queue_family_indices.compute_family = fallback_compute_queue_index;
-    }
-
-    if queue_family_indices.transfer_family.is_none() {
-        queue_family_indices.transfer_family = fallback_transfer_queue_index;
-    }
-
-    queue_family_indices
+    log::debug!("Allocated queues: {:#?}", queues);
+    queues
 }
 
 fn is_device_extension_supported(
@@ -398,21 +386,15 @@ pub fn create_logical_device(
     instance: &ash::Instance,
     physical_device: vk::PhysicalDevice,
     surface_stuff: &SurfaceStuff,
-) -> Result<(vulkan::Device, QueueFamilyIndices)> {
-    let indices = find_queue_families(instance, physical_device, surface_stuff);
-
-    let mut queue_families = vec![];
-    queue_families.push(indices.graphics_family.unwrap());
-    queue_families.push(indices.present_family.unwrap());
-    queue_families.push(indices.compute_family.unwrap());
-    queue_families.push(indices.transfer_family.unwrap());
+) -> Result<(vulkan::Device, QueueIndices)> {
+    let queues = find_queue_families(instance, physical_device, surface_stuff);
 
     let mut queue_priorities = vec![1.0];
 
     // Create a set to store all the queue families we want in case a single queue has satisfies multiple requirements
     let mut unique_queue_families: HashSet<u32> = HashSet::new();
-    for q in &queue_families {
-        unique_queue_families.insert(q.0);
+    for q in &queues {
+        unique_queue_families.insert(q.family_index);
         // Set up priorities for as many queues as there are
         queue_priorities.push(0.5);
     }
@@ -420,8 +402,8 @@ pub fn create_logical_device(
     let mut queue_create_infos = vec![];
     for queue_family in unique_queue_families {
         let mut queue_count = 0;
-        for &q in &queue_families {
-            if q.0 == queue_family {
+        for q in &queues {
+            if q.family_index == queue_family {
                 queue_count += 1;
             }
         }
@@ -490,7 +472,7 @@ pub fn create_logical_device(
     };
 
     let device = vulkan::Device::new(instance, physical_device, create_info)?;
-    Ok((device, indices))
+    Ok((device, queues))
 }
 
 pub fn create_shader_module(
@@ -550,11 +532,11 @@ pub fn create_uniform_buffer<T>(allocator: &vk_mem::Allocator) -> Result<[vulkan
 
 pub fn create_command_pool(
     device: &ash::Device,
-    queue_family_index: u32,
+    queue_index: QueueIndex,
 ) -> Result<Destructor<vk::CommandPool>> {
     let pool_info = vk::CommandPoolCreateInfo::default()
         .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
-        .queue_family_index(queue_family_index);
+        .queue_family_index(queue_index.family_index);
     Ok(Destructor::new(
         device,
         unsafe { device.create_command_pool(&pool_info, None) }?,
@@ -807,8 +789,8 @@ pub fn wait_on_semaphore(
     unsafe { device.wait_semaphores(&wait_info, timeout_ns) }
 }
 
-pub fn create_queue(device: &ash::Device, queue_index: (u32, u32)) -> vk::Queue {
-    unsafe { device.get_device_queue(queue_index.0, queue_index.1) }
+pub fn create_queue(device: &ash::Device, queue_index: QueueIndex) -> vk::Queue {
+    unsafe { device.get_device_queue(queue_index.family_index, queue_index.index) }
 }
 
 pub fn create_semaphore(device: &ash::Device) -> Result<vk::Semaphore> {
@@ -821,13 +803,13 @@ pub fn create_semaphore(device: &ash::Device) -> Result<vk::Semaphore> {
 
 pub fn create_commands_flight_frames(
     device: &ash::Device,
-    queue_family_index: u32,
+    queue_index: QueueIndex,
 ) -> Result<(
     Destructor<vk::CommandPool>,
     [vk::CommandBuffer; MAX_FRAMES_IN_FLIGHT],
 )> {
     let pool_info = vk::CommandPoolCreateInfo {
-        queue_family_index,
+        queue_family_index: queue_index.family_index,
         flags: vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
         ..Default::default()
     };
@@ -849,13 +831,13 @@ pub fn create_commands_flight_frames(
 
 pub fn create_commands_2_flight_frames(
     device: &ash::Device,
-    queue_family_index: u32,
+    queue_index: QueueIndex,
 ) -> Result<(
     Destructor<vk::CommandPool>,
     [vk::CommandBuffer; 2 * MAX_FRAMES_IN_FLIGHT],
 )> {
     let pool_info = vk::CommandPoolCreateInfo {
-        queue_family_index,
+        queue_family_index: queue_index.family_index,
         flags: vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
         ..Default::default()
     };

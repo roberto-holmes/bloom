@@ -1,0 +1,11 @@
+[package]
+name = "macros"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+quote = "1.0.46"
+syn = "2.0.118"
+
+[lib]
+proc-macro = true

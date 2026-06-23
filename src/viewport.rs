@@ -7,12 +7,13 @@ use std::{
 
 use anyhow::{Result, anyhow};
 use ash::vk::{self, TaggedStructure};
+use colored::Colorize;
 use memoffset::offset_of;
 use winit::{dpi::PhysicalSize, window::Window};
 
 use crate::{
     MAX_FRAMES_IN_FLIGHT, core,
-    structures::{self, SwapChainStuff},
+    structures::{self, SWAPCHAIN_MAX_IMAGES, SwapChainStuff, queue_family::QueueIndex},
     sync,
     tools::read_shader_code,
     uniforms::UniformBufferObject,
@@ -84,7 +85,7 @@ pub fn thread(
     surface_stuff: structures::SurfaceStuff,
     window: Arc<RwLock<Window>>,
 
-    queue_family_indices: structures::QueueFamilyIndices,
+    queue_index: QueueIndex,
 
     uniform_buffers: [vk::Buffer; 2],
 
@@ -120,7 +121,7 @@ pub fn thread(
         instance,
         physical_device,
         allocator,
-        queue_family_indices,
+        queue_index,
         surface_stuff,
         uniform_buffers,
     ) {
@@ -225,7 +226,7 @@ struct Viewport<'a> {
     push_constants: PushConstants,
 
     device_properties: vk::PhysicalDeviceProperties2<'a>,
-    queue_family_indices: structures::QueueFamilyIndices,
+    queue_index: QueueIndex,
     queue: vk::Queue,
     descriptor_set_layout: Destructor<vk::DescriptorSetLayout>,
     pipeline_layout: Destructor<vk::PipelineLayout>,
@@ -255,7 +256,7 @@ impl<'a> Viewport<'a> {
         instance: ash::Instance,
         physical_device: vk::PhysicalDevice,
         allocator: Arc<vk_mem::Allocator>,
-        queue_family_indices: structures::QueueFamilyIndices,
+        queue_index: QueueIndex,
         surface_stuff: structures::SurfaceStuff,
         uniform_buffers: [vk::Buffer; 2],
     ) -> Result<Self> {
@@ -267,22 +268,16 @@ impl<'a> Viewport<'a> {
             };
         }
 
-        let queue = core::create_queue(&device, queue_family_indices.graphics_family.unwrap());
-        let swapchain_stuff = SwapChainStuff::new(
-            &instance,
-            &device,
-            physical_device,
-            &surface_stuff,
-            &queue_family_indices,
-        )?;
+        let queue = core::create_queue(&device, queue_index);
+        let swapchain_stuff =
+            SwapChainStuff::new(&instance, &device, physical_device, &surface_stuff)?;
         let (query_pool_timestamps, timestamps) = core::prepare_timestamp_queries(&device)?;
         let set_layout = create_descriptor_set_layout(&device)?;
         let descriptor_pool = create_descriptor_pool(&device)?;
         let (pipeline_layout, pipeline) =
             create_pipeline(&device, &swapchain_stuff, set_layout.get())?;
 
-        let command_pool =
-            core::create_command_pool(&device, queue_family_indices.graphics_family.unwrap().0)?;
+        let command_pool = core::create_command_pool(&device, queue_index)?;
 
         let vertex_buffer = vulkan::Buffer::new_populated_staged(
             &device,
@@ -324,7 +319,7 @@ impl<'a> Viewport<'a> {
             uniform_buffers,
             vertex_buffer,
             index_buffer,
-            queue_family_indices,
+            queue_index,
             queue,
             descriptor_set_layout: set_layout,
             pipeline_layout,
@@ -638,7 +633,6 @@ impl<'a> Viewport<'a> {
                 &self.device,
                 self.physical_device,
                 &self.surface_stuff,
-                &self.queue_family_indices,
             )
             .unwrap();
     }

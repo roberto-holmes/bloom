@@ -8,12 +8,13 @@ use std::{
 
 use anyhow::{Result, anyhow};
 use ash::vk;
+use colored::Colorize;
 
 use crate::{
     MAX_FRAMES_IN_FLIGHT,
     core::{self, create_shader_module},
     ray::instance_buffer::InstanceBuffer,
-    structures,
+    structures::queue_family::QueueIndex,
     tools::read_shader_code,
     vulkan::Destructor,
 };
@@ -73,15 +74,12 @@ impl Physics {
     pub fn new(
         device: &ash::Device,
         allocator: Arc<vk_mem::Allocator>,
-        queue_family_indices: structures::QueueFamilyIndices,
+        queue_index: QueueIndex,
         instances: Arc<RwLock<InstanceBuffer>>,
         ocean: vk::ImageView,
     ) -> Result<Self> {
-        let queue = core::create_queue(&device, queue_family_indices.compute_family.unwrap());
-        let (command_pool, commands) = core::create_commands_flight_frames(
-            &device,
-            queue_family_indices.compute_family.unwrap().0,
-        )?;
+        let queue = core::create_queue(&device, queue_index);
+        let (command_pool, commands) = core::create_commands_flight_frames(&device, queue_index)?;
 
         let (descriptor_pool, descriptor_set_layout, descriptor_sets, pipeline_layout, pipeline) =
             create_pipeline(device, ocean)?;

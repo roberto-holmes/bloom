@@ -7,6 +7,7 @@ use crate::{
     WINDOW_HEIGHT, WINDOW_WIDTH,
     vulkan::{self, Destructor},
 };
+pub mod queue_family;
 
 #[derive(Debug, Clone)]
 pub struct Cubemap<P: AsRef<Path>> {
@@ -78,7 +79,6 @@ impl SwapChainStuff {
         device: &ash::Device,
         physical_device: vk::PhysicalDevice,
         surface_stuff: &SurfaceStuff,
-        queue_family: &QueueFamilyIndices,
     ) -> Result<Self> {
         let swapchain_support = SwapChainSupportDetails::query(physical_device, surface_stuff);
 
@@ -95,7 +95,7 @@ impl SwapChainStuff {
             image_count
         };
 
-        let mut swapchain_create_info = vk::SwapchainCreateInfoKHR::default()
+        let swapchain_create_info = vk::SwapchainCreateInfoKHR::default()
             .surface(surface_stuff.surface)
             .min_image_count(image_count)
             .image_format(surface_format.format)
@@ -107,17 +107,6 @@ impl SwapChainStuff {
             .pre_transform(swapchain_support.capabilities.current_transform)
             .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE) // How the window should deal with alpha components in pixels
             .clipped(true); // Ignore pixels that are obscured(i.e. hidden behind other windows)
-
-        let queue_family_total = vec![
-            queue_family.graphics_family.unwrap().0,
-            queue_family.present_family.unwrap().0,
-        ];
-        // Check if we are just using one queue for everything
-        if queue_family.graphics_family != queue_family.present_family {
-            swapchain_create_info = swapchain_create_info
-                .image_sharing_mode(vk::SharingMode::CONCURRENT)
-                .queue_family_indices(&queue_family_total[..]);
-        }
 
         let swapchain_loader = ash::khr::swapchain::Device::load(instance, device);
         let swapchain = vulkan::Swapchain::new(swapchain_loader, swapchain_create_info)
@@ -146,20 +135,13 @@ impl SwapChainStuff {
         device: &ash::Device,
         physical_device: vk::PhysicalDevice,
         surface_stuff: &SurfaceStuff,
-        queue_family: &QueueFamilyIndices,
     ) -> Result<()> {
         // Drop old swapchain
         for i in &mut self.image_views {
             i.empty();
         }
         self.swapchain.empty();
-        *self = SwapChainStuff::new(
-            instance,
-            device,
-            physical_device,
-            surface_stuff,
-            queue_family,
-        )?;
+        *self = SwapChainStuff::new(instance, device, physical_device, surface_stuff)?;
         Ok(())
     }
     pub fn get_swapchain(&self) -> vk::SwapchainKHR {
@@ -167,52 +149,6 @@ impl SwapChainStuff {
     }
     pub fn get_loader(&self) -> &ash::khr::swapchain::Device {
         &self.swapchain.loader
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-// Stores the family and index of each each queue that we want
-pub struct QueueFamilyIndices {
-    pub graphics_family: Option<(u32, u32)>,
-    pub present_family: Option<(u32, u32)>,
-    pub compute_family: Option<(u32, u32)>,
-    pub transfer_family: Option<(u32, u32)>,
-}
-
-impl QueueFamilyIndices {
-    pub fn new() -> QueueFamilyIndices {
-        QueueFamilyIndices {
-            graphics_family: None,
-            present_family: None,
-            compute_family: None,
-            transfer_family: None,
-        }
-    }
-
-    pub fn is_complete(&self) -> bool {
-        self.graphics_family.is_some()
-            && self.present_family.is_some()
-            && self.compute_family.is_some()
-    }
-
-    pub fn is_index_taken(&self, queue_index: u32, index: u32) -> bool {
-        if self
-            .graphics_family
-            .is_some_and(|x| x.0 == queue_index && x.1 == index)
-            || self
-                .compute_family
-                .is_some_and(|x| x.0 == queue_index && x.1 == index)
-            || self
-                .transfer_family
-                .is_some_and(|x| x.0 == queue_index && x.1 == index)
-            || self
-                .present_family
-                .is_some_and(|x| x.0 == queue_index && x.1 == index)
-        {
-            true
-        } else {
-            false
-        }
     }
 }
 

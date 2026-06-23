@@ -25,3 +25,4 @@ single_value_channel = "1.2.2"
 vk-mem = { path = "./vk-mem-rs" }
 winit = "0.30.8"
 hecs = { path = "./hecs" }
+macros = { path = "./macros" }

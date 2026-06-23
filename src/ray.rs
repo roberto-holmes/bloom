@@ -5,6 +5,7 @@ use std::sync::{Arc, RwLock, mpsc};
 
 use anyhow::{Result, anyhow};
 use ash::vk::{self, TaggedStructure};
+use colored::Colorize;
 use hecs::{Entity, World};
 use vk_mem;
 use winit::dpi::PhysicalSize;
@@ -21,10 +22,11 @@ use crate::ray::acceleration_structure::AccelerationStructure;
 use crate::ray::descriptor::Descriptor;
 use crate::ray::instance_buffer::InstanceBuffer;
 use crate::ray::texture_container::TextureContainer;
+use crate::structures::queue_family::QueueIndex;
 use crate::uniforms;
 use crate::vec::Vec3;
 use crate::vulkan::Destructor;
-use crate::{MAX_FRAMES_IN_FLIGHT, api, core, primitives, structures, sync, tools, vulkan};
+use crate::{MAX_FRAMES_IN_FLIGHT, api, core, primitives, sync, tools, vulkan};
 
 mod acceleration_structure;
 mod descriptor;
@@ -73,7 +75,7 @@ pub fn thread(
     instance: ash::Instance,
     physical_device: vk::PhysicalDevice,
 
-    queue_family_indices: structures::QueueFamilyIndices,
+    queue_index: QueueIndex,
     uniform_buffers: [vk::DeviceAddress; 2],
 
     should_threads_die: Arc<RwLock<bool>>,
@@ -132,7 +134,7 @@ pub fn thread(
         ray_tracing_pipeline_properties,
         acceleration_structure_properties,
         allocator,
-        queue_family_indices,
+        queue_index,
         uniform_buffers,
         uniform,
     ) {
@@ -390,7 +392,7 @@ impl<'a> Ray<'a> {
         ray_tracing_pipeline_properties: vk::PhysicalDeviceRayTracingPipelinePropertiesKHR<'a>,
         acceleration_structure_properties: vk::PhysicalDeviceAccelerationStructurePropertiesKHR<'a>,
         allocator: Arc<vk_mem::Allocator>,
-        queue_family_indices: structures::QueueFamilyIndices,
+        queue_index: QueueIndex,
         uniform_buffers: [vk::DeviceAddress; 2],
 
         uniform: mpsc::Sender<uniforms::Event>,
@@ -398,10 +400,9 @@ impl<'a> Ray<'a> {
         log::trace!("Creating object");
 
         // Populates queue
-        let queue = core::create_queue(&device, queue_family_indices.compute_family.unwrap());
+        let queue = core::create_queue(&device, queue_index);
 
-        let (command_pool, commands) =
-            create_commands_flight_frames(&device, queue_family_indices.compute_family.unwrap().0)?;
+        let (command_pool, commands) = create_commands_flight_frames(&device, queue_index)?;
 
         let materials_buffer = vulkan::Buffer::new_gpu(
             &allocator,
@@ -503,7 +504,7 @@ impl<'a> Ray<'a> {
         // Set a default material for primitives that are missing one or have not been properly set up
         materials.push(Material::new_basic(Vec3::new(1.0, 0.1, 0.7), 0.).get_data());
 
-        let ocean = Ocean::new(&device, device_properties, &allocator, queue_family_indices)?;
+        let ocean = Ocean::new(&device, device_properties, &allocator, queue_index)?;
 
         log::info!("Ocean has provided {} images", ocean.images.len());
         // Create ocean descriptor
@@ -518,10 +519,11 @@ impl<'a> Ray<'a> {
                 .unwrap();
         }
 
+        // TODO: Figure out how best to pass Physics its queue
         let physics = Physics::new(
             &device,
             Arc::clone(&allocator),
-            queue_family_indices,
+            queue_index,
             Arc::clone(&instances_buffer),
             ocean.images[0].view(),
         )?;
