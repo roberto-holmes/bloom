@@ -7,7 +7,12 @@ use crate::{
     WINDOW_HEIGHT, WINDOW_WIDTH,
     vulkan::{self, Destructor},
 };
+
 pub mod queue_family;
+
+// Limit the number of possible swapchian images so that we can statically allocate resources
+// Realistically we will likely have 3 images
+pub const SWAPCHAIN_MAX_IMAGES: usize = 8;
 
 #[derive(Debug, Clone)]
 pub struct Cubemap<P: AsRef<Path>> {
@@ -94,6 +99,7 @@ impl SwapChainStuff {
         } else {
             image_count
         };
+        let image_count = image_count.min(SWAPCHAIN_MAX_IMAGES as u32);
 
         let swapchain_create_info = vk::SwapchainCreateInfoKHR::default()
             .surface(surface_stuff.surface)

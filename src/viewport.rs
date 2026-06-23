@@ -215,8 +215,10 @@ pub fn thread(
 }
 
 struct Viewport<'a> {
+    // The number of swapchain images is decided at runtime by checking with the GPU
+    // but this should be enough to cover all cases
     acquire_semaphores: [Destructor<vk::Semaphore>; 2],
-    submit_semaphores: [Destructor<vk::Semaphore>; 2],
+    submit_semaphores: [Destructor<vk::Semaphore>; SWAPCHAIN_MAX_IMAGES],
     in_flight_fences: [Destructor<vk::Fence>; 2],
     images: Option<[vulkan::Image<'a>; 2]>,
     uniform_buffers: [vk::Buffer; 2],
@@ -488,7 +490,7 @@ impl<'a> Viewport<'a> {
             )
         } {
             Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
-                log::warn!("Swapchain reports ERROR_OUT_OF_DATE_KHR",);
+                log::warn!("Swapchain reports ERROR_OUT_OF_DATE_KHR");
                 self.recreate_swap_chain();
                 return Ok(false);
             }
@@ -829,7 +831,7 @@ pub fn create_sync_object(
     device: &ash::Device,
 ) -> Result<(
     [Destructor<vk::Semaphore>; 2],
-    [Destructor<vk::Semaphore>; 2],
+    [Destructor<vk::Semaphore>; SWAPCHAIN_MAX_IMAGES],
     [Destructor<vk::Fence>; 2],
 )> {
     // Semaphore is to tell the GPU to wait
@@ -851,18 +853,13 @@ pub fn create_sync_object(
                     device.fp_v1_0().destroy_semaphore,
                 ),
             ],
-            [
+            std::array::from_fn(|_| {
                 Destructor::new(
                     device,
-                    device.create_semaphore(&semaphore_info, None)?,
+                    device.create_semaphore(&semaphore_info, None).unwrap(),
                     device.fp_v1_0().destroy_semaphore,
-                ),
-                Destructor::new(
-                    device,
-                    device.create_semaphore(&semaphore_info, None)?,
-                    device.fp_v1_0().destroy_semaphore,
-                ),
-            ],
+                )
+            }),
             [
                 Destructor::new(
                     device,
