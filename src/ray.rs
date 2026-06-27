@@ -76,6 +76,7 @@ pub fn thread(
     physical_device: vk::PhysicalDevice,
 
     queue_index: QueueIndex,
+    physics_queue_index: QueueIndex,
     uniform_buffers: [vk::DeviceAddress; 2],
 
     should_threads_die: Arc<RwLock<bool>>,
@@ -135,6 +136,7 @@ pub fn thread(
         acceleration_structure_properties,
         allocator,
         queue_index,
+        physics_queue_index,
         uniform_buffers,
         uniform,
     ) {
@@ -393,6 +395,7 @@ impl<'a> Ray<'a> {
         acceleration_structure_properties: vk::PhysicalDeviceAccelerationStructurePropertiesKHR<'a>,
         allocator: Arc<vk_mem::Allocator>,
         queue_index: QueueIndex,
+        physics_queue_index: QueueIndex,
         uniform_buffers: [vk::DeviceAddress; 2],
 
         uniform: mpsc::Sender<uniforms::Event>,
@@ -519,11 +522,11 @@ impl<'a> Ray<'a> {
                 .unwrap();
         }
 
-        // TODO: Figure out how best to pass Physics its queue
+        // TODO: Consider if physics should be decoupled from Ray
         let physics = Physics::new(
             &device,
             Arc::clone(&allocator),
-            queue_index,
+            physics_queue_index,
             Arc::clone(&instances_buffer),
             ocean.images[0].view(),
         )?;

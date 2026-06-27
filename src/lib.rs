@@ -561,6 +561,7 @@ where
                     ray_instance,
                     ray_physical_device,
                     queue_family_indices.ray,
+                    queue_family_indices.physics,
                     ray_uniform_buffer_addresses,
                     should_ray_die_out,
                     ray_viewport_semaphore,
