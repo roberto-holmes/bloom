@@ -629,6 +629,8 @@ impl<'a> Viewport<'a> {
         Ok(true)
     }
     fn recreate_swap_chain(&mut self) {
+        // TODO: Is there a better way of waiting for the swapchain images to finish executing?
+        unsafe { self.device.queue_wait_idle(self.queue).unwrap() };
         self.swapchain_stuff
             .reset(
                 &self.instance,
