@@ -21,7 +21,7 @@ void reflect_ray(inout Payload ray, float3 pos, float3 normal, float2 tex_coord,
 	// try to minimize self intersections due to floating point errors
 	ray.origin = pos + normal * EPSILON;
 
-	if(material.texture_index != 0) {
+	if (material.texture_index != 0) {
 		ray.attenuation = textures[NonUniformResourceIndex(material.texture_index)].SampleLevel(tex_coord, 1.0).rgb;
 	} else {
 		ray.attenuation = material.albedo;
@@ -71,10 +71,10 @@ public void scatter(inout Payload ray, float3 pos, float3 normal, float2 tex_coo
 
 	if (material.emissivity > rand_f32()) {
 		ray.is_light = true;
-		if(material.texture_index != 0){
-		// TODO: Scatter off of texture
+		if (material.texture_index != 0) {
+			// TODO: Scatter off of texture
 			ray.radiance = textures[NonUniformResourceIndex(material.texture_index)].SampleLevel(tex_coord, 1.0).rgb * material.emission_strength;
-		} else{
+		} else {
 			ray.radiance = material.emission_colour * material.emission_strength;
 		}
 	}

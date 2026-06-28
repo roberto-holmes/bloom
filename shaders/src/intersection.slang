@@ -25,14 +25,14 @@ void main() {
 			ReportHit(t, object_type, att);
 		}
 	} else if (object_type == ObjectType::Ocean) {
-		let o = (Ocean*)o.primitive;
+		let o = (Ptr<Ocean, Access.Read>)o.primitive;
 		let p = hit_ocean(o);
 		if (p.r < F32_MAX) {
 			// TODO: Figure out how best to give the rest of the data to the hit shader
 			ReportHit(p.r, object_type, att);
 		}
 	} else if (object_type == ObjectType::Lentil) {
-		let l = (Lentil*)o.primitive;
+		let l = (Ptr<Lentil, Access.Read>)o.primitive;
 		uint hit_type = 0;
 		let t = hit_lentil(l, hit_type);
 		if (t < F32_MAX) {
@@ -218,7 +218,7 @@ float hit_circle(float3 center, float3 normal, float radius) {
 	return t;
 }
 
-float hit_lentil(const Lentil* lentil, out uint hit_type) {
+float hit_lentil(Ptr<Lentil, Access.Read> lentil, out uint hit_type) {
 	float3 center = mul(ObjectToWorld(), float4(0.0, 0.0, 0.0, 1.0));
 	float3 axis = normalize(mul(ObjectToWorld(), float4(1.0, 0.0, 0.0, 0.0)));
 	bool enable_asphere = true;
@@ -334,7 +334,7 @@ float f_prime(float t, float3 axis, float3 center, float R, float k) {
 	return aspheric_surface_prime(r(t, a, b, c), R, k) * r_prime(t, a, b, c) - dot(WorldRayDirection(), axis);
 }
 
-float hit_ocean(const Ocean* ocean) {
+float hit_ocean(Ptr<Ocean, Access.Read> ocean) {
 	// Get initial t from intersection with AABB
 	// TODO: Get AABB size from Ocean object
 	let aabb = AABB(float3(-10.0, -1.0, -10.0), float3(10.0, 1.0, 10.0));

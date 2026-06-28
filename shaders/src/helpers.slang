@@ -19,9 +19,9 @@ public float get_ocean_point(float2 coordinates, uint ocean_size, RWTexture2D<fl
 	float scaling_factor = ocean_size * ocean_size;
 
 	// Tile coordinates over size
-	coordinates %= float2(ocean_size);
+	coordinates %= float(ocean_size);
 	coordinates += float2(ocean_size);
-	coordinates %= float2(ocean_size);
+	coordinates %= float(ocean_size);
 
 	let floored = uint2(floor(coordinates));
 

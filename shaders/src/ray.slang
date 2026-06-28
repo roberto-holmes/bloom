@@ -71,9 +71,9 @@ Texture2D<float4> input_radiance;
 [[vk::binding(1)]]
 RWTexture2D<float4> output_radiance;
 [[vk::binding(2)]]
-Uniforms uniforms;
+ConstantBuffer<Uniforms> uniforms;
 [[vk::binding(3)]]
-Material[10] materials;
+ConstantBuffer<Material> materials;
 [[vk::binding(4)]]
 StructuredBuffer<AABB> bvh;
 

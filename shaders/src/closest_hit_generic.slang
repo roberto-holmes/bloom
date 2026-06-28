@@ -29,7 +29,8 @@ void main(inout Payload ray, in CustomAttributes att) {
 		// Get normal
 		let normal = (pos - center) / sphere.radius;
 
-		scatter(ray, pos, normal, mat);
+		// TODO: Add texture support for spheres (instead of hard coding tex_coords to 0)
+		scatter(ray, pos, normal, float2(0), mat);
 	} else if (HitKind() == ObjectType::Ocean) {
 		let ocean = ((Ocean*)(((Buffers*)pc.scene)[InstanceID()]).primitive);
 		mat = ((Material*)pc.materials)[ocean.material];
@@ -48,7 +49,7 @@ void main(inout Payload ray, in CustomAttributes att) {
 
 		// printf("pos: %v3f, (%.4f, %.4f)\n", pos, diff_x, diff_y);
 
-		scatter(ray, pos, normal, mat);
+		scatter(ray, pos, normal, float2(0), mat);
 		// ray.attenuation = float3(normal);
 		// ray.attenuation = float3(ocean_point.r, 0.0, ocean_point.r);
 		// ray.attenuation = float3(0.5, 0.2, RayTCurrent() / 2.0);
@@ -92,7 +93,7 @@ void main(inout Payload ray, in CustomAttributes att) {
 			// ray.done = 1;
 		}
 
-		scatter(ray, pos, normal, mat);
+		scatter(ray, pos, normal, float2(0), mat);
 	} else {
 		ray.attenuation = float3(0.5, 0.2, RayTCurrent() / 2.0);
 		ray.radiance = float3(1.0, 1.0, 1.0);
